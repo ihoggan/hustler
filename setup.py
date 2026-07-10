@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Setup configuration for HUSTLER."""
+
+from setuptools import setup
+
+with open("README.md", "r", encoding="utf-8") as f:
+    long_description = f.read()
+
+setup(
+    name="hustler",
+    version="6.3.0",
+    author="Iain Hoggan",
+    description="UK Pool Physics Sandbox — WEPF-compliant real-world pool physics with utility AI",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
+    url="https://github.com/ihoggan/hustler",
+    py_modules=["hustler", "cushion_path"],
+    python_requires=">=3.12",
+    install_requires=[
+        "pygame>=2.6.1",
+        "pymunk>=7.3.0",
+        "numpy>=1.24.0",
+    ],
+    extras_require={
+        "gl": ["moderngl>=5.12"],
+        "dev": ["pytest>=7.0", "black", "pylint"],
+    },
+    entry_points={
+        "console_scripts": [
+            "hustler=hustler:main",
+        ],
+    },
+    classifiers=[
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Science/Research",
+        "License :: OSI Approved :: MIT License",
+        "Natural Language :: English",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Topic :: Games/Entertainment",
+        "Topic :: Scientific/Engineering :: Physics",
+    ],
+    keywords="pool billiards physics simulation pygame pymunk ai",
+)

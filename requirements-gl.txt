@@ -1,0 +1,12 @@
+# HUSTLER GL Renderer Dependencies
+# Install with: pip install -r requirements-gl.txt
+
+-r requirements.txt
+
+# GL post-processor (2× SSAA + bloom)
+moderngl>=5.12
+
+# For EGL headless rendering validation (in CI)
+# Most systems: automatically via mesa/libgl; explicit if needed
+# mesa-libgl (Fedora)
+# libgl1-mesa-glx (Debian/Ubuntu — typically pre-installed)

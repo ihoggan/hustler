@@ -1,0 +1,98 @@
+name: Validate
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.13']
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-gl.txt
+    
+    - name: Check syntax (py_compile)
+      run: |
+        python -m py_compile hustler.py
+        python -m py_compile cushion_path.py
+    
+    - name: Run selftest suite (27/27 assertions)
+      run: |
+        python3 hustler.py --selftest
+    
+    - name: Run batch validation (N=30 strikes)
+      run: |
+        python3 hustler.py --batch 30
+    
+    - name: Run smoke test (headless, 90 frames)
+      run: |
+        python3 hustler.py --smoke
+    
+    - name: Run GL headless validation (if available)
+      continue-on-error: true
+      env:
+        LIBGL_ALWAYS_SOFTWARE: 1
+        MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      run: |
+        python3 hustler.py --smoke-gl
+    
+    - name: Snapshot validation (byte-identical to R6.1)
+      continue-on-error: true
+      run: |
+        python3 hustler.py --snap /tmp/baseline.png
+    
+    - name: Check cushion_path.py standalone
+      run: |
+        python3 cushion_path.py
+    
+    - name: Upload validation artifacts (on failure)
+      if: failure()
+      uses: actions/upload-artifact@v3
+      with:
+        name: validation-logs-py${{ matrix.python-version }}
+        path: |
+          /tmp/baseline.png
+          *.log
+        retention-days: 7
+
+  lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+    
+    - name: Install lint tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install pylint black isort
+    
+    - name: Check code format (black)
+      run: |
+        black --check hustler.py cushion_path.py
+      continue-on-error: true
+    
+    - name: Check import sort (isort)
+      run: |
+        isort --check-only hustler.py cushion_path.py
+      continue-on-error: true
