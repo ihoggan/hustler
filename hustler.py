@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HUSTLER — UK Pool Physics Sandbox (R5)
+HUSTLER — UK Pool Physics Sandbox (R6)
 =======================================
 Single-file pygame + pymunk sandbox for UK blackball-spec table physics.
 
@@ -71,12 +71,10 @@ R5 (positional play + spin break sweep):
     added to both phases — the sweep that can adjudicate §6.4.
 
 Controls (GUI):
-  Mouse         aim (cue ball -> pointer)
+  All shot parameters (power, aim angle, spin) are HUD-only (R6.6) — the
+  table's mouse has no bearing on aim; only the right-hand panel and the
+  keys below set anything.
   SPACE         strike (only when all balls are at rest and it is a human turn)
-  UP / DOWN     power +/- 0.25 m/s (0.5 .. 7.0)
-  W / S         follow / draw, top spin / backspin (+/- 0.25, clamp +/-1.0)
-  A / D         side spin, left / right english (+/- 0.25, clamp +/-1.0)
-  X             reset spin to centre-ball
   M             cycle mode: SANDBOX -> YOU vs AI -> AI vs AI
   T             rack up (sandbox: blackball rack, cue to baulk; game: new frame)
   K             toggle cue ball: 1-7/8" WEPF spec <-> casual 2"
@@ -89,18 +87,23 @@ Controls (GUI):
   N             new object ball at random position
   C             clear object balls
   R             reset radius to 25.4 mm and rebuild the default layout
+  -- right-hand panel (Shot / Table / Game tabs) --
+  Shot          power slider; rotating aim-angle dial (drag = absolute
+                angle, +/-1 deg nudge buttons for fine tuning); 2D spin pad
+                (drag = follow/side, clamped to the unit circle); Reset
+                spin; Shoot (mirrors SPACE's exact guard)
+  Table         cushion elasticity / roll decel / ball radius sliders
+                (radius greyed outside SANDBOX); cue-size toggle
+  Game          mode-cycle, rack-up, overlay-toggle buttons
 
 Command line:
-  (none)        interactive classic window
-  --gl          interactive window through the GL pipeline (2x SSAA + bloom)
-  --classic     force the classic renderer (overrides --gl)
+  (none)        interactive window
   --selftest    headless assertion suite
   --batch N     N random strikes, containment report
   --breaks N    break analyser, N trials per config
   --aigame N    N headless AI-vs-AI games
-  --smoke       GUI smoke on the dummy video driver (classic)
-  --smoke-gl    headless GL render gate (passthrough + SSAA + bloom probes)
-  --snap FILE   headless render, save a screenshot PNG (add --smoke-gl for GL)
+  --smoke       GUI smoke on the dummy video driver
+  --snap FILE   headless render, save a screenshot PNG
 """
 
 import argparse
@@ -160,6 +163,16 @@ CFG = {
     "REST_TIMEOUT_S": 45.0,
     "PX_PER_M": 420.0,
     "MARGIN_PX": 60,
+    # Graphics Pass 3, Increment 3a -- fullscreen fit-to-region. Panel is an
+    # empty placeholder until 3b wires real widgets; scale clamps keep the
+    # fit sane at absurd window sizes without capping normal resizing.
+    "PANEL_W_PX": 260,
+    "FIT_MIN_SCALE": 0.35,
+    "FIT_MAX_SCALE": 3.0,
+    # Increment 4a -- spectator motion trails. Samples of recent position
+    # per moving ball (one per rendered frame); classic AND GL both draw
+    # these (unlike bloom), per Maker's call. Live-tunable by eye.
+    "TRAIL_LEN": 10,
 }
 
 
@@ -1120,501 +1133,199 @@ COL = {
     "tanline": (80, 220, 235), "pocket": (8, 8, 8), "hud": (235, 235, 235),
 }
 
+# ----------------------------------------------------------------------------
+# Fullscreen + fit-to-region (Graphics Pass 3, Increment 3a)
+# ----------------------------------------------------------------------------
+# Pure layout maths, no pygame: given the actual window size and a reserved
+# right-hand panel width, find the largest uniform scale that fits the
+# table's reference (1x) frame into the space left of the panel WITHOUT
+# distorting it -- the SAME scale multiplies both axes, so whatever exact
+# aspect the reference frame has (built from the exact 2:1 table + fixed
+# margins) survives untouched. Dependency-free on purpose so it gets a plain
+# selftest assertion, dependency-free.
+def fit_to_region(win_w, win_h, base_w, base_h, panel_w,
+                   min_scale=None, max_scale=None):
+    """Largest uniform scale fitting a base_w x base_h frame into
+    (win_w - panel_w) x win_h, clamped to [min_scale, max_scale].
+    Returns (scale, fitted_w, fitted_h). A floor clamp may overflow the
+    region at absurdly small windows rather than shrink to nothing."""
+    if min_scale is None:
+        min_scale = CFG["FIT_MIN_SCALE"]
+    if max_scale is None:
+        max_scale = CFG["FIT_MAX_SCALE"]
+    avail_w = max(1, win_w - panel_w)
+    avail_h = max(1, win_h)
+    scale = min(avail_w / base_w, avail_h / base_h)
+    scale = max(min_scale, min(max_scale, scale))
+    return scale, max(1, round(base_w * scale)), max(1, round(base_h * scale))
+
 
 # ----------------------------------------------------------------------------
-# GL post-processing (Graphics Pass 3 — decision 1C + 2A, Increment 1)
+# Hand-rolled UI widget primitives (Graphics Pass 3, Increment 3b). Pure,
+# dependency-free maths only -- the drawable widget classes that use these
+# live inside run_gui (they need pygame, which is lazily imported there per
+# the existing convention). Kept here, pygame-free, so they get plain
+# selftest assertions with zero new dependencies.
 # ----------------------------------------------------------------------------
-# An offscreen OpenGL post-process pipeline that consumes a finished pygame
-# frame (the SAME surface the classic backend draws) and returns a processed
-# pygame frame. Increment 1 ships the plumbing only: a passthrough shader, so
-# the upload -> sample -> read-back round-trip is proven inside the real app
-# before any bloom/grade/vignette passes are added (each future effect is an
-# extra pass with its own pixel-probe, per finding 6.10).
-#
-# Feasibility (headless EGL probe, banked): a standalone EGL context on
-# llvmpipe gives GL 4.5 Core / GLSL 4.50, half-float FBOs, and a pixel-exact
-# RGBA round-trip with NO vertical flip. Two hard-won facts baked in here:
-#   * glcontext defaults to X11/GLX and dies headless — backend='egl' is
-#     forced explicitly (this is what makes the CI --smoke-gl gate possible).
-#   * pygame is top-row-first and GL texel row 0 is bottom, but tostring ->
-#     texture.write -> fbo.read -> fromstring cancels the flip: passthrough is
-#     upright and identical. The --smoke-gl gate asserts exactly this.
-#
-# moderngl is imported LAZILY, only when a GL backend is actually constructed,
-# so the core chain (py_compile/--selftest/--batch/--smoke) keeps zero new
-# dependencies and the container gate is unaffected unless --smoke-gl is run.
-
-_GL_PASSTHROUGH_VS = """
-#version 330
-in vec2 in_pos;
-out vec2 uv;
-void main() {
-    uv = in_pos * 0.5 + 0.5;
-    gl_Position = vec4(in_pos, 0.0, 1.0);
-}
-"""
-
-_GL_PASSTHROUGH_FS = """
-#version 330
-uniform sampler2D src;
-in vec2 uv;
-out vec4 frag;
-// The scene frame is an opaque presentation surface; its alpha slot is the
-// unused X-byte of the window's XRGB format and is meaningless. Force opaque
-// so the pipeline is alpha-defined (matters once bloom/grade passes read a).
-void main() { frag = vec4(texture(src, uv).rgb, 1.0); }
-"""
-
-# Bright-pass: keep only pixels whose luminance clears the threshold, with a
-# soft knee so the bloom fades in rather than hard-clipping. Below threshold
-# -> black, so a dark frame produces no glow (bloom never manufactures light).
-_GL_BRIGHT_FS = """
-#version 330
-uniform sampler2D src;
-uniform float threshold;
-uniform float knee;
-in vec2 uv;
-out vec4 frag;
-void main() {
-    vec3 c = texture(src, uv).rgb;
-    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    float k = smoothstep(threshold, threshold + knee, l);
-    frag = vec4(c * k, 1.0);
-}
-"""
-
-# Separable Gaussian (9-tap). Run once horizontal, once vertical; `dir` is the
-# per-sample texel step for the axis being blurred.
-_GL_BLUR_FS = """
-#version 330
-uniform sampler2D src;
-uniform vec2 dir;
-in vec2 uv;
-out vec4 frag;
-const float w0 = 0.227027;
-const float w1 = 0.1945946;
-const float w2 = 0.1216216;
-const float w3 = 0.054054;
-const float w4 = 0.016216;
-void main() {
-    vec3 c = texture(src, uv).rgb * w0;
-    c += texture(src, uv + dir * 1.0).rgb * w1;
-    c += texture(src, uv - dir * 1.0).rgb * w1;
-    c += texture(src, uv + dir * 2.0).rgb * w2;
-    c += texture(src, uv - dir * 2.0).rgb * w2;
-    c += texture(src, uv + dir * 3.0).rgb * w3;
-    c += texture(src, uv - dir * 3.0).rgb * w3;
-    c += texture(src, uv + dir * 4.0).rgb * w4;
-    c += texture(src, uv - dir * 4.0).rgb * w4;
-    frag = vec4(c, 1.0);
-}
-"""
-
-# Composite: scene + intensity * bloom, opaque. Bloom is sampled from a
-# half-res texture (linear-upscaled), which widens the glow for free.
-_GL_COMPOSITE_FS = """
-#version 330
-uniform sampler2D scene;
-uniform sampler2D bloom;
-uniform float intensity;
-in vec2 uv;
-out vec4 frag;
-void main() {
-    vec3 s = texture(scene, uv).rgb;
-    vec3 b = texture(bloom, uv).rgb;
-    frag = vec4(s + intensity * b, 1.0);
-}
-"""
-
-# Bloom presets (Increment 2 default = BALANCED). Live-tunable later.
-BLOOM_SUBTLE   = {"threshold": 0.85, "knee": 0.10, "intensity": 0.35}
-BLOOM_BALANCED = {"threshold": 0.78, "knee": 0.12, "intensity": 0.60}
-BLOOM_ARCADE   = {"threshold": 0.68, "knee": 0.16, "intensity": 0.95}
-# intensity 0 with an out-of-range threshold = resolve only (no bloom added);
-# used to pixel-probe the SSAA downsample in isolation.
-BLOOM_RESOLVE_ONLY = {"threshold": 2.0, "knee": 0.10, "intensity": 0.0}
+def slider_frac(value, lo, hi):
+    """Value -> fraction [0, 1] along a slider track, clamped."""
+    if hi <= lo:
+        return 0.0
+    return max(0.0, min(1.0, (value - lo) / (hi - lo)))
 
 
-class GLPostProcessor:
-    """Offscreen GL post-processor: pygame Surface in, pygame Surface out.
-
-    Two modes, chosen by the constructor:
-      * passthrough (bloom=None, in==out): the Increment 1 round-trip, kept for
-        the pixel-exactness gate.
-      * pipeline (bloom set, in usually 2x out): SSAA resolve (2x->1x box via
-        linear downsample) -> bright-pass -> separable Gaussian (half-res) ->
-        additive composite. This is the Increment 2 spectacle path.
-
-    Constructing this triggers the lazy moderngl import and an EGL standalone
-    context; GLUnavailable is raised (readably) if that can't be created, so
-    callers SKIP rather than crash. All post-process passes output opaque
-    alpha (the frame is an opaque presentation surface; see finding on the
-    XRGB alpha slot).
-    """
-
-    def __init__(self, in_w, in_h, out_w=None, out_h=None, bloom=None):
-        self.in_w, self.in_h = in_w, in_h
-        self.out_w = out_w or in_w
-        self.out_h = out_h or in_h
-        self.bloom = bloom
-        try:
-            import moderngl  # lazy — only when GL is actually requested
-        except Exception as e:  # pragma: no cover - env dependent
-            raise GLUnavailable(f"moderngl import failed: {e}")
-        os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
-        self._mgl = moderngl
-        ctx = None
-        last = None
-        for kw in ({"backend": "egl"}, {"backend": "egl", "device_index": 0}):
-            try:
-                ctx = moderngl.create_standalone_context(require=330, **kw)
-                break
-            except Exception as e:
-                last = e
-        if ctx is None:
-            raise GLUnavailable(f"EGL standalone context unavailable: {last}")
-        self.ctx = ctx
-        self.renderer = ctx.info.get("GL_RENDERER", "?")
-        import numpy as np
-        verts = np.array([-1, -1, 3, -1, -1, 3], dtype="f4")
-        self.vbo = ctx.buffer(verts.tobytes())
-        self._vaos = []
-        self._objs = [self.vbo]
-
-        LIN = (moderngl.LINEAR, moderngl.LINEAR)
-        NEAR = (moderngl.NEAREST, moderngl.NEAREST)
-
-        def prog(fs):
-            p = ctx.program(vertex_shader=_GL_PASSTHROUGH_VS, fragment_shader=fs)
-            self._objs.append(p)
-            return p
-
-        def vao(p):
-            v = ctx.vertex_array(p, [(self.vbo, "2f", "in_pos")])
-            self._vaos.append(v)
-            self._objs.append(v)
-            return v
-
-        def tex(size, comp=4, dt="f1", filt=LIN):
-            t = ctx.texture(size, comp, dtype=dt)
-            t.filter = filt
-            self._objs.append(t)
-            return t
-
-        def fbo(t):
-            f = ctx.framebuffer(color_attachments=[t])
-            self._objs.append(f)
-            return f
-
-        if bloom is None:
-            # Passthrough: NEAREST input so an in==out round-trip is bit-exact.
-            self.tex_in = tex((in_w, in_h), filt=NEAR)
-            self.tex_out = tex((self.out_w, self.out_h))
-            self.fbo_out = fbo(self.tex_out)
-            self.prog_pass = prog(_GL_PASSTHROUGH_FS)
-            self.vao_pass = vao(self.prog_pass)
-            return
-
-        # Pipeline. LINEAR input so the resolve downsample box-averages.
-        ow, oh = self.out_w, self.out_h
-        hw, hh = max(1, ow // 2), max(1, oh // 2)
-        self.hw, self.hh = hw, hh
-        self.tex_in = tex((in_w, in_h), filt=LIN)
-        self.tex_scene = tex((ow, oh), dt="f2")          # HDR scene (resolved)
-        self.tex_bright = tex((hw, hh), dt="f2")
-        self.tex_blur1 = tex((hw, hh), dt="f2")
-        self.tex_blur2 = tex((hw, hh), dt="f2")
-        self.tex_out = tex((ow, oh))                     # 8-bit for display
-        self.fbo_scene = fbo(self.tex_scene)
-        self.fbo_bright = fbo(self.tex_bright)
-        self.fbo_blur1 = fbo(self.tex_blur1)
-        self.fbo_blur2 = fbo(self.tex_blur2)
-        self.fbo_out = fbo(self.tex_out)
-        self.prog_resolve = prog(_GL_PASSTHROUGH_FS)
-        self.prog_bright = prog(_GL_BRIGHT_FS)
-        self.prog_blur = prog(_GL_BLUR_FS)
-        self.prog_comp = prog(_GL_COMPOSITE_FS)
-        self.vao_resolve = vao(self.prog_resolve)
-        self.vao_bright = vao(self.prog_bright)
-        self.vao_blur = vao(self.prog_blur)
-        self.vao_comp = vao(self.prog_comp)
-
-    def process(self, surface):
-        """Run the pipeline on a pygame Surface, return a new pygame Surface."""
-        import pygame
-        mgl = self._mgl
-        data = pygame.image.tostring(surface, "RGBA", False)  # top-row first
-        self.tex_in.write(data)
-
-        if self.bloom is None:
-            self.fbo_out.use()
-            self.ctx.clear(0.0, 0.0, 0.0, 1.0)
-            self.tex_in.use(0)
-            self.prog_pass["src"].value = 0
-            self.vao_pass.render(mgl.TRIANGLES)
-            out = self.fbo_out.read(components=4, dtype="f1")
-            return pygame.image.fromstring(out, (self.out_w, self.out_h),
-                                           "RGBA", False)
-
-        b = self.bloom
-        # 1. Resolve 2x -> 1x (linear downsample = box average over the 2x2).
-        self.fbo_scene.use()
-        self.ctx.clear()
-        self.tex_in.use(0)
-        self.prog_resolve["src"].value = 0
-        self.vao_resolve.render(mgl.TRIANGLES)
-        # 2. Bright-pass (half-res).
-        self.fbo_bright.use()
-        self.ctx.clear()
-        self.tex_scene.use(0)
-        self.prog_bright["src"].value = 0
-        self.prog_bright["threshold"].value = float(b["threshold"])
-        self.prog_bright["knee"].value = float(b["knee"])
-        self.vao_bright.render(mgl.TRIANGLES)
-        # 3. Separable Gaussian: horizontal then vertical.
-        self.fbo_blur1.use()
-        self.ctx.clear()
-        self.tex_bright.use(0)
-        self.prog_blur["src"].value = 0
-        self.prog_blur["dir"].value = (1.0 / self.hw, 0.0)
-        self.vao_blur.render(mgl.TRIANGLES)
-        self.fbo_blur2.use()
-        self.ctx.clear()
-        self.tex_blur1.use(0)
-        self.prog_blur["dir"].value = (0.0, 1.0 / self.hh)
-        self.vao_blur.render(mgl.TRIANGLES)
-        # 4. Composite scene + intensity * bloom.
-        self.fbo_out.use()
-        self.ctx.clear(0.0, 0.0, 0.0, 1.0)
-        self.tex_scene.use(0)
-        self.tex_blur2.use(1)
-        self.prog_comp["scene"].value = 0
-        self.prog_comp["bloom"].value = 1
-        self.prog_comp["intensity"].value = float(b["intensity"])
-        self.vao_comp.render(mgl.TRIANGLES)
-        out = self.fbo_out.read(components=4, dtype="f1")
-        return pygame.image.fromstring(out, (self.out_w, self.out_h),
-                                       "RGBA", False)
-
-    def release(self):
-        for o in reversed(self._objs):
-            try:
-                o.release()
-            except Exception:
-                pass
-        try:
-            self.ctx.release()
-        except Exception:
-            pass
+def slider_value(frac, lo, hi):
+    """Fraction [0, 1] -> value in [lo, hi]. Inverse of slider_frac (up to
+    clamping at the ends -- a value already outside [lo, hi] round-trips to
+    the nearest end, by design)."""
+    frac = max(0.0, min(1.0, frac))
+    return lo + frac * (hi - lo)
 
 
-class GLUnavailable(RuntimeError):
-    """Raised when an offscreen GL context cannot be created in this env."""
+def spin_pad_map(dx, dy, radius):
+    """2D spin pad: a contact offset (dx, dy) in pixels from the pad centre
+    -> (follow, side) in [-1, 1], clamped to the UNIT CIRCLE (not the
+    square) so a diagonal drag can't exceed the physical spin budget. Screen
+    y grows downward, so follow is the negated, radius-normalised dy."""
+    if radius <= 0:
+        return 0.0, 0.0
+    fx, fy = dx / radius, -dy / radius
+    mag = math.hypot(fx, fy)
+    if mag > 1.0:
+        fx, fy = fx / mag, fy / mag
+    return fy, fx  # (follow, side)
 
 
-def gl_passthrough_check():
-    """Pixel-probe the GL passthrough round-trip (finding 6.10 doctrine).
-
-    Builds a deterministic synthetic frame, runs it through GLPostProcessor,
-    and asserts the result is bit-identical to the input. Returns
-    (ok, detail, available) so callers can PASS/FAIL when GL is present and
-    SKIP when it is not.
-    """
-    try:
-        import pygame
-        import numpy as np
-    except Exception as e:
-        return (False, f"pygame/numpy missing: {e}", False)
-    try:
-        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-        pygame.display.init()
-        w, h = 96, 64
-        # Deterministic content: gradients + a fixed noise block + hard edges,
-        # so a vertical flip or channel swap would be caught, not averaged out.
-        arr = np.zeros((h, w, 4), dtype=np.uint8)
-        xr = (np.linspace(0, 255, w)).astype(np.uint8)
-        yr = (np.linspace(0, 255, h)).astype(np.uint8)
-        arr[:, :, 0] = xr[None, :]
-        arr[:, :, 1] = yr[:, None]
-        arr[:, :, 2] = 64
-        arr[:, :, 3] = 255
-        rng = np.random.default_rng(6102)
-        arr[8:24, 8:24, :3] = rng.integers(0, 256, (16, 16, 3), dtype=np.uint8)
-        arr[0, :, :3] = (255, 0, 0)      # top row marker (catches a flip)
-        arr[h - 1, :, :3] = (0, 0, 255)  # bottom row marker
-        surf = pygame.image.frombytes(arr.tobytes(), (w, h), "RGBA")
-    except Exception as e:
-        return (False, f"synthetic frame build failed: {e}", True)
-    try:
-        gl = GLPostProcessor(w, h)
-    except GLUnavailable as e:
-        return (False, str(e), False)
-    except Exception as e:
-        return (False, f"GL init error: {e}", False)
-    try:
-        out = gl.process(surf)
-        back = np.frombuffer(pygame.image.tostring(out, "RGBA", False),
-                             dtype=np.uint8).reshape(h, w, 4)
-        exact = np.array_equal(back, arr)
-        maxerr = int(np.abs(back.astype(int) - arr.astype(int)).max())
-        top_ok = tuple(back[0, w // 2, :3]) == (255, 0, 0)
-        detail = (f"{gl.renderer}; max abs err {maxerr}, "
-                  f"orientation {'upright' if top_ok else 'FLIPPED'}")
-        return (exact and top_ok, detail, True)
-    except Exception as e:
-        return (False, f"process/compare error: {e}", True)
-    finally:
-        gl.release()
+def shoot_enabled(cue_present, all_at_rest, my_turn):
+    """Pure mirror of the SPACE-to-strike guard (cue present, table at rest,
+    player's turn) -- the Shoot button calls this directly so it can never
+    drift from the key it mirrors."""
+    return bool(cue_present and all_at_rest and my_turn)
 
 
-def _luma(arr):
-    import numpy as np
-    return (arr[..., :3].astype(float) *
-            np.array([0.2126, 0.7152, 0.0722])).sum(-1)
+def rotate_vector(dx, dy, degrees):
+    """Rotate (dx, dy) by degrees (screen convention, y-down) about the
+    origin. Used to turn the cue-angle dial's absolute angle into an aim
+    direction vector."""
+    a = math.radians(degrees)
+    c, s = math.cos(a), math.sin(a)
+    return dx * c - dy * s, dx * s + dy * c
 
 
-def gl_ssaa_check():
-    """Pixel-probe the 2x->1x SSAA resolve in isolation (bloom off).
-
-    Builds a 2x frame where each 2x2 block averages a known target T, but its
-    four subpixels are T+/-64 — so a broken resolve (nearest, or a wrong
-    filter) lands on T+/-64, not T. Passing means the downsample truly box-
-    averages. Returns (ok, detail, available).
-    """
-    try:
-        import pygame
-        import numpy as np
-    except Exception as e:
-        return (False, f"pygame/numpy missing: {e}", False)
-    try:
-        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-        pygame.display.init()
-        ow, oh = 6, 5
-        iw, ih = ow * 2, oh * 2
-        T = np.zeros((oh, ow), dtype=float)
-        for Y in range(oh):
-            for X in range(ow):
-                T[Y, X] = 80 + 15 * X + 10 * Y      # in [80,155], +/-64 safe
-        arr = np.zeros((ih, iw, 4), dtype=np.uint8)
-        arr[:, :, 3] = 255
-        for Y in range(oh):
-            for X in range(ow):
-                blk = np.array([[T[Y, X] + 64, T[Y, X] - 64],
-                                [T[Y, X] + 64, T[Y, X] - 64]])
-                blk = np.clip(blk, 0, 255).astype(np.uint8)
-                for c in range(3):
-                    arr[2 * Y:2 * Y + 2, 2 * X:2 * X + 2, c] = blk
-        surf = pygame.image.frombytes(arr.tobytes(), (iw, ih), "RGBA")
-    except Exception as e:
-        return (False, f"synthetic frame build failed: {e}", True)
-    try:
-        gl = GLPostProcessor(iw, ih, ow, oh, bloom=BLOOM_RESOLVE_ONLY)
-    except GLUnavailable as e:
-        return (False, str(e), False)
-    except Exception as e:
-        return (False, f"GL init error: {e}", False)
-    try:
-        out = gl.process(surf)
-        back = np.frombuffer(pygame.image.tostring(out, "RGBA", False),
-                             dtype=np.uint8).reshape(oh, ow, 4)
-        got = back[:, :, 0].astype(float)
-        err = float(np.abs(got - T).max())
-        return (err <= 3.0, f"{gl.renderer}; max resolve err {err:.1f} "
-                f"(box-average target, tol 3)", True)
-    except Exception as e:
-        return (False, f"process/compare error: {e}", True)
-    finally:
-        gl.release()
+def dial_angle(dx, dy):
+    """Rotating cue-angle dial: a contact offset (dx, dy) from the dial's
+    centre -> absolute aim angle in degrees [0, 360), screen convention
+    (atan2(dy, dx)). Inverse of rotate_vector(1, 0, angle) -- round-trips
+    with it (mod 360)."""
+    if dx == 0.0 and dy == 0.0:
+        return 0.0
+    return math.degrees(math.atan2(dy, dx)) % 360.0
 
 
-def gl_bloom_check():
-    """Pixel-probe the bloom pass: a bright core glows outward, a black frame
-    stays black (no light from nothing), and the core survives. Returns
-    (ok, detail, available)."""
-    try:
-        import pygame
-        import numpy as np
-    except Exception as e:
-        return (False, f"pygame/numpy missing: {e}", False)
-    try:
-        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-        pygame.display.init()
-        ow, oh = 32, 24
-        iw, ih = ow * 2, oh * 2
-        cx, cy = iw // 2, ih // 2
-        dot = np.zeros((ih, iw, 4), dtype=np.uint8)
-        dot[:, :, 3] = 255
-        dot[cy - 6:cy + 6, cx - 6:cx + 6, :3] = 255     # bright core on black
-        black = np.zeros((ih, iw, 4), dtype=np.uint8)
-        black[:, :, 3] = 255
-        s_dot = pygame.image.frombytes(dot.tobytes(), (iw, ih), "RGBA")
-        s_black = pygame.image.frombytes(black.tobytes(), (iw, ih), "RGBA")
-    except Exception as e:
-        return (False, f"synthetic frame build failed: {e}", True)
-    try:
-        gl = GLPostProcessor(iw, ih, ow, oh, bloom=BLOOM_BALANCED)
-    except GLUnavailable as e:
-        return (False, str(e), False)
-    except Exception as e:
-        return (False, f"GL init error: {e}", False)
-    try:
-        ob = np.frombuffer(pygame.image.tostring(gl.process(s_dot), "RGBA",
-                           False), dtype=np.uint8).reshape(oh, ow, 4)
-        okk = np.frombuffer(pygame.image.tostring(gl.process(s_black), "RGBA",
-                            False), dtype=np.uint8).reshape(oh, ow, 4)
-        lum = _luma(ob)
-        ocx, ocy = ow // 2, oh // 2
-        core = lum[ocy, ocx]
-        # A ring well outside the core footprint (core ~ +/-3 px at 1x).
-        ring = lum[ocy - 8:ocy - 6, ocx - 1:ocx + 1].mean()
-        black_max = int(okk[:, :, :3].max())
-        ok = core > 200 and ring > 4.0 and black_max == 0
-        return (ok, f"{gl.renderer}; core {core:.0f}, glow-ring {ring:.1f} "
-                f"(>4), black-frame max {black_max} (==0)", True)
-    except Exception as e:
-        return (False, f"process/compare error: {e}", True)
-    finally:
-        gl.release()
+def hud_icon_x(default_x, text_right_edge, gap, icon_r, frame_right_edge):
+    """Aim-icon centre-x (Increment 3b HUD-crowding fix). The icon normally
+    sits at default_x (right-anchored, unchanged look) -- its own floor,
+    independent of the font's floor. It is pushed further right (never
+    left, never smaller) to clear the HUD text's actual rendered width once
+    the text's fixed-size floor makes it encroach, then clamped so it still
+    fits inside the frame at absurd window sizes (floor-clamps gracefully,
+    same doctrine as fit_to_region)."""
+    x = max(default_x, text_right_edge + gap + icon_r)
+    return min(x, frame_right_edge - icon_r)
 
 
-def run_gui(smoke=False, smoke_frames=90, snap_path=None, backend="classic"):
+def trail_dot_style(age_idx, trail_len):
+    """Increment 4a (spectator motion trails): age_idx counts from the
+    NEWEST sample (0) back to the OLDEST (trail_len - 1) -- returns
+    (radius_frac, fade_t), where radius_frac shrinks a trail dot toward a
+    floor as it ages and fade_t is how far to blend its colour toward the
+    cloth (0 = ball colour, unchanged; 1 = fully cloth-coloured, i.e.
+    invisible). age_idx=0 -> (1.0, 0.0); the oldest sample -> (MIN_FRAC,
+    1.0). A single-sample trail (trail_len <= 1) doesn't fade or shrink."""
+    if trail_len <= 1:
+        return 1.0, 0.0
+    MIN_FRAC = 0.25
+    t = age_idx / (trail_len - 1)      # 0 at newest, 1 at oldest
+    return 1.0 - t * (1.0 - MIN_FRAC), t
+
+
+def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     if smoke:
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     import pygame
 
     pygame.init()
-    # Render scale (Graphics Pass 3, Increment 2): the GL backend draws the
-    # scene at RS=2 (true supersampling) and the pipeline resolves 2x->1x with
-    # a box filter before bloom. Classic stays RS=1, so every *RS below is a
-    # no-op and the classic frame is byte-identical to R6.1. The window is
-    # always 1x (W1,H1); only the offscreen frame is scaled.
-    RS = 2 if backend == "gl" else 1
+    # Desktop resolution for F11, captured BEFORE any window exists. Info()
+    # only reliably reports the true desktop mode pre-set_mode; querying it
+    # again later would return the current WINDOW's size on some backends,
+    # silently turning "fullscreen" into a same-size no-op.
+    _di = pygame.display.Info()
+    DESKTOP_W, DESKTOP_H = _di.current_w, _di.current_h
+    # Render scale. Was 2 for the (since-removed, R6.10) GL backend's true
+    # supersampling; classic is RS=1, so every *RS below is a no-op kept in
+    # place rather than stripped out -- same numbers, lower-risk diff.
+    RS = 1
     PXM = CFG["PX_PER_M"]
     MG = CFG["MARGIN_PX"]
     x0, y0, x1, y1 = play_rect()
-    W1 = int(x1 * PXM + 2 * MG)
-    H1 = int(y1 * PXM + 2 * MG + 46)
-    W, H = W1 * RS, H1 * RS          # exact 2:1 so the resolve is a clean box
-    S = PXM * RS
-    M = MG * RS
-    display = pygame.display.set_mode((W1, H1))
-    pygame.display.set_caption("HUSTLER — UK pool physics sandbox (R3)")
-    # Renderer split (decision 2A): the scene always draws to an offscreen
-    # frame surface — the single source both backends consume. Classic blits it
-    # straight to the window; GL runs it through the post-process pipeline
-    # (resolve -> bloom) first. The whole draw loop still targets `screen`.
-    screen = pygame.Surface((W, H))
-    glpp = None
-    if backend == "gl":
-        glpp = GLPostProcessor(W, H, W1, H1, bloom=BLOOM_BALANCED)
+    # Reference (FS=1) frame size -- identical maths to the old fixed window.
+    # Increment 3a scales this uniformly by the fit scale FS; the headless
+    # guard (smoke/snap) always renders it at FS=1 with no panel, so the
+    # byte-identical invariant is untouched.
+    BASE_W1 = int(x1 * PXM + 2 * MG)
+    BASE_H1 = int(y1 * PXM + 2 * MG + 46)
+    PANEL_W = CFG["PANEL_W_PX"]
+    fullscreen = False
+
+    if smoke:
+        win_w, win_h = BASE_W1, BASE_H1
+        display = pygame.display.set_mode((win_w, win_h))
+    else:
+        win_w, win_h = BASE_W1 + PANEL_W, BASE_H1
+        display = pygame.display.set_mode((win_w, win_h), pygame.RESIZABLE)
+    windowed_size = (win_w, win_h)
+    pygame.display.set_caption("HUSTLER — UK pool physics sandbox (R6)")
+
+    FS = fit_W1 = fit_H1 = W = H = S = M = RSF = None
+    screen = font = panel_font = None
+
+    def rebuild_render_targets():
+        # Fullscreen + fit-to-region (Increment 3a): recompute the largest
+        # uniform scale that fits the reference frame into the window minus
+        # the right-hand panel, then rebuild every size-dependent object off
+        # it -- the offscreen frame surface and the HUD font. Called once at
+        # start-up and again on every resize / fullscreen toggle. The
+        # headless guard (smoke) always fits at FS=1 with no panel reserved --
+        # this reproduces the exact R6.1 framing, untouched.
+        nonlocal FS, fit_W1, fit_H1, W, H, S, M, RSF, screen, font, panel_font
+        if smoke:
+            FS, fit_W1, fit_H1 = 1.0, BASE_W1, BASE_H1
+        else:
+            FS, fit_W1, fit_H1 = fit_to_region(win_w, win_h, BASE_W1, BASE_H1, PANEL_W)
+        W, H = fit_W1 * RS, fit_H1 * RS
+        S = PXM * FS * RS
+        M = MG * FS * RS
+        RSF = RS * FS
+        screen = pygame.Surface((W, H))
+        try:
+            font = pygame.font.SysFont("consolas,menlo,monospace",
+                                        max(8, int(14 * RSF)))
+        except Exception:
+            font = pygame.font.Font(None, max(9, int(16 * RSF)))
+        if not smoke:
+            # Panel widgets are drawn straight onto the WINDOW surface, not
+            # through the scene surface -- fixed size, independent of scene
+            # scaling.
+            try:
+                panel_font = pygame.font.SysFont("consolas,menlo,monospace", 14)
+            except Exception:
+                panel_font = pygame.font.Font(None, 16)
+
+    rebuild_render_targets()
 
     def present(frame):
-        return glpp.process(frame) if glpp is not None else frame
+        return frame
 
-    try:
-        font = pygame.font.SysFont("consolas,menlo,monospace", 14 * RS)
-    except Exception:
-        font = pygame.font.Font(None, 16 * RS)
     clock = pygame.time.Clock()
 
     def w2s(p):
@@ -1670,6 +1381,182 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None, backend="classic"):
         spr = ball_sprite(kind, r_px)
         screen.blit(spr, (pos[0] - r_px - sprite_pad, pos[1] - r_px - sprite_pad))
 
+    # ------------------------------------------------------------------
+    # Hand-rolled panel widgets (Graphics Pass 3, Increment 3b). Every
+    # widget binds DIRECTLY to a get()/set() pair pointing at the same live
+    # variable the matching key already mutates -- no shadow state, so
+    # keyboard and widget can never disagree. Interactive-only (nested here,
+    # not touched by the smoke/snap headless path). Pure geometry/mapping
+    # maths lives in the module-level functions above (slider_frac etc.) so
+    # it gets dependency-free selftest coverage.
+    # ------------------------------------------------------------------
+    class Slider:
+        def __init__(self, rect, lo, hi, get, set_, label, fmt="{:.2f}",
+                     enabled=lambda: True):
+            self.rect = pygame.Rect(rect)
+            self.lo, self.hi, self.get, self.set = lo, hi, get, set_
+            self.label, self.fmt, self.enabled = label, fmt, enabled
+            self.dragging = False
+
+        def _track(self):
+            return pygame.Rect(self.rect.x, self.rect.y + 20, self.rect.w, 6)
+
+        def handle_event(self, ev):
+            if not self.enabled():
+                self.dragging = False
+                return
+            track = self._track()
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                if track.inflate(0, 14).collidepoint(ev.pos):
+                    self.dragging = True
+                    self._apply(ev.pos[0], track)
+            elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
+                self.dragging = False
+            elif ev.type == pygame.MOUSEMOTION and self.dragging:
+                self._apply(ev.pos[0], track)
+
+        def _apply(self, x, track):
+            frac = slider_frac(x, track.x, track.x + track.w)
+            self.set(slider_value(frac, self.lo, self.hi))
+
+        def draw(self, surf, font):
+            en = self.enabled()
+            track = self._track()
+            pygame.draw.rect(surf, (60, 64, 72), track, border_radius=3)
+            frac = slider_frac(self.get(), self.lo, self.hi)
+            fill_w = int(track.w * frac)
+            fill_col = (140, 170, 210) if en else (70, 74, 80)
+            if fill_w > 0:
+                pygame.draw.rect(surf, fill_col,
+                                  (track.x, track.y, fill_w, track.h), border_radius=3)
+            knob_col = (225, 230, 238) if en else (110, 112, 116)
+            pygame.draw.circle(surf, knob_col,
+                                (track.x + fill_w, track.y + track.h // 2), 7)
+            txt_col = COL["hud"] if en else (120, 122, 126)
+            txt = f"{self.label}: {self.fmt.format(self.get())}"
+            surf.blit(font.render(txt, True, txt_col), (self.rect.x, self.rect.y))
+
+    class Button:
+        def __init__(self, rect, label, on_click, enabled=lambda: True):
+            self.rect = pygame.Rect(rect)
+            self.label, self.on_click, self.enabled = label, on_click, enabled
+
+        def handle_event(self, ev):
+            if (ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1
+                    and self.enabled() and self.rect.collidepoint(ev.pos)):
+                self.on_click()
+
+        def draw(self, surf, font):
+            en = self.enabled()
+            pygame.draw.rect(surf, (90, 140, 90) if en else (52, 55, 60),
+                              self.rect, border_radius=4)
+            lbl = self.label() if callable(self.label) else self.label
+            txt = font.render(lbl, True,
+                               (240, 240, 240) if en else (120, 122, 126))
+            surf.blit(txt, txt.get_rect(center=self.rect.center))
+
+    class SpinPad:
+        """Drag the contact point in the cue-ball circle: vertical = follow
+        / draw, horizontal = side, clamped to the unit circle (spin_pad_map).
+        HUD-only, like every other shot parameter (no mouse-table aiming)."""
+        def __init__(self, centre, radius, get, set_):
+            self.centre, self.radius, self.get, self.set = centre, radius, get, set_
+            self.dragging = False
+
+        def _hit(self, pos):
+            dx, dy = pos[0] - self.centre[0], pos[1] - self.centre[1]
+            return math.hypot(dx, dy) <= self.radius + 6
+
+        def handle_event(self, ev):
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1 and self._hit(ev.pos):
+                self.dragging = True
+                self._apply(ev.pos)
+            elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
+                self.dragging = False
+            elif ev.type == pygame.MOUSEMOTION and self.dragging:
+                self._apply(ev.pos)
+
+        def _apply(self, pos):
+            dx, dy = pos[0] - self.centre[0], pos[1] - self.centre[1]
+            self.set(*spin_pad_map(dx, dy, self.radius))
+
+        def draw(self, surf, font):
+            cx, cy = self.centre
+            pygame.draw.circle(surf, (60, 64, 72), (cx, cy), self.radius)
+            pygame.draw.circle(surf, (150, 150, 150), (cx, cy), self.radius, 1)
+            pygame.draw.line(surf, (100, 100, 100), (cx - self.radius, cy), (cx + self.radius, cy), 1)
+            pygame.draw.line(surf, (100, 100, 100), (cx, cy - self.radius), (cx, cy + self.radius), 1)
+            follow, side = self.get()
+            px, py = cx + side * self.radius, cy - follow * self.radius
+            pygame.draw.circle(surf, (255, 90, 90), (int(px), int(py)), 5)
+            lbl = font.render(f"spin  f{follow:+.2f} s{side:+.2f}", True, COL["hud"])
+            surf.blit(lbl, (cx - self.radius, cy - self.radius - 18))
+
+    class Dial:
+        """Rotating cue-angle knob (Bug-report follow-up, R6.6): drag
+        anywhere around the centre to set an ABSOLUTE aim angle [0, 360)
+        via dial_angle() -- the table's mouse no longer has any bearing on
+        aim at all, so this is the sole coarse-angle control. A handle dot
+        on the rim shows the current direction."""
+        def __init__(self, centre, radius, get, set_):
+            self.centre, self.radius, self.get, self.set = centre, radius, get, set_
+            self.dragging = False
+
+        def _hit(self, pos):
+            dx, dy = pos[0] - self.centre[0], pos[1] - self.centre[1]
+            return math.hypot(dx, dy) <= self.radius + 6
+
+        def handle_event(self, ev):
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1 and self._hit(ev.pos):
+                self.dragging = True
+                self._apply(ev.pos)
+            elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
+                self.dragging = False
+            elif ev.type == pygame.MOUSEMOTION and self.dragging:
+                self._apply(ev.pos)
+
+        def _apply(self, pos):
+            dx, dy = pos[0] - self.centre[0], pos[1] - self.centre[1]
+            self.set(dial_angle(dx, dy))
+
+        def draw(self, surf, font):
+            cx, cy = self.centre
+            pygame.draw.circle(surf, (60, 64, 72), (cx, cy), self.radius)
+            pygame.draw.circle(surf, (150, 150, 150), (cx, cy), self.radius, 1)
+            ang = self.get()
+            hx, hy = rotate_vector(1.0, 0.0, ang)
+            ex, ey = cx + hx * self.radius, cy + hy * self.radius
+            pygame.draw.aaline(surf, (200, 200, 200), (cx, cy), (ex, ey))
+            pygame.draw.circle(surf, (255, 90, 90), (int(ex), int(ey)), 6)
+            lbl = font.render(f"aim angle  {ang:5.1f} deg", True, COL["hud"])
+            surf.blit(lbl, (cx - self.radius, cy - self.radius - 18))
+
+    class TabStrip:
+
+        def __init__(self, rect, labels, get_index, set_index):
+            self.rect, self.labels = pygame.Rect(rect), labels
+            self.get, self.set = get_index, set_index
+
+        def _tab_rect(self, i):
+            w = self.rect.w // len(self.labels)
+            return pygame.Rect(self.rect.x + i * w, self.rect.y, w, self.rect.h)
+
+        def handle_event(self, ev):
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                for i in range(len(self.labels)):
+                    if self._tab_rect(i).collidepoint(ev.pos):
+                        self.set(i)
+
+        def draw(self, surf, font):
+            cur = self.get()
+            for i, lab in enumerate(self.labels):
+                r = self._tab_rect(i)
+                pygame.draw.rect(surf, (60, 90, 120) if i == cur else (42, 45, 51), r)
+                txt = font.render(lab, True, COL["hud"])
+                surf.blit(txt, txt.get_rect(center=r.center))
+            pygame.draw.line(surf, (68, 72, 80),
+                              (self.rect.x, self.rect.bottom), (self.rect.right, self.rect.bottom), 1)
+
     sim = Sim()
     game = None
     ais = None
@@ -1680,6 +1567,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None, backend="classic"):
     power = CFG["POWER_DEFAULT"]
     spin_side, spin_follow = 0.0, 0.0
     show_overlay = True
+    aim_angle = 0.0          # degrees [0,360), absolute, HUD-only (no mouse aim)
+    panel_tab = 0            # 0=Shot, 1=Table, 2=Game (Increment 3b)
+    trail_history = {}       # bid -> deque of recent (x, y), Increment 4a
     frames = 0
     running = True
     last_shown = screen
@@ -1689,12 +1579,169 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None, backend="classic"):
         s, g = new_game(controllers=controllers, names=names)
         return s, g, default_ais()
 
+    # ------------------------------------------------------------------
+    # Shared actions (Increment 3b): SPACE / M / T / X / G and the panel's
+    # Shoot / mode / rack / reset-spin / overlay controls all call the SAME
+    # function, so a widget and its mirrored key can never drift apart --
+    # the lesson from finding 6.15 (glue bugs hiding behind a correct-looking
+    # value) applied to controls, not just resize maths.
+    # ------------------------------------------------------------------
+    def my_turn():
+        return (mode == 0 or (game is not None and not game.over
+                and game.controllers[game.current] == "human"))
+
+    def do_shoot():
+        nonlocal pending
+        cue = sim.cue()
+        if not shoot_enabled(cue is not None, sim.all_at_rest(), my_turn()):
+            return
+        dx, dy = rotate_vector(1.0, 0.0, aim_angle)
+        sim.strike((dx, dy), power, side=spin_side, follow=spin_follow)
+        if game is not None:
+            pending = True
+
+    def do_cycle_mode():
+        nonlocal mode, sim, game, ais, ai_plan, ai_wait, pending
+        mode = (mode + 1) % len(MODES)
+        ai_plan, ai_wait, pending = None, 0, False
+        trail_history.clear()
+        if mode == 0:
+            sim, game, ais = Sim(), None, None
+        else:
+            sim, game, ais = start_game(mode)
+            if game.controllers[0] == "ai":
+                sim.break_shot(power=6.0)
+                pending = True
+            else:
+                game.last_event = "your break — aim at the pack"
+
+    def do_rack():
+        nonlocal sim, game, ais, ai_plan, ai_wait, pending
+        trail_history.clear()
+        if mode == 0:
+            sim.rack()
+        else:
+            sim, game, ais = start_game(mode)
+            ai_plan, ai_wait, pending = None, 0, False
+            if game.controllers[0] == "ai":
+                sim.break_shot(power=6.0)
+                pending = True
+            else:
+                game.last_event = "your break — aim at the pack"
+
+    def do_reset_spin():
+        nonlocal spin_side, spin_follow
+        spin_side, spin_follow = 0.0, 0.0
+
+    def do_toggle_overlay():
+        nonlocal show_overlay
+        show_overlay = not show_overlay
+
+    def set_power(v):
+        nonlocal power
+        power = max(CFG["POWER_MIN"], min(CFG["POWER_MAX"], v))
+
+    def set_aim_angle(v):
+        nonlocal aim_angle
+        aim_angle = v % 360.0
+
+    def nudge_aim_angle(delta):
+        nonlocal aim_angle
+        aim_angle = (aim_angle + delta) % 360.0
+
+    def set_spin(follow, side):
+        nonlocal spin_follow, spin_side
+        spin_follow, spin_side = follow, side
+
+    def set_tab(i):
+        nonlocal panel_tab
+        panel_tab = i
+
+    def set_roll_decel(v):
+        CFG["ROLL_DECEL"] = max(0.02, min(0.5, v))
+
+    def set_ball_radius(v):
+        sim.set_ball_radius(max(0.015, min(0.035, v)))
+
+    # Panel widget instances, rebuilt whenever the window (and hence the
+    # panel's rect) changes size -- see build_panel_widgets() below.
+    TAB_LABELS = ["Shot", "Table", "Game"]
+    panel_widgets = {"tabstrip": None, "Shot": [], "Table": [], "Game": []}
+
+    def build_panel_widgets():
+        px = win_w - PANEL_W + 14           # inner-panel left margin
+        pw = PANEL_W - 28                   # inner-panel usable width
+        y = 12
+        panel_widgets["tabstrip"] = TabStrip((win_w - PANEL_W, y, PANEL_W, 26),
+                                              TAB_LABELS, lambda: panel_tab, set_tab)
+        y += 34
+
+        shot = []
+        shot.append(Slider((px, y, pw, 34), CFG["POWER_MIN"], CFG["POWER_MAX"],
+                            lambda: power, set_power, "power", "{:.2f} m/s"))
+        y += 42
+
+        dial_r = min(55, pw // 2 - 8)
+        dial_cx, dial_cy = px + pw // 2, y + dial_r + 18
+        shot.append(Dial((dial_cx, dial_cy), dial_r, lambda: aim_angle, set_aim_angle))
+        y = dial_cy + dial_r + 10
+        nudge_w = (pw - 8) // 2
+        shot.append(Button((px, y, nudge_w, 26), "-1 deg",
+                            lambda: nudge_aim_angle(-1.0)))
+        shot.append(Button((px + nudge_w + 8, y, nudge_w, 26), "+1 deg",
+                            lambda: nudge_aim_angle(1.0)))
+        y += 34
+
+        pad_r = min(60, pw // 2 - 4)
+        pad_cx, pad_cy = px + pw // 2, y + pad_r + 18
+        shot.append(SpinPad((pad_cx, pad_cy), pad_r,
+                             lambda: (spin_follow, spin_side), set_spin))
+        y = pad_cy + pad_r + 26
+        shot.append(Button((px, y, pw // 2 - 4, 28), "Reset spin", do_reset_spin))
+        shot.append(Button((px + pw // 2 + 4, y, pw // 2 - 4, 28), "Shoot", do_shoot,
+                            enabled=lambda: shoot_enabled(
+                                sim.cue() is not None, sim.all_at_rest(), my_turn())))
+        panel_widgets["Shot"] = shot
+
+        table = []
+        y2 = 46
+        table.append(Slider((px, y2, pw, 34), 0.05, 1.0,
+                             lambda: CFG["CUSHION_ELASTICITY"],
+                             lambda v: sim.set_cushion_elasticity(v),
+                             "cushion e", "{:.2f}"))
+        y2 += 42
+        table.append(Slider((px, y2, pw, 34), 0.02, 0.5,
+                             lambda: CFG["ROLL_DECEL"], set_roll_decel,
+                             "roll decel", "{:.3f} m/s2"))
+        y2 += 42
+        table.append(Slider((px, y2, pw, 34), 0.015, 0.035,
+                             lambda: CFG["BALL_R_M"], set_ball_radius,
+                             "ball radius", "{:.4f} m", enabled=lambda: mode == 0))
+        y2 += 42
+        table.append(Button((px, y2, pw, 28),
+                             lambda: ("Cue: 1-7/8\" 94g" if CFG["CUE_R_M"] < 0.025
+                                      else "Cue: 2\" 116g"),
+                             sim.toggle_cue_size))
+        panel_widgets["Table"] = table
+
+        game_w = []
+        y3 = 46
+        game_w.append(Button((px, y3, pw, 28),
+                              lambda: f"Mode: {MODES[mode]} (M)", do_cycle_mode))
+        y3 += 36
+        game_w.append(Button((px, y3, pw, 28), "Rack up (T)", do_rack))
+        y3 += 36
+        game_w.append(Button((px, y3, pw, 28), "Toggle overlay (G)", do_toggle_overlay))
+        panel_widgets["Game"] = game_w
+
     if smoke:
         mode = 2
         sim, game, ais = start_game(mode)
         sim.break_shot(power=6.0)
         pending = True
         spin_side, spin_follow = -0.5, 0.5
+    else:
+        build_panel_widgets()
 
     while running:
         for ev in pygame.event.get():
@@ -1704,56 +1751,14 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None, backend="classic"):
                 shift = ev.mod & pygame.KMOD_SHIFT
                 if ev.key in (pygame.K_ESCAPE, pygame.K_q):
                     running = False
-                elif ev.key == pygame.K_UP:
-                    power = min(CFG["POWER_MAX"], power + CFG["POWER_STEP"])
-                elif ev.key == pygame.K_DOWN:
-                    power = max(CFG["POWER_MIN"], power - CFG["POWER_STEP"])
                 elif ev.key == pygame.K_SPACE:
-                    cue = sim.cue()
-                    my_turn = (mode == 0 or (game is not None and not game.over
-                               and game.controllers[game.current] == "human"))
-                    if cue is not None and sim.all_at_rest() and my_turn:
-                        wx, wy = s2w(pygame.mouse.get_pos())
-                        sim.strike((wx - cue.position.x, wy - cue.position.y), power,
-                                   side=spin_side, follow=spin_follow)
-                        if game is not None:
-                            pending = True
+                    do_shoot()
                 elif ev.key == pygame.K_m:
-                    mode = (mode + 1) % len(MODES)
-                    ai_plan, ai_wait, pending = None, 0, False
-                    if mode == 0:
-                        sim, game, ais = Sim(), None, None
-                    else:
-                        sim, game, ais = start_game(mode)
-                        # In game modes the opening break is taken as a shot
-                        if game.controllers[0] == "ai":
-                            sim.break_shot(power=6.0)
-                            pending = True
-                        else:
-                            game.last_event = "your break — aim at the pack"
-                elif ev.key == pygame.K_w:
-                    spin_follow = min(1.0, spin_follow + 0.25)
-                elif ev.key == pygame.K_s:
-                    spin_follow = max(-1.0, spin_follow - 0.25)
-                elif ev.key == pygame.K_a:
-                    spin_side = max(-1.0, spin_side - 0.25)
-                elif ev.key == pygame.K_d:
-                    spin_side = min(1.0, spin_side + 0.25)
-                elif ev.key == pygame.K_x:
-                    spin_side, spin_follow = 0.0, 0.0
+                    do_cycle_mode()
                 elif ev.key == pygame.K_k:
                     sim.toggle_cue_size()
                 elif ev.key == pygame.K_t:
-                    if mode == 0:
-                        sim.rack()
-                    else:
-                        sim, game, ais = start_game(mode)
-                        ai_plan, ai_wait, pending = None, 0, False
-                        if game.controllers[0] == "ai":
-                            sim.break_shot(power=6.0)
-                            pending = True
-                        else:
-                            game.last_event = "your break — aim at the pack"
+                    do_rack()
                 elif ev.key == pygame.K_e:
                     sim.set_cushion_elasticity(
                         CFG["CUSHION_ELASTICITY"] + (-0.05 if shift else 0.05))
@@ -1769,8 +1774,38 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None, backend="classic"):
                 elif ev.key == pygame.K_r and mode == 0:
                     CFG["BALL_R_M"] = 0.0254
                     sim.rebuild()
+                    trail_history.clear()
                 elif ev.key == pygame.K_g:
-                    show_overlay = not show_overlay
+                    do_toggle_overlay()
+                elif ev.key == pygame.K_F11 and not smoke:
+                    fullscreen = not fullscreen
+                    if fullscreen:
+                        windowed_size = (win_w, win_h)
+                        win_w, win_h = DESKTOP_W, DESKTOP_H
+                        display = pygame.display.set_mode((win_w, win_h), pygame.FULLSCREEN)
+                    else:
+                        win_w, win_h = windowed_size
+                        # SDL quirk: the FIRST set_mode() back out of
+                        # FULLSCREEN is sometimes a no-op (the surface stays
+                        # at the fullscreen size) -- calling it twice is the
+                        # standard workaround and is otherwise harmless.
+                        pygame.display.set_mode((win_w, win_h), pygame.RESIZABLE)
+                        display = pygame.display.set_mode((win_w, win_h), pygame.RESIZABLE)
+                    rebuild_render_targets()
+                    build_panel_widgets()
+            elif ev.type == pygame.VIDEORESIZE and not smoke and not fullscreen:
+                win_w, win_h = ev.w, ev.h
+                display = pygame.display.set_mode((win_w, win_h), pygame.RESIZABLE)
+                rebuild_render_targets()
+                build_panel_widgets()
+            elif (ev.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
+                              pygame.MOUSEMOTION) and not smoke):
+                # Panel widgets only claim events inside their own rects
+                # (each widget hit-tests itself) -- everything left of the
+                # panel (aiming, SPACE) is untouched.
+                panel_widgets["tabstrip"].handle_event(ev)
+                for w in panel_widgets[TAB_LABELS[panel_tab]]:
+                    w.handle_event(ev)
 
         sim.step(1.0 / CFG["FPS"])
 
@@ -1802,7 +1837,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None, backend="classic"):
             else:
                 aim_pos = (x1, y0)
         else:
-            aim_pos = s2w(pygame.mouse.get_pos())
+            _c = sim.cue()
+            if _c is not None:
+                _dx, _dy = rotate_vector(1.0, 0.0, aim_angle)
+                aim_pos = (_c.position.x + _dx, _c.position.y + _dy)
+            else:
+                aim_pos = (x1, y0)
 
         # ---- table: cushion_path.py's own layered render (R6.1) — the
         # tangent-true table art built in the geometry module, matching the
@@ -1820,8 +1860,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None, backend="classic"):
         cushion_geo.draw_table(screen, _Tmm, _Spxm)
         # Baulk line and pyramid spot (our functional markings, kept subtle)
         bx = x0 + (x1 - x0) * CFG["BAULK_FRAC"]
-        pygame.draw.line(screen, (150, 195, 160), w2s((bx, y0)), w2s((bx, y1)), RS)
-        pygame.draw.circle(screen, (185, 215, 190), w2s((x0 + (x1 - x0) * 0.75, (y0 + y1) / 2)), 2 * RS)
+        pygame.draw.line(screen, (150, 195, 160), w2s((bx, y0)), w2s((bx, y1)), max(1, round(RSF)))
+        pygame.draw.circle(screen, (185, 215, 190), w2s((x0 + (x1 - x0) * 0.75, (y0 + y1) / 2)), max(1, int(2 * RSF)))
 
         cue = sim.cue()
         aim_txt = ""
@@ -1867,6 +1907,41 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None, backend="classic"):
                     for a, b in zip(cpath, cpath[1:]):
                         pygame.draw.aaline(screen, COL["line"], w2s(a), w2s(b))
 
+        # ---- Increment 4a: spectator motion trails. HUD-only-state
+        # doctrine doesn't apply here (this is scene content, not a shot
+        # param) but the byte-identical HEADLESS doctrine does: trails are
+        # real per-frame visual state, so -- same lesson as the R6.5
+        # near-miss -- this whole block is gated behind `not smoke`, never
+        # touching what --snap/--smoke render.
+        if not smoke:
+            trail_history = {bid: h for bid, h in trail_history.items() if bid in sim.balls}
+            for bid, (body, shape) in sim.balls.items():
+                if body.velocity.length > CFG["STOP_SPEED"]:
+                    hist = trail_history.setdefault(bid, [])
+                    hist.append(tuple(body.position))
+                    del hist[:-CFG["TRAIL_LEN"]]
+                else:
+                    trail_history.pop(bid, None)
+            for bid, hist in trail_history.items():
+                n = len(hist)
+                if n < 2:
+                    continue
+                _, shape = sim.balls[bid]
+                kind = sim.colours.get(bid, "red")
+                _, light = ball_shades.get(kind, ball_shades["red"])
+                r_px = max(2, int(shape.radius * S))
+                prev = None
+                for i, pos in enumerate(hist):          # oldest (i=0) .. newest
+                    age_idx = (n - 1) - i                # 0 = newest, n-1 = oldest
+                    frac_r, fade_t = trail_dot_style(age_idx, n)
+                    col = lerp3(light, COL["baize"], fade_t)
+                    p = w2s(pos)
+                    if prev is not None:
+                        pygame.draw.line(screen, col, prev, p,
+                                          max(1, int(r_px * frac_r * 0.5)))
+                    pygame.draw.circle(screen, col, p, max(1, int(r_px * frac_r * 0.6)))
+                    prev = p
+
         for bid, (body, shape) in sim.balls.items():
             draw_ball(sim.colours.get(bid, "red"), w2s(body.position),
                       max(2, int(shape.radius * S)))
@@ -1888,17 +1963,56 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None, backend="classic"):
                     f" [{','.join(sim.potted_colours()) or '-'}]  "
                     f"spin side {spin_side:+.2f} follow {spin_follow:+.2f}"
                     + (f"  |  {aim_txt}" if aim_txt else ""))
-        screen.blit(font.render(hud1, True, COL["hud"]), (M, H - 44 * RS))
-        screen.blit(font.render(hud2, True, COL["hud"]), (M, H - 24 * RS))
-        icx, icy = W - M - 22 * RS, H - 30 * RS
-        pygame.draw.circle(screen, (200, 200, 200), (icx, icy), 18 * RS, RS)
-        pygame.draw.line(screen, (110, 110, 110), (icx - 18 * RS, icy), (icx + 18 * RS, icy), RS)
-        pygame.draw.line(screen, (110, 110, 110), (icx, icy - 18 * RS), (icx, icy + 18 * RS), RS)
+        hud2_surf = font.render(hud2, True, COL["hud"])
+        screen.blit(font.render(hud1, True, COL["hud"]), (M, int(H - 44 * RSF)))
+        screen.blit(hud2_surf, (M, int(H - 24 * RSF)))
+        # Aim icon. Headless guard: smoke/snap reproduce the ORIGINAL R6.1-
+        # framing formula verbatim (byte-identical invariant, untouched).
+        # Interactive-only: Increment 3b's HUD-crowding fix gets its own
+        # minimum-size floor, independent of the font's floor, and an x
+        # position pushed clear of hud2's ACTUAL rendered width (hud_icon_x)
+        # rather than a fixed fraction of the window -- so text and icon
+        # can't collide by construction, at any window size.
+        if smoke:
+            icon_r = max(1, int(18 * RSF))
+            icx = int(W - M - 22 * RSF)
+            spin_mul = 12 * RSF
+        else:
+            icon_r = max(10, int(18 * RSF))
+            default_icon_x = int(W - M - 22 * RSF)
+            text_right = M + hud2_surf.get_width()
+            icon_gap = max(8, int(8 * RSF))
+            icx = int(hud_icon_x(default_icon_x, text_right, icon_gap, icon_r, W - M))
+            spin_mul = icon_r * 0.67
+        icy = int(H - 30 * RSF)
+        icw = max(1, round(RSF))
+        pygame.draw.circle(screen, (200, 200, 200), (icx, icy), icon_r, icw)
+        pygame.draw.line(screen, (110, 110, 110), (icx - icon_r, icy), (icx + icon_r, icy), icw)
+        pygame.draw.line(screen, (110, 110, 110), (icx, icy - icon_r), (icx, icy + icon_r), icw)
         pygame.draw.circle(screen, (255, 90, 90),
-                           (int(icx + spin_side * 12 * RS), int(icy - spin_follow * 12 * RS)), 4 * RS)
+                           (int(icx + spin_side * spin_mul), int(icy - spin_follow * spin_mul)),
+                           max(1, int(4 * RSF)))
 
-        shown = present(screen)          # classic: same surface; gl: processed
-        display.blit(shown, (0, 0))
+        shown = present(screen)          # always the same surface now GL is gone
+        if smoke:
+            # Headless guard: bare scene, R6.1 framing, no panel, no fit.
+            display.blit(shown, (0, 0))
+        else:
+            # Increment 3a/3b: fitted scene centred in the region left of the
+            # right-hand panel, which now carries the real hand-rolled tabbed
+            # controls (Shot / Table / Game) wired into this rect.
+            display.fill((26, 28, 32))
+            avail_w = win_w - PANEL_W
+            scene_x = max(0, (avail_w - fit_W1) // 2)
+            scene_y = max(0, (win_h - fit_H1) // 2)
+            display.blit(shown, (scene_x, scene_y))
+            panel_rect = pygame.Rect(win_w - PANEL_W, 0, PANEL_W, win_h)
+            pygame.draw.rect(display, (42, 45, 51), panel_rect)
+            pygame.draw.line(display, (68, 72, 80),
+                              (win_w - PANEL_W, 0), (win_w - PANEL_W, win_h), 1)
+            panel_widgets["tabstrip"].draw(display, panel_font)
+            for w in panel_widgets[TAB_LABELS[panel_tab]]:
+                w.draw(display, panel_font)
         pygame.display.flip()
         last_shown = shown
         clock.tick(CFG["FPS"])
@@ -1909,8 +2023,6 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None, backend="classic"):
     if snap_path:
         pygame.image.save(last_shown, snap_path)  # save the presented frame
         print(f"snap: saved {snap_path}")
-    if glpp is not None:
-        glpp.release()
     pygame.quit()
     return frames
 
@@ -2452,25 +2564,124 @@ def selftest():
           ok25, f"36 prims, max intrusion {worst_in:.3f}mm, corner-foot "
           f"{foot_err:.1e}mm, mid throat {mid_gap:.1f}>{ball_dia_mm:.1f}mm")
 
-    # 25. GL post-process passthrough (Graphics Pass 3, Increment 1). Pixel-
-    #     probe per finding 6.10: a synthetic frame round-tripped through the
-    #     offscreen GL pipeline must return bit-identical and upright. Made
-    #     dependency-aware on purpose — SKIP (not FAIL) if moderngl/EGL is
-    #     unavailable, so the core physics chain stays green on a stripped
-    #     container. The full end-to-end render gate is --smoke-gl.
-    gl_ok, gl_detail, gl_avail = gl_passthrough_check()
-    if gl_avail:
-        check("GL post-process — passthrough round-trip pixel-exact + upright "
-              "(Graphics Pass 3 I1)", gl_ok, gl_detail)
-        ss_ok, ss_detail, _ = gl_ssaa_check()
-        check("GL SSAA — 2x->1x resolve box-averages (Graphics Pass 3 I2)",
-              ss_ok, ss_detail)
-        bl_ok, bl_detail, _ = gl_bloom_check()
-        check("GL bloom — bright core glows, black stays black (Graphics "
-              "Pass 3 I2)", bl_ok, bl_detail)
-    else:
-        print(f"  [SKIP] GL post-process — passthrough/SSAA/bloom "
-              f"(moderngl/EGL unavailable: {gl_detail})")
+    # 25. Fit-to-region (Graphics Pass 3, Increment 3a) -- dependency-free pure
+    #     maths: the largest uniform scale into (window - panel) x window must
+    #     preserve the frame's exact aspect (same scale on both axes, so
+    #     nothing distorts), must genuinely fit within the reserved region
+    #     across several window sizes, and reserves the panel. A floor clamp
+    #     (FIT_MIN_SCALE) is allowed to overflow at absurdly small windows
+    #     rather than shrink the table to nothing.
+    _bw, _bh, _pw = 1000.0, 500.0, 260.0
+    _ar = _bw / _bh
+    ok26, _bits = True, []
+    for (_ww, _wh) in [(1600, 900), (1260, 500), (2400, 1300), (900, 600), (5000, 3000)]:
+        _fs, _fw, _fh = fit_to_region(_ww, _wh, _bw, _bh, _pw)
+        _aw, _ah = _ww - _pw, _wh
+        _raw = min(_aw / _bw, _ah / _bh)
+        _exp = max(CFG["FIT_MIN_SCALE"], min(CFG["FIT_MAX_SCALE"], _raw))
+        _aspect_ok = abs((_fw / _fh) - _ar) < 1e-6 * _ar
+        _fits_ok = (_fw <= _aw + 1 and _fh <= _ah + 1) or _fs > _raw + 1e-9
+        ok26 = ok26 and _aspect_ok and _fits_ok and abs(_fs - _exp) < 1e-9
+        _bits.append(f"{_ww}x{_wh}->S{_fs:.3f}")
+    _fs_tiny, _, _ = fit_to_region(400, 300, _bw, _bh, _pw)
+    ok26 = ok26 and _fs_tiny == CFG["FIT_MIN_SCALE"]
+    check("fit-to-region — uniform scale preserves aspect, fits the region, "
+          "reserves the panel, floor-clamps gracefully (Graphics Pass 3 I3a)",
+          ok26, ", ".join(_bits) + f", 400x300->S{_fs_tiny:.2f}(floor)")
+
+    # 26. Slider value<->fraction round-trip (Graphics Pass 3, Increment 3b).
+    #     Pure maths shared by every panel slider (power, cue angle, cushion
+    #     e, roll decel, ball radius): value -> frac -> value must return the
+    #     original (mid-range and at both clamped ends), and out-of-range
+    #     inputs clamp to the nearest end rather than extrapolating.
+    ok27 = True
+    for lo, hi, v in [(0.5, 7.0, 2.0), (-15.0, 15.0, -7.5), (0.05, 1.0, 0.05), (0.05, 1.0, 1.0)]:
+        f = slider_frac(v, lo, hi)
+        ok27 = ok27 and abs(slider_value(f, lo, hi) - v) < 1e-9
+    ok27 = ok27 and slider_frac(999, 0.0, 1.0) == 1.0 and slider_frac(-999, 0.0, 1.0) == 0.0
+    check("slider — value<->fraction round-trips, clamps out-of-range "
+          "(Graphics Pass 3 I3b)", ok27)
+
+    # 27. Spin pad contact->(follow, side) mapping (Increment 3b). Straight
+    #     up/down/left/right must give pure follow/side with no cross-talk;
+    #     a diagonal drag past the pad radius must clamp to the UNIT CIRCLE
+    #     (magnitude exactly 1), not the square (which would let a corner
+    #     drag exceed the physical spin budget).
+    f_up, s_up = spin_pad_map(0, -50, 50)      # drag straight up -> full follow
+    f_dn, s_dn = spin_pad_map(0, 50, 50)       # drag straight down -> full draw
+    f_r, s_r = spin_pad_map(50, 0, 50)         # drag right -> full side, no follow
+    f_d, s_d = spin_pad_map(80, 80, 50)        # past the circle, diagonal
+    ok28 = (abs(f_up - 1.0) < 1e-9 and abs(s_up) < 1e-9
+            and abs(f_dn + 1.0) < 1e-9
+            and abs(s_r - 1.0) < 1e-9 and abs(f_r) < 1e-9
+            and abs(math.hypot(f_d, s_d) - 1.0) < 1e-9)
+    check("spin pad — contact maps to (follow, side), clamped to the unit "
+          "circle (Graphics Pass 3 I3b)", ok28,
+          f"up=({f_up:.2f},{s_up:.2f}) right=({f_r:.2f},{s_r:.2f}) "
+          f"diag-clamped mag={math.hypot(f_d, s_d):.3f}")
+
+    # 28. Shoot-enabled guard (Increment 3b) is a pure mirror of the SPACE
+    #     condition (cue present, table at rest, player's turn) -- every
+    #     combination must match a direct AND of the three booleans.
+    ok29 = all(shoot_enabled(c, r, t) == bool(c and r and t)
+               for c in (True, False) for r in (True, False) for t in (True, False))
+    check("Shoot button — enabled guard is a pure mirror of the SPACE "
+          "condition (Graphics Pass 3 I3b)", ok29)
+
+    # 29. HUD icon anchor (Increment 3b HUD-crowding fix). With plenty of
+    #     room the icon stays at its usual right-anchored spot; once the
+    #     text's actual width would reach it, the icon is pushed further
+    #     right (never left, never smaller) to stay clear, and is clamped
+    #     inside the frame rather than running off the edge.
+    _default_x, _icon_r, _gap = 780, 18, 10
+    _roomy = hud_icon_x(_default_x, 300, _gap, _icon_r, 800)      # short text: unaffected
+    _crowded = hud_icon_x(_default_x, 770, _gap, _icon_r, 2000)   # long text, room to move: pushed clear
+    _clamped = hud_icon_x(_default_x, 1990, _gap, _icon_r, 2000)  # text reaches the frame edge itself
+    ok30 = (_roomy == _default_x
+            and abs(_crowded - (770 + _gap + _icon_r)) < 1e-9
+            and _clamped == 2000 - _icon_r)
+    check("HUD icon anchor — stays put with room, pushed clear of the "
+          "text's actual width, clamped inside the frame "
+          "(Graphics Pass 3 I3b)", ok30,
+          f"roomy->{_roomy}, crowded->{_crowded}, clamped->{_clamped}")
+
+    # 30. rotate_vector (cue-angle dial): a rotate-then-un-rotate round-trips,
+    #     and a 90 deg rotation swaps/negates the axes in the expected
+    #     screen-convention direction.
+    _rdx, _rdy = rotate_vector(*rotate_vector(3.0, 4.0, 37.0), -37.0)
+    _rx90, _ry90 = rotate_vector(1.0, 0.0, 90.0)
+    ok31 = (abs(_rdx - 3.0) < 1e-9 and abs(_rdy - 4.0) < 1e-9
+            and abs(_rx90) < 1e-9 and abs(_ry90 - 1.0) < 1e-9)
+    check("rotate_vector — round-trips, 90 deg rotates as expected "
+          "(Graphics Pass 3 I3b)", ok31)
+
+    # 30b. dial_angle (bug-report follow-up, R6.6): the rotating cue-angle
+    #      knob's absolute-angle mapping is the true inverse of
+    #      rotate_vector(1, 0, angle) at several angles including the wrap
+    #      point at 0/360, and (0,0) (centre, no drag yet) defaults sanely
+    #      to 0 deg rather than raising.
+    ok31b = all(
+        abs(dial_angle(*rotate_vector(1.0, 0.0, a)) - (a % 360.0)) < 1e-6
+        for a in (0.0, 37.0, 90.0, 179.9, 271.0, 359.5)
+    )
+    ok31b = ok31b and dial_angle(0.0, 0.0) == 0.0
+    check("dial_angle — true inverse of rotate_vector at the wrap point "
+          "and elsewhere, safe at the centre (bug-report follow-up R6.6)",
+          ok31b)
+
+    # 31b. trail_dot_style (Increment 4a, spectator motion trails): newest
+    #      sample is full size / unfaded, oldest shrinks to the floor and
+    #      fades fully, and it's monotonic in between so a trail visibly
+    #      tapers rather than jumping. A single-sample trail doesn't fade.
+    _r0, _f0 = trail_dot_style(0, 10)
+    _r9, _f9 = trail_dot_style(9, 10)
+    _rmid, _fmid = trail_dot_style(5, 10)
+    ok31c = (_r0 == 1.0 and _f0 == 0.0
+             and _r9 == 0.25 and _f9 == 1.0
+             and _r0 > _rmid > _r9 and _f0 < _fmid < _f9
+             and trail_dot_style(0, 1) == (1.0, 0.0))
+    check("trail_dot_style — newest sample full-size/unfaded, oldest at the "
+          "floor, monotonic tapering in between (Increment 4a)", ok31c)
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
@@ -2508,49 +2719,13 @@ def batch(n):
     return escapes == 0
 
 
-def smoke_gl(frames=90, snap_path=None):
-    """Headless GL render gate (Graphics Pass 3, 2A). Pixel-probes the GL
-    passthrough, then runs the GUI smoke through the offscreen GL backend.
-    Requires moderngl + an EGL context; returns False (not a crash) if the
-    host can't provide one, so callers can route it to nix5."""
-    ok, detail, avail = gl_passthrough_check()
-    if not avail:
-        print(f"smoke-gl: GL unavailable ({detail})")
-        print("smoke-gl: needs moderngl + EGL — install moderngl, or run the "
-              "GL gate on a GL host (nix5).")
-        return False
-    ss_ok, ss_detail, _ = gl_ssaa_check()
-    bl_ok, bl_detail, _ = gl_bloom_check()
-    print(f"smoke-gl: passthrough {'PASS' if ok else 'FAIL'} ({detail})")
-    print(f"smoke-gl: SSAA resolve {'PASS' if ss_ok else 'FAIL'} ({ss_detail})")
-    print(f"smoke-gl: bloom        {'PASS' if bl_ok else 'FAIL'} ({bl_detail})")
-    if not (ok and ss_ok and bl_ok):
-        return False
-    try:
-        n = run_gui(smoke=True, smoke_frames=frames, snap_path=snap_path,
-                    backend="gl")
-    except GLUnavailable as e:
-        print(f"smoke-gl: GL context lost mid-run ({e})")
-        return False
-    print(f"smoke-gl: rendered {n} frames through the GL backend OK")
-    return True
-
-
 def main():
-    ap = argparse.ArgumentParser(description="HUSTLER — UK pool physics sandbox (R5)")
+    ap = argparse.ArgumentParser(description="HUSTLER — UK pool physics sandbox (R6)")
     ap.add_argument("--selftest", action="store_true", help="run headless assertions")
     ap.add_argument("--batch", type=int, metavar="N", help="run N random strikes headless")
     ap.add_argument("--breaks", type=int, metavar="N", help="break analyser, N trials per config")
     ap.add_argument("--aigame", type=int, metavar="N", help="run N headless AI vs AI games")
     ap.add_argument("--smoke", action="store_true", help="GUI smoke on dummy video driver")
-    ap.add_argument("--smoke-gl", action="store_true", dest="smoke_gl",
-                    help="headless GL render gate (moderngl/EGL post-process)")
-    ap.add_argument("--classic", action="store_true",
-                    help="force the classic pygame renderer (default; reserved "
-                         "for when interactive GL lands)")
-    ap.add_argument("--gl", action="store_true",
-                    help="run the interactive window through the GL pipeline "
-                         "(SSAA + bloom)")
     ap.add_argument("--snap", metavar="FILE", help="headless smoke run, save screenshot PNG")
     args = ap.parse_args()
 
@@ -2562,8 +2737,6 @@ def main():
         sys.exit(0 if break_analysis(args.breaks) else 1)
     if args.aigame:
         sys.exit(0 if aigame_batch(args.aigame) else 1)
-    if args.smoke_gl:
-        sys.exit(0 if smoke_gl(snap_path=args.snap) else 1)
     if args.snap:
         frames = run_gui(smoke=True, smoke_frames=90, snap_path=args.snap)
         print(f"smoke: rendered {frames} frames OK")
@@ -2572,7 +2745,7 @@ def main():
         frames = run_gui(smoke=True)
         print(f"smoke: rendered {frames} frames OK")
         sys.exit(0)
-    run_gui(backend="gl" if (args.gl and not args.classic) else "classic")
+    run_gui()
 
 
 if __name__ == "__main__":
