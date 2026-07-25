@@ -1,0 +1,8 @@
+# Normalise line endings in the repository.
+#
+# hustler.py has always been LF and cushion_path.py has always been CRLF.
+# Left alone, the first tool to normalise either one produces a phantom diff
+# of several hundred lines that hides the real change underneath it.
+* text=auto eol=lf
+*.py text eol=lf
+*.md text eol=lf
