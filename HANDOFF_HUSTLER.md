@@ -112,6 +112,40 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   punches through to the background when blitted. Pre-blend highlight colours.
 - pygame.draw.arc uses maths-convention angles (0 = 3 o'clock, anticlockwise,
   0..π = top half on screen).
+- **Spin is an IMPULSE AT CONTACT, never a force during travel.** `FOLLOW_KICK`
+  (0.60) is applied once at cue→object-ball contact and `_live_follow` is then
+  zeroed; `SIDE_KICK` (0.35) is applied at cue→cushion contact and `_live_side`
+  is then decayed ×0.35 (it also decays per step while rolling). Between
+  contacts the cue ball travels in a **straight line** — there is no swerve, no
+  squirt, no masse anywhere in the engine. Consequence for any predicted-path
+  or coaching overlay: it must not draw a curve, because the balls will not
+  follow one. Side spin *does* change the cushion rebound, so a pure
+  law-of-reflection prediction is wrong whenever side is loaded — but the
+  formula is deterministic and three lines long, so a prediction can reproduce
+  it exactly rather than approximate it.
+- **`estimate_leave()` predicts against a RECTANGLE, not the real cushion.** It
+  uses `ray_rect_exit()` / `reflect_off_rect()`, stops after ONE bounce, and
+  rebounds at `LEAVE_CUSHION_E` (0.73). Adequate mid-table; increasingly wrong
+  near the pockets, where the tangent-true nose diverges from the rectangle.
+  It feeds the AI's utility, so changing it shifts shot selection — prove any
+  change with a seeded `--aigame` diff rather than assuming.
+- **There are TWO pot-difficulty models and they have drifted apart.**
+  `pot_assessment(gb)` is human-facing (the aim overlay); `pot_estimate(cp, t,
+  pc, cap_r, r_cue, r_obj, jitter)` is the AI's. Different signatures, different
+  distance decay, different thinness term — and only the AI's takes `jitter`,
+  which is correct, since a human aims via the HUD and is not randomly
+  perturbed. Note that `pot_estimate`'s docstring calls itself the "single
+  source of truth": that is scoped to the AI's own two uses, but reads broader
+  than it is. Don't point one at the other without an explicit decision — this
+  is why r16's over-harshness went unnoticed for so long, since no human path
+  ever touches `pot_estimate`.
+- **`cushion_path.flatten(path, max_seg_deg=5.0)`** returns the tangent-true
+  cushion as a vertex list. That's the starting point for anything needing real
+  cushion geometry instead of the rectangle — including the custom-mode
+  placement fix in KNOWN_ISSUES #1.
+- **Line endings are mixed in this repo:** `hustler.py` is LF, `cushion_path.py`
+  is CRLF. Harmless until a tool normalises one of them and produces a
+  several-hundred-line phantom diff. Worth pinning with `.gitattributes`.
 
 ## 4. Physics calibration (real spec, sourced)
 
