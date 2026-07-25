@@ -1,35 +1,12 @@
 # Known Issues
 
-The honest state of the open threads as of r22. None of these stop the game
+The honest state of the open threads as of r23. None of these stop the game
 being playable. Each is written up with its diagnosis so the next person to
 touch it (quite possibly future me) starts from the answer, not the symptom.
 
 ---
 
-## 1. Cue ball can't be repositioned after a scratch or on the break
-
-**Symptom:** when the white is potted, or at the break, you can't drag the cue
-ball to where you want it. Ball-in-hand looks like it should be available but
-the placement doesn't take.
-
-**Diagnosis (real bug, not a missing control):** the moment the white drops,
-the simulation auto-respots it onto the baulk line and puts it straight back
-into play. This is leftover *sandbox* behaviour from before the rules layer
-existed — the sim was built never to be without a cue ball. Meanwhile the rules
-layer separately grants you ball-in-hand (a scratch is a foul, and the break
-allows placement). So the sim has already decided where the white goes before
-you get a say: you're holding ball-in-hand over a ball that's already been
-placed for you.
-
-**The fix (not yet applied):** the auto-respot should not fire when the rules
-layer is driving — potting the white should simply remove it and let you place
-it. The respot stays as a fallback for pure sandbox play. This needs a small
-architectural decision, because the physics layer deliberately knows nothing
-about the rules layer, and that separation is worth keeping.
-
----
-
-## 2. Can't place balls right on the pocket jaws in custom mode
+## 1. Can't place balls right on the pocket jaws in custom mode
 
 **Symptom:** in custom mode you can't set a ball close enough to a pocket to
 have it sitting on the lip, ready to pot.
@@ -51,11 +28,12 @@ class of mistake recurring.
 **The right fix (not yet attempted):** test placement against the real cushion
 geometry (the tangent-true nose path) instead of a rectangle. That handles rails
 and pocket mouths in a single rule, with no special cases. It only *reads* the
-existing geometry, so it doesn't disturb the table spec.
+existing geometry, so it doesn't disturb the table spec. Resist the temptation
+to try another margin adjustment — that approach has now failed twice.
 
 ---
 
-## 3. Full-screen at startup can run slowly on some systems
+## 2. Full-screen at startup can run slowly on some systems
 
 **Symptom:** the game can be sluggish or jerky when it starts full-screen, even
 where a manually-maximised window runs smoothly.
@@ -74,13 +52,55 @@ render at a fixed internal resolution and scale the finished frame up to fill
 the screen (fewer pixels drawn, still full-screen); or add scaling/vsync flags
 to the full-screen mode to try to keep the accelerated path.
 
+**Worth knowing before adding features:** this is a real performance ceiling.
+Anything that draws or recalculates every frame — a richer aiming overlay, a
+per-ball table read — should compute once when the balls come to rest and cache
+the result, rather than recomputing while you line the shot up.
+
 ---
 
-## A note on the AI
+## 3. The AI is too cautious at distance
 
 The AI plays a complete, legal game — it breaks, pots, plays safeties, and wins
-or loses by the rules. It currently errs on the cautious side (it declines a lot
-of makeable long shots), because its internal difficulty estimate is too harsh
-at distance. This affects the AI only; it has no bearing on single-player, where
-your own aim is what counts. It's a known, measured issue with a clear fix path
-and is noted for a future pass.
+or loses by the rules. It currently errs on the cautious side, declining a lot
+of makeable long shots, because its internal difficulty estimate is too harsh
+with distance. A dead-straight pot from about two-thirds of a table length is
+rated at roughly 9% when it actually drops about 24% of the time.
+
+This affects the AI only. It has no bearing on single-player, where your own aim
+is what counts — the human aiming display uses a separate estimate.
+
+**The fix, when it's attempted:** the distance term must be *fitted against
+measured results* from the Monte Carlo test rig, not derived from first
+principles and hoped for. Deriving-and-hoping is precisely how the term came to
+be over-harsh in the first place.
+
+---
+
+## Recently fixed
+
+Resolved in r23 — kept here briefly because the diagnoses are worth having if
+anything similar shows up again. Full descriptions are in the changelog.
+
+- **Cue ball couldn't be repositioned after a scratch or on the break.** The
+  simulation auto-respotted the white before the rules layer could offer you the
+  placement. Fixed with an explicit flag set by whoever builds the simulation,
+  so the physics layer still knows nothing about the rules layer.
+- **Potting your last colour handed the table back** on a phantom foul.
+- **Spin didn't reset between shots.**
+- **Sandbox had no ball-in-hand concept**, so solo play couldn't place the white.
+
+---
+
+## A note on how these were found
+
+None of the four r23 bugs were caught by the validation chain — not by the
+self-test suite, not by the batch containment run, not by the smoke render or
+the byte-identical screenshot check. All four were found by sitting down and
+playing a game.
+
+That's worth remembering when adding tests. The suite is very good at pure
+functions and physics invariants, and blind to whether a turn passes to the
+right player. A scripted play-through test — drive a whole frame through the
+rules engine and assert the turn, visit, spin and placement state at each step —
+would cover the gap these four fell into.

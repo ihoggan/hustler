@@ -8,7 +8,7 @@ with open("README.md", "r", encoding="utf-8") as f:
 
 setup(
     name="hustler",
-    version="6.3.0",
+    version="0.23.0",
     author="Iain Hoggan",
     description="UK Pool Physics Sandbox — WEPF-compliant real-world pool physics with utility AI",
     long_description=long_description,
@@ -16,13 +16,13 @@ setup(
     url="https://github.com/ihoggan/hustler",
     py_modules=["hustler", "cushion_path"],
     python_requires=">=3.12",
+    # Two dependencies, deliberately. No numpy, no asset libraries -- the
+    # game synthesises everything it draws and plays. See CONTRIBUTING.md.
     install_requires=[
         "pygame>=2.6.1",
         "pymunk>=7.3.0",
-        "numpy>=1.24.0",
     ],
     extras_require={
-        "gl": ["moderngl>=5.12"],
         "dev": ["pytest>=7.0", "black", "pylint"],
     },
     entry_points={

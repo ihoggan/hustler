@@ -1,271 +1,190 @@
 # Contributing to HUSTLER
 
-Thank you for your interest in contributing! This guide covers the contribution workflow and expectations.
+Thank you for your interest in contributing! This guide covers the contribution
+workflow and expectations.
 
-## Before You Start
+## Before you start
 
-1. **Read** [DEVELOPMENT.md](docs/DEVELOPMENT.md) — this is essential
-2. **Read** [HANDOFF_HUSTLER.md](docs/HANDOFF_HUSTLER.md) — project history and current work
-3. **Check** [ROADMAP.md](ROADMAP.md) — what's signed off and queued
-4. **Verify baseline:** Run `python3 hustler.py --selftest` (should show 27/27 ✓)
+1. **Read** [README.md](README.md) — what the project is and how to run it
+2. **Read** [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — open threads, each with its diagnosis
+3. **Check** [ROADMAP.md](ROADMAP.md) — what's under discussion and what it depends on
+4. **Verify your baseline** before changing anything:
+
+```bash
+python3 hustler.py --selftest      # expect: ALL PASS (63 assertions at r23)
+```
+
+If that doesn't pass on a clean checkout, stop and work out why before writing
+any code. A failing baseline makes every later result meaningless.
 
 ## Workflow
 
-### 1. Pick a Task
+### 1. Pick a task
 
-- Check [ROADMAP.md](ROADMAP.md) for signed-off items
-- Or [Issues](../../issues) if there's an open discussion
-- **Always ensure the feature is signed off before coding**
+- Check [ROADMAP.md](ROADMAP.md), or open an issue to discuss something new
+- **Anything with a genuine fork gets a decision brief first** — laid-out
+  options, a recommended default, and an explicit sign-off before any code.
+  Small, fully-specified changes can go straight to build.
 
-### 2. Create a Feature Branch
+### 2. Create a feature branch
 
 ```bash
 git checkout -b feature/short-description
-# Example: feature/fullscreen-window, feature/spin-ai, etc.
 ```
 
-### 3. Design → Build → Validate
+### 3. Decision → build → validate
 
-Follow the **decision → sign-off → build → validate** workflow:
+**A. Decision brief** (in the commit message, or an issue for larger work)
 
-**A. Decision Brief** (always in the code or commit message)
 ```
 Feature: [short title]
 Problem: [what are we solving?]
-Approach: [how? any alternatives?]
-Scope: [what's in/out?]
+Approach: [how? what alternatives were considered?]
+Scope:   [what's in, what's explicitly out?]
 ```
 
-**B. Implement** (commit often, small changes)
+**B. Implement.** Commit often, in small steps.
 
-**C. Add Selftest Assertion** (exactly one per feature)
-```python
-# In the --selftest suite
-def test_my_feature():
-    result = my_feature_function()
-    assert expected_condition, "My feature works"
-```
+**C. Add exactly one self-test assertion.** Test the *pure core* of the feature
+— the part that takes values and returns values — not the pygame wrapper around
+it. If a feature has no testable pure core, that's usually a sign it should.
 
-**D. Validate the Chain**
+**D. Run the full validation chain.** Every time, even for graphics-only work:
+
 ```bash
-python -m py_compile hustler.py cushion_path.py
-python3 hustler.py --selftest      # Must pass (27/27 → 28/28, etc.)
-python3 hustler.py --batch 30      # No escapes
-python3 hustler.py --smoke         # GUI loop OK
-python3 hustler.py --snap /tmp/new.png  # (If render changes)
-python3 hustler.py --smoke-gl      # (If GL changes, optional)
+python3 -m py_compile hustler.py cushion_path.py
+python3 hustler.py --selftest         # must pass
+python3 hustler.py --batch 30         # must show 0 containment escapes
+python3 hustler.py --smoke            # must render 90 frames
+python3 hustler.py --snap /tmp/new.png && md5sum /tmp/new.png
+python3 cushion_path.py               # geometry module's own selftest
 ```
 
-### 4. Commit with Context
+**Report the actual numbers, not "passed."** The numbers are what let the next
+person spot a drift you didn't notice.
+
+Two notes on reading the results:
+
+- `--batch` uses an **unseeded** random number generator, so pot and scratch
+  counts vary run to run. The invariant being tested is `containment escapes: 0`.
+  If a count looks different, run it a few times on both versions before
+  concluding anything.
+- `--snap` must stay **byte-identical** (md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`
+  as of r23) unless you are deliberately changing the rendered scene, in which
+  case say so explicitly in the commit message.
+
+If your change touches rules or the AI, also run a seeded game batch:
+
+```bash
+python3 hustler.py --aigame 12 --seed 4200
+```
+
+Seeded games are extremely sensitive to behavioural change, which makes them a
+good regression check — and a good way to prove a refactor changed nothing.
+
+### 4. Commit with context
 
 ```bash
 git commit -m "Feature: [title]
 
-[Longer explanation of the design and why it matters]
+[The decision brief: problem, approach, scope]
 
 Validation:
-- Selftest 28/28 ✓ (added pot_estimate_accuracy assertion)
-- Batch 30 containment ✓ (0 escapes)
-- Smoke ✓
-- Classic render ✓ (byte-identical)
+- py_compile OK
+- selftest ALL PASS (N assertions)
+- batch 30: 0 containment escapes
+- smoke: 90 frames OK
+- snap md5 <hash> (byte-identical / deliberately re-captured)
 "
 ```
 
-### 5. Push & Open a PR
+### 5. Push and open a PR
 
 ```bash
 git push origin feature/short-description
-# Go to GitHub, open a PR with the same brief as your commits
 ```
 
-## Code Standards
+## Code standards
 
 ### Style
 
-- **Python 3.12+** idioms
-- **Docstrings** on geometry, AI, and rules functions
-- **Inline comments** for physics (cite sources: WEPF, Mathavan, etc.)
-- **Type hints** optional but welcome (improves clarity)
-- **UK spelling:** colour, centre, favour, metres, etc.
+- **Python 3.12+**
+- **Docstrings** on geometry, AI and rules functions — and say *why*, not just
+  what. The docstrings in this project carry a lot of hard-won reasoning.
+- **Inline comments** for physics, citing sources (WEPF, Mathavan, measured data)
+- **UK spelling** throughout: colour, centre, behaviour, metres
+
+### Dependencies
+
+**pygame and pymunk only.** No numpy, no asset files, no images, no sound files.
+Everything is drawn or synthesised in code. This has held since the start and is
+a deliberate constraint, not an accident — adding a dependency needs an explicit
+decision, not an assumption.
 
 ### Physics
 
-- Simulation in **real units** (metres, kg, seconds)
-- Rendering scales via `PX_PER_M` only
-- **No game-feel distortion** of table spec or ball physics
-- Specs sourced from WEPF, Mathavan, or measured data
+- Simulation in **real units** (metres, kilograms, seconds); rendering scales by
+  `PX_PER_M` at draw time only
+- **No game-feel distortion** of the table spec or ball physics
+- **Table geometry is final.** The tangent-true cushion loop in `cushion_path.py`
+  is the authoritative source. Read it; don't second-guess it.
 
 ### AI
 
-- Behaviour **emergent from utility scoring**, not scripts
-- Personality via **parameters** (greed, jitter, risk), not decision trees
-- Test by running `--aigame 50` and observing play style
+- Behaviour **emergent from utility scoring**, never scripted shots or
+  hardcoded sequences
+- Personality via **parameters** (threshold, greed, caution) — and note that
+  `aim_jitter` is a *skill* parameter, deliberately held equal between the study
+  personalities so results measure strategy rather than who aims straighter.
+  Don't reintroduce that confound.
+- Test by running `--aigame` and observing the play style
 
 ### Rendering
 
-- **Headless modes** (`--snap`, `--smoke`) render scene-only at R6.1 framing
-- **Byte-identical invariant:** classic render must not change (unless intentional redesign)
-- **Pixel-probe assertions:** every graphics feature gets a pixel-level test
+- **Headless modes render the bare scene** (table and balls, no panel).
+  Cosmetic overlays are gated behind `if not smoke:` specifically to protect the
+  byte-identical `--snap` baseline.
+- **Translucency needs a separate `SRCALPHA` surface, then `blit()`.**
+  `pygame.draw` with an RGBA colour writes flat, non-composited pixels onto an
+  opaque surface — it does *not* alpha-blend. Every fade, glow and tint depends
+  on getting this right.
 
-### Testing
+## Things that will trip you up
 
-- **One assertion per feature** in `--selftest`
-- **Dependency-aware:** GL assertions skip gracefully if moderngl unavailable
-- **Fast:** `--selftest` should complete in < 1 second
+Collected from real time lost. Each of these cost somebody a session.
 
-## Common Patterns
+- **The panel's widget lists are keyed by the tab label strings.** Rename a tab
+  and you must rename its key too, or it raises `KeyError` on click.
+- **`pygame.init()` already initialises the mixer.** A later `mixer.init(...)`
+  is a silent no-op. Call `mixer.quit()` first, then init, then *verify* with
+  `mixer.get_init()`. A mono buffer fed to a stereo mixer plays at double pitch,
+  and no amount of parameter tuning will fix it.
+- **`potted_log` is shot-scoped and wiped by `strike()`;** `potted_all` is
+  game-scoped. They mean different things — don't make one do both jobs.
+- **When a fix doesn't work, stop and measure.** This project has twice burned
+  several attempts on consecutive guesses. Both were solved the moment somebody
+  looked at actual numbers.
+- **Check *who* a bug affects before asking why.** Half of one long investigation
+  turned out to be legal play that was never a bug at all.
 
-### Adding a Physics Feature
+## Testing philosophy
 
-1. Add constant to config (e.g., `NEW_FRICTION = 0.123`)
-2. Implement in pymunk collision handler
-3. Add geometry prediction (pure Python, no pymunk) if it affects aiming
-4. Add selftest assertion
-5. Validate: `--batch 30` (check containment)
+The self-test suite is strong on pure functions and physics invariants and
+blind to gameplay flow. Every one of the four r23 bugs — turn handover, spin
+reset, cue placement, sandbox ball-in-hand — passed the entire validation chain
+and was found by sitting down and playing.
 
-**Example:**
-```python
-# hustler.py, top section
-NEW_FRICTION = 0.05  # Custom friction (m/s²)
+So: add the assertion, run the chain, **and then play the game**. If you're
+adding rules or turn logic, consider a scripted play-through test that drives a
+whole frame and asserts the state at each step.
 
-# In collision handler
-def handle_new_friction(arbiter):
-    normal_velocity = arbiter.contact_point_set.normal
-    # Apply custom friction model
+## Getting help
 
-# In selftest
-def test_new_friction():
-    ball = Ball(...)
-    result = simulate_with_new_friction(ball)
-    assert result.velocity < expected, "Friction reduces velocity"
-```
+Search the issues and PRs first — the reasoning behind most decisions is written
+down somewhere. If you're stuck, open an issue describing what you tried and
+what you measured.
 
-### Adding an AI Feature
-
-1. Define the utility term (how does this contribute to shot quality?)
-2. Add geometry estimation (if needed)
-3. Integrate into `PoolAI.score_shot()` or similar
-4. Add selftest assertion
-5. Test with `--aigame 50` (observe play style changes)
-
-**Example:**
-```python
-class PoolAI:
-    def score_shot(self, ball, pocket, cue_angle):
-        pot_chance = self.estimate_pot_chance(...)
-        leave_quality = self.estimate_leave(...)
-        # NEW FEATURE: foul risk term
-        foul_risk = self.estimate_foul_risk(...)
-        utility = pot_chance * leave_quality * (1 - foul_risk)
-        return utility
-
-# In selftest
-def test_foul_risk_term():
-    risky_pos = Position(near_wall=True, blocked=True)
-    risk = ai.estimate_foul_risk(risky_pos)
-    assert risk > 0.5, "Risky position detected"
-```
-
-### Adding a Graphics Feature
-
-1. Implement render function (or shader for GL)
-2. Add two assertions if GL-specific (classic + GL paths)
-3. Keep headless modes rendering scene-only
-4. Pixel-probe for render correctness
-5. Test with `--gl` and `--classic`
-
-**Example:**
-```python
-def render_my_feature(surface, game_state):
-    """Render feature on surface."""
-    # Classic path
-    for ball in game_state.balls:
-        draw_something(surface, ball)
-
-# In selftest
-def test_my_feature_classic():
-    """Classic renderer produces expected pixels."""
-    pixels = render_headless_classic()
-    assert pixels[100, 100] == expected_color
-
-def test_my_feature_gl():
-    """GL renderer pixel-exact to classic."""
-    pixels_gl = render_headless_gl()
-    pixels_classic = render_headless_classic()
-    diff = abs(pixels_gl - pixels_classic).max()
-    assert diff <= 1, f"GL/classic mismatch {diff}"
-```
-
-## Troubleshooting
-
-### Selftest Fails
-
-**Issue:** Selftest 26/27
-- Check: Did you add a new assertion?
-- Is it dependency-aware if GL-related?
-
-**Fix:**
-```python
-try:
-    import moderngl
-    result = test_gl_feature()
-    assert result.passed
-except ImportError:
-    print("  [SKIP] GL feature (moderngl unavailable)")
-```
-
-### Batch Test: Escapes
-
-**Issue:** Ball leaves the table
-- Check: `collision_slop` (should be 0.0002)
-- Check: Pocket capture points (inside the throat)
-- Check: Rail geometry (no gaps or inversions)
-
-**Fix:** Run `python3 hustler.py --batch 10` with verbose logging; identify which shot escapes; inspect that configuration.
-
-### Classic Render Differs
-
-**Issue:** Screenshot differs from R6.1 baseline
-- Intentional redesign? Update baseline (with justification in PR)
-- Unintentional bug? Revert render change
-
-**Fix:**
-```bash
-python3 hustler.py --snap /tmp/new.png
-# Compare to R6.1 baseline visually
-# If correct: update baseline in validation suite
-# If wrong: debug render code
-```
-
-### AI Behaves Strangely
-
-**Issue:** AI makes weird shots
-- Check: Is it emergent behaviour or a bug?
-- Test: Run `--aigame 50`, observe if it's consistent or random
-
-**Fix:** If consistent, it's probably emergent (check utility scoring). If random, it's probably a bug (add logging to `score_shot()`).
-
-## Review Checklist (Maintainer)
-
-- [ ] Feature is signed off in ROADMAP or HANDOFF
-- [ ] Decision brief is clear
-- [ ] Code is readable (docstrings, comments)
-- [ ] One selftest assertion added
-- [ ] Validation chain passes (py_compile → selftest 27+/27+ → batch 30 → smoke)
-- [ ] Headless modes still work (`--snap`, `--smoke`)
-- [ ] UK spelling used
-- [ ] No new external dependencies (unless approved)
-- [ ] AI is emergent (no scripts)
-- [ ] Physics is sourced (citations included)
-
-## Getting Help
-
-1. **Check** [FINDINGS.md](docs/FINDINGS.md) — hard-won discoveries
-2. **Read** [HANDOFF_HUSTLER.md](docs/HANDOFF_HUSTLER.md) — project context
-3. **Search** issues and PRs — your question might be answered
-4. **Ask** in an issue — describe what you're stuck on
-
-## Code of Conduct
+## Code of conduct
 
 - Be respectful and constructive
 - Assume good intent
@@ -274,6 +193,4 @@ python3 hustler.py --snap /tmp/new.png
 
 ---
 
-Thank you for contributing! We appreciate your effort to improve HUSTLER.
-
-For questions or suggestions about this guide, open an issue or a discussion.
+Thank you for contributing!

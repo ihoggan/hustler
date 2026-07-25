@@ -1,7 +1,8 @@
+# HUSTLER dependencies — these two, and nothing else.
+#
+# No numpy, no asset files, no image or sound libraries. Everything the game
+# draws or plays is synthesised in code at runtime. This is a deliberate
+# constraint; adding to this file needs an explicit decision.
+
 pygame==2.6.1
 pymunk==7.3.0
-numpy>=1.24.0
-
-# Optional — for GL renderer (2× SSAA + bloom post-process)
-# Install with: pip install -r requirements-gl.txt
-# moderngl>=5.12

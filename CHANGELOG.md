@@ -5,7 +5,37 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r22 — single-player polish (current)
+## r23 — single-player gameplay fixes (current)
+
+Four bugs, all found by actually playing the game rather than by the test
+suite. That's the headline: the validation chain (compile, self-test, batch,
+smoke, screenshot) caught none of them, because every one lived in the
+gap between a rule and the thing that rule was supposed to control.
+
+- **Potting your last colour no longer hands the table back.** Clearing your
+  colours and going on to the black was being scored as a foul. The rules were
+  asking "what was this player allowed to hit?" *after* the shot's potted balls
+  had already been taken off the table — so potting your final colour made it
+  look as though you should have been on the black all along, and your own
+  perfectly legal shot was judged a wrong-ball foul.
+- **Spin now resets between shots.** Choosing bottom (draw) once applied it to
+  every subsequent shot, and the spin pad wouldn't de-select. The shot was
+  reading the spin correctly but never clearing it afterwards.
+- **The cue ball can be repositioned after a scratch and on the break.** The
+  simulation was putting the white straight back on the baulk line the instant
+  it dropped — behaviour left over from before the rules layer existed — so you
+  were "placing" a ball that had already been placed for you. Potting the white
+  now simply removes it and leaves the placement to you. A related fix: ball in
+  hand is now granted after *any* foul, not only a scratch, per the rules.
+- **Sandbox play gets ball in hand too.** People play solo on pool tables, so
+  sandbox mode now lets you place the white at the start of a rack and whenever
+  you pot it — it previously had no concept of ball in hand at all.
+
+Also fixed: the baulk highlight (the shaded area showing where placement is
+legal) was checking a player's *name* where it should have checked whether that
+player was human, so it had never once appeared in a game against the AI.
+
+## r22 — single-player polish
 
 - The game now starts **full-screen** instead of in a small window.
 - The **potted-ball chamber** now stacks every ball potted during a game, in

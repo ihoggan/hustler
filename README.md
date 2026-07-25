@@ -25,7 +25,7 @@ shot up and it drops; catch a knuckle and it rattles.
 You can:
 
 - **Play single-player** — set up the balls, aim from the control panel, and
-  pot them yourself.
+  pot them yourself. This is what the project is mainly for.
 - **Use custom mode** — clear the table and place balls exactly where you want
   for trick shots and practice, with four save/load layout slots.
 - **Watch or study the AI** — two emergent AI personalities can play each other,
@@ -84,8 +84,18 @@ is set precisely rather than flicked with the mouse.
 | `F11` | Toggle full-screen / windowed |
 | `Esc` / `Q` | Quit |
 
-Ball placement in custom mode is done with the mouse: click to place, drag to
-move, right-click to remove.
+### Placing the cue ball
+
+When you have ball in hand — at the start of a rack, after any foul, or whenever
+you pot the white — the baulk area is shaded to show where placement is legal,
+and you **drag the cue ball there with the mouse**. There's no key for it.
+
+This works in sandbox as well as in a game against the AI, because people play
+solo on pool tables and being able to set the white where you want it is half
+the point.
+
+Ball placement in custom mode is also done with the mouse: click to place, drag
+to move, right-click to remove.
 
 ## Command-line tools
 

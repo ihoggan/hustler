@@ -1,32 +1,67 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** R6.10 — **GL removed entirely (Maker's call).** After R6.8/R6.9's
-candidate fixes failed to resolve the interactive black-screen bug on nix5,
-Maker decided classic is the whole game going forward: `GLPostProcessor`,
-`GLUnavailable`, the three GL pixel-probe functions, `smoke_gl()`, bloom, the
-SSAA render-scale plumbing, and the `--gl`/`--smoke-gl`/`--classic` CLI flags
-are all gone. `moderngl` is no longer a dependency at all, optional or
-otherwise. Selftest dropped from 35 to 32 (the three GL pixel-probes
-removed; nothing else changed). Full chain re-validated green after the
-removal, including the byte-identical `--snap` guarantee against the
-original R6.1 baseline — confirmed by raw byte comparison, not just
-assertion, same as every other change in this project. R6.7 (spectator
-motion trails) is unaffected (it was already classic-capable) and still
-awaits Maker's eyeball. See the R6.10 finding for the full removal record.
-**Files:** `hustler.py` (~2,750 lines) **+ `cushion_path.py`** (unchanged,
-tangent-true cushion-nose geometry module) — single project, two files.
-Python 3.12, pygame 2.6.1 + pymunk 7.3.0. No other dependencies.
-**Install:** `pip install pygame pymunk` (add `--break-system-packages` on
-system Python, or use a venv). That's everything — the whole core+GUI chain
-now has just these two dependencies.
-**Platform:** Runs anywhere pygame does. No GPU, no EGL, no display-driver
-quirks to worry about — the entire class of bug from R6.8/R6.9 is gone with
-the code that caused it.
-**Run note:** `cushion_path.py` must sit alongside `hustler.py` (it is
-imported as `cushion_geo`). Its own standalone selftest (`python3
-cushion_path.py`) validates the reference 6ft/89-100 spec and stays green
-independently. Table geometry is FINAL as of R6.1 — no construction drawing
-is forthcoming; the tangent-true loop is the authoritative source of truth.
+**Status:** r23 — playable, validated, no known blocking bugs.
+
+**Files:** `hustler.py` (~5,850 lines) **+ `cushion_path.py`** (~515 lines,
+tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
+two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
+— no numpy, no asset files of any kind.
+
+**Install:** `pip install pygame==2.6.1 pymunk==7.3.0` (add
+`--break-system-packages` on system Python, or use a venv).
+
+**Run note:** `cushion_path.py` must sit alongside `hustler.py`. Its own
+standalone selftest (`python3 cushion_path.py`) validates the reference spec and
+stays green independently. **Table geometry is FINAL** as of R6.1 — no
+construction drawing is forthcoming; the tangent-true loop is the authoritative
+source of truth.
+
+## Validation snapshot at r23
+
+| Check | Result |
+|---|---|
+| `py_compile` (both files) | OK |
+| `--selftest` | ALL PASS — 63 assertions |
+| `--batch 30` | 0 containment escapes |
+| `--smoke` | 90 frames OK |
+| `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
+| `--aigame 12 --seed 4200` | SHARK 9–3 STEADY, all games completed cleanly |
+| `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
+
+Two notes on reading those. `--batch` uses an **unseeded** RNG, so pot and
+scratch counts vary run to run — the invariant is `containment escapes: 0`, not
+the counts. And seeded AI games are extremely sensitive to behavioural change,
+which makes `--aigame N --seed S` an excellent regression check: if a refactor
+was meant to preserve behaviour, the result should be identical.
+
+## What changed since this document was last fully rewritten
+
+**This handoff was written at R6.10 and its narrative sections (§5 release
+history, §6 findings, §7 the AI, §8 rules coverage) stop there.** Everything in
+them remains accurate as history and the engine facts in §3 are still current
+and still worth reading — but roughly sixteen revisions of work happened
+afterwards. That later work is documented in:
+
+- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r23
+- [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — the three open threads, each with its diagnosis
+- [ROADMAP.md](ROADMAP.md) — what's under discussion and what it depends on
+- [CONTRIBUTING.md](CONTRIBUTING.md) — workflow, standards, and the traps that have cost real time
+
+**The short version of r15–r23:** a JSONL per-shot study log and seeded
+reproducible games; a major fix to the AI's shot-quality estimate (it had been
+wildly over-confident); a ~3.8× performance pass, every step proved
+behaviour-preserving by diffing study output; the two AI personalities re-tuned
+so they differ only in strategy, not aiming skill; a long calibration
+investigation that concluded the estimator is sound and the gap is a
+shot-selection artefact; full-screen startup and a game-scoped potted-ball
+chamber; and finally four single-player gameplay fixes at r23.
+
+**The most important lesson of the whole period** is from r23: all four of those
+gameplay bugs — turn handover, spin reset, cue placement, sandbox ball-in-hand —
+passed the *entire* validation chain and were found by sitting down and playing.
+The suite is strong on pure functions and physics invariants and blind to
+whether a turn passes to the right player. Add the assertion, run the chain,
+**and then play the game.**
 
 ---
 
@@ -41,8 +76,11 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Decisions brief with genuine forks → explicit sign-off → build → validate.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
-- One selftest assertion per feature. Currently 32 (all physics/logic/UI, dependency-
-  free — GL removed entirely at R6.10, no dependency-aware SKIP path needed anymore).
+- One selftest assertion per feature, testing the PURE CORE (values in, values
+  out) rather than the pygame wrapper around it. Currently 63 assertions, all
+  physics/logic/UI and entirely dependency-free.
+- Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
+  let the next person spot a drift nobody noticed.
 - UK spelling throughout. Emergent AI behaviour protected — parameters and scores,
   never scripts. Transparent bug ownership: failures are logged in this doc.
 
@@ -57,7 +95,12 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - **GUI:** three modes on `M`: SANDBOX / YOU vs AI / AI vs AI spectator. Single
   renderer (classic pygame) — GL was tried (R6.2-R6.9) and removed (R6.10).
 - **Headless modes:** `--selftest`, `--batch N`, `--breaks N` (break analyser),
-  `--aigame N` (AI tournaments), `--smoke`, `--snap FILE`.
+  `--aigame N` (AI tournaments, `--jsonl`/`--seed` for study output), `--smoke`,
+  `--snap FILE`, `--sound-probe [DIR]`.
+- **Rules/physics separation is load-bearing.** `Sim` knows nothing about
+  `Game`. Where the rules need to change physics behaviour (e.g. whether a
+  potted cue ball is auto-respotted), it is done with an explicit flag set by
+  whoever CONSTRUCTS the sim — never by the physics layer reading the rules.
 
 ### Critical engine facts (hard-won, do not rediscover)
 
@@ -88,6 +131,12 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 Note the Loughborough 0.98 is NORMAL restitution pre-friction; our pair value
 targets observed effective rebound. Measured in selftest at 0.733 — in range.
 
+> **The release history and findings log below run from R1 to R6.10 only.**
+> They are preserved because the reasoning in them is genuinely useful — several
+> entries record mistakes that would otherwise be repeated. For r15 onward see
+> [CHANGELOG.md](CHANGELOG.md). Where a section below describes something as
+> "in progress" or "next", read it as a snapshot of what was true at R6.10, not
+> as current work.
 ## 5. Release history
 
 - **R1** — pymunk table, cushions, pockets, strike, ghost-ball overlay, chain.
@@ -653,183 +702,71 @@ ball-in-hand placement choice.
 
 ## 9. Known gaps & deferred items
 
-- Full WEPF rules (§8 list) — first candidate for R6, as B1 (whole set in one
-  release); pairs naturally with a foul-risk term in the AI utility.
-- AI spin selection and a spin-aware leave model (the leave estimate assumes
-  a plain rolling strike).
-- Safety quality: safeties are still "roll at the nearest ball" — no
-  assessment of what the safety leaves the opponent.
-- Larger-N confirmations: `--breaks 30` for finding §6.8, `--aigame 20+`
-  (including a greed-0 baseline) for §6.9.
-- Spin-inclusive break in actual AI games (the AIs still break plain).
-- **Graphics Pass 3 — IN PROGRESS (decision 1C + 2A, signed off).** Direction
-  ModernGL (Maker wants a show-off build; spectacle outranks minimal-dependency
-  fidelity). Builds on the tangent-true geometry + cushion_path's layered
-  `draw_table` as its baseline. **No construction drawing is coming** — the R6.1
-  geometry is final and authoritative, so the deferred 1B stage builds to the
-  existing tangent-true loop, not to a spec sheet.
-  - **DONE — Increment 1 (R6.2):** renderer split (offscreen frame as the single
-    source), lazy-moderngl `GLPostProcessor`, `--classic` + `--smoke-gl` gates,
-    passthrough. Preceded by the headless EGL feasibility probe (§6.12).
-  - **DONE — Increment 2 (R6.3):** GL-only 2× SSAA + bloom (threshold/knee →
-    separable Gaussian → additive composite), interactive `--gl`. Presets
-    SUBTLE/BALANCED/ARCADE; default BALANCED.
-  - **REMOVED at R6.10** (Maker's call, after R6.8/R6.9's fixes didn't resolve
-    the interactive black-screen bug on real hardware): everything Increments
-    1 and 2 built -- `GLPostProcessor`, the GL pixel-probes, `smoke_gl()`,
-    bloom, SSAA render-scale, `--gl`/`--smoke-gl`/`--classic` -- is gone.
-    `moderngl` is no longer a dependency. See the R6.10 finding for the full
-    removal record. The entries above stay as history of what was built and
-    why; nothing below this point in Increment 1/2's description is still
-    true of the current codebase.
-  - **Increment 3 — fullscreen + hand-rolled tabbed control panel** (decision
-    signed off). Right-hand side panel; table fills the space to its left,
-    fitted by the largest uniform `S` that preserves the exact 2:1 table
-    (same `S` for x and y, so dimensions can't distort — this is the whole
-    reason it's safe).
-    **DONE — 3a (R6.4, Maker-signed-off):** resizable/maximisable window +
-    F11 fullscreen toggle, `fit_to_region()` (pure, dependency-free), GL scene
-    with a placeholder empty right-hand panel composited on top — geometry,
-    scaling and compositing all proven before any widgets. Two real bugs
-    found and fixed along the way (see finding §6.15): `VIDEORESIZE` wasn't
-    actually resizing the window surface, and F11 was reading the desktop
-    resolution too late to get a real value. Headless guard verified not just
-    by the pixel-probe selftest but by a raw byte comparison of `--snap`
-    output against the R6.1 baseline (identical). **Known follow-up for 3b:**
-    the HUD text (bottom-left readout, aim icon) scales with the fit but its
-    font has a legibility floor (`max(8, int(14·RS·FS))`); at small window
-    sizes the floor wins before the table has shrunk as far, and the text
-    crowds the aim icon (seen in a signed-off-anyway capture at 700×500).
-    Not a defect in 3a's own scope, but 3b should either move the HUD into
-    the panel (likely right, since the panel is the natural home for status
-    text) or give it its own independent scale floor.
-    **DONE — 3b (R6.5, Maker-signed-off):**
-    hand-rolled immediate-mode widgets (`Slider`/`Button`/`SpinPad`/
-    `TabStrip`, no new dependency) wired into the real panel rect from 3a.
-    Every control binds DIRECTLY to the same live variable its mirrored key
-    already mutates — no shadow state. Tabs: **Shot** (power slider,
-    cue-angle fine-tune slider ±15° additive on mouse aim, 2D spin pad
-    clamped to the unit circle, Reset-spin, **Shoot** mirroring SPACE's
-    exact guard via `shoot_enabled()`) · **Table** (cushion elasticity /
-    roll decel / ball radius sliders — ball radius greyed outside SANDBOX,
-    matching the B key — cue-size toggle) · **Game** (mode-cycle, rack-up,
-    overlay-toggle, live-labelled). Panel stayed at 260px per Maker's call.
-    HUD-crowding fix: the icon gets its own independent size floor
-    (`hud_icon_x()`), per Maker's call, rather than moving the HUD into the
-    panel. **Headless guard — a real near-miss, caught and fixed (see
-    finding, new R6.5 entry):** the icon fix initially ran unconditionally
-    and broke smoke's byte-identical invariant on a long AI-vs-AI status
-    string; fixed by branching the icon formula on `smoke` so the headless
-    path is provably untouched. Selftest 28→33. Validated: full chain green
-    plus a scripted interactive session (tab switch, slider drag, spin-pad
-    drag, Shoot click) captured and eyeballed.
-  - **Increment 4 — effect passes**, staged one at a time (Maker's call),
-    in this order:
-    **DONE — 4a (R6.7, BUILT, pending Maker's own eyeball sign-off):**
-    spectator motion trails. All balls while moving, explicit
-    position-history fading ribbon (not an accumulation blend), always on
-    in every mode. Built classic-only now (was classic+GL; GL removed at
-    R6.10 -- see the R6.7 finding for the original build record, unaffected
-    by the removal since trails never depended on GL).
-    **NEXT — 4b (not started):** pot "swallow" animation into the recessed
-    cups, cup-glow lift.
-    **THEN — 4c:** slow-mo black with a glow ramp (folds in old candidate D)
-    -- needs its own decision brief (trigger condition, what "black" means
-    -- fade/vignette/letterbox -- weren't specified in the original
-    candidate list). **Rethink needed, not just flag:** the original brief
-    said "bloom ramp", but bloom no longer exists anywhere in the codebase
-    (R6.10 removed it along with the rest of GL) -- this isn't a GL-only
-    feature waiting on a parked bug anymore, it needs an actual classic-
-    renderer equivalent decided at brief time (a plain pygame glow/blend
-    effect achieves a similar look without a GL pipeline; scope it fresh
-    rather than assuming the old GL design carries over).
-    **THEN — 4d:** colour-grade / vignette / cloth-light (ambient) falloff.
-  - **DEAD — 1B GL-native renderer** ("pass 5"): was deferred, now moot.
-    GL was removed entirely at R6.10 (Maker's call, after two candidate
-    fixes failed to resolve a real black-screen bug on real hardware) --
-    per-pixel shaded ball spheres, MSAA geometry, and cloth nap would all
-    need a GL pipeline that no longer exists in this codebase. Not
-    "deferred until dependencies clear" anymore; would need its own fresh
-    decision brief and a reason to reintroduce GL at all before this is
-    worth resurrecting.
-  - Doctrine: every render feature gets a pixel-probe assertion (finding §6.10
-    -- written when GL still existed; the principle still applies to any
-    future render feature, GL or not). **Byte-identical
-    invariant (from Increment 3 on): headless `--snap`/`--smoke` render the
-    scene-only at the R6.1 framing and must stay byte-identical to the R6.1
-    baseline; the interactive window may add UI chrome.** Graphics constants of
-    interest live in cushion_path.py (COL_BAIZE/COL_WOOD/COL_BG, RAIL_WIDTH,
-    FRAME_OFFSET, KNUCKLE_R, nose highlight + throat-wrap params) plus hustler's
-    sprite highlight blends `0.7/0.95`, shadow alpha `70`, and the bloom presets
-    at the top of the GL section.
-- Spectator polish ideas: pot/score banner, shot-by-shot commentary line
-  (the shot dict now carries `u` and `leave` — ready-made commentary
-  material), slow-mo on the black.
-- American table preset (specs on file from the calibration research) — one
-  CFG dict away if ever wanted.
+This section previously tracked the Graphics Pass 3 / GL increments. All of that
+is resolved: the tabbed panel and full-screen window shipped, and the GL
+renderer was removed entirely at R6.10 after an unresolved black-screen bug on
+real hardware. Classic software pygame is the only renderer. Reintroducing GL
+would be a fresh build, not a revert, and shouldn't happen without an explicit
+ask — the git history has the old implementation if it's ever worth mining.
+
+Current open work now lives in two places, kept up to date:
+
+- **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** — three open threads, each written up
+  with its diagnosis so the next person starts from the answer rather than the
+  symptom: custom-mode jaws placement, full-screen software-render performance,
+  and the AI's over-harsh distance term.
+- **[ROADMAP.md](ROADMAP.md)** — candidates under discussion, with dependencies:
+  scripted play-through tests, the coach-mode aiming overlay, league mode, the
+  "Grannie" whitewash rule, and a possible snooker project.
+
+Two constraints worth restating here, because both have been nearly broken by
+accident:
+
+- **No asset files.** Everything drawn or played is synthesised in code. Any
+  feature that wants a photo, an icon or a sound file needs an explicit decision
+  first — including the cartoon granny for the whitewash screen.
+- **Table geometry is final.** Read `cushion_path.py`; don't re-derive it.
 
 ## 10. Re-entry / continuation prompt
 
-Paste into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
+Paste into a fresh session along with this file, `hustler.py` and
+`cushion_path.py`:
 
-> We are resuming **Hustler**, my UK blackball pool sandbox (pygame + pymunk,
-> two files — `hustler.py` + `cushion_path.py` — attached with this handoff).
-> Read HANDOFF_HUSTLER.md fully — especially the working agreement (§2), engine
-> facts (§3), and findings (§6) — before proposing anything. The validation
-> chain is mandatory for every change: py_compile → --selftest → --batch →
-> --smoke (+ --snap for screenshots). One new selftest assertion per feature,
-> UK spelling, AI behaviour stays emergent (parameters, never scripts).
-> Confirm the chain passes on the attached files first (selftest 32/32, all
-> dependency-free; cushion_path.py standalone green; classic --snap must stay
-> byte-identical to the R6.1 baseline). **GL was tried (R6.2-R6.9: renderer
-> split, SSAA, bloom, fullscreen panel) and REMOVED ENTIRELY at R6.10** after
-> two candidate fixes failed to resolve a black screen on my real hardware
-> (nix5) — classic is the only renderer now, `moderngl` is not a dependency,
-> don't reintroduce GL without me asking for it explicitly. The hand-rolled
-> tabbed control panel (R6.5: Slider/Button/SpinPad/TabStrip/Dial,
-> Maker-signed-off), the HUD-only aim fix (R6.6: mouse-aim removed, rotating
-> angle dial, Maker-signed-off), and spectator motion trails (R6.7: all balls
-> while moving, fading ribbon, classic-only now — Maker-signed-off) are all
-> live and working. **Increment 4b (pot "swallow" animation + cup-glow) is
-> next, not yet started** — needs its own decision brief before building.
-> After that: **4c** (slow-mo black with a glow effect — the original brief
-> said "bloom ramp" but bloom is gone, so this needs a genuine classic-
-> renderer redesign, not just a port) and **4d** (colour-grade/vignette/
-> cloth falloff). The table geometry is FINAL — no construction drawing is
-> coming. R6 GAMEPLAY candidates queue behind the effect passes: (a) full
-> WEPF rules + foul-risk term; (b) AI spin selection + spin-aware leave;
-> (c) safety quality term; (d) any spectator polish not absorbed by the
-> passes; (e) larger-N studies to confirm §6.8 and §6.9. I sign off on
-> briefs before you build.
+> We are resuming **HUSTLER**, my UK blackball pool sandbox (pygame + pymunk,
+> two files — `hustler.py` + `cushion_path.py` — attached). Read
+> HANDOFF_HUSTLER.md first, especially the working agreement (§2) and the engine
+> facts (§3); then CHANGELOG.md and KNOWN_ISSUES.md for anything after R6.10,
+> since this handoff's narrative sections stop there.
+>
+> **Working agreement.** Decision brief with genuine forks → my explicit
+> sign-off → build → validate. The validation chain is mandatory for every
+> change: `py_compile` → `--selftest` → `--batch 30` → `--smoke` (+ `--snap`,
+> verified by md5, for anything visual). Report the actual numbers, not
+> "passed". One new selftest assertion per feature, testing the pure core rather
+> than the pygame wrapper. UK spelling. AI behaviour stays emergent —
+> parameters and utility weights, never scripted shots.
+>
+> **Confirm the chain passes on the attached files before proposing anything:**
+> selftest ALL PASS (63 assertions), `--batch 30` with 0 containment escapes,
+> `--smoke` 90 frames, `--snap` md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`
+> byte-identical, `cushion_path.py` standalone green. If a marker is missing or
+> a number is off, say so before editing anything — an earlier session was very
+> nearly built on a stale copy of the file.
+>
+> **Things not to do without asking:** don't reintroduce the GL renderer
+> (removed at R6.10); don't add a dependency (pygame and pymunk only, no numpy);
+> don't add asset files; don't re-derive the table geometry; don't reintroduce
+> the skill/strategy confound in the AI personalities (`aim_jitter` is
+> deliberately matched between them).
+>
+> **What I actually use it for:** single player — setting the balls up and
+> potting them myself. AI-vs-AI was a way to test the physics and is a secondary
+> interest. Ask before assuming study or AI work is the priority.
+>
+> Finally: the last four bugs all passed the whole validation chain and were
+> found by playing. If we change rules or turn logic, propose a scripted
+> play-through test alongside the unit assertion.
 
-**Validation snapshot at handoff:** selftest **32/32**, all dependency-free
-(25 physics/logic/fit-to-region + 7 Increment-3b/3.6/4a widget-and-effect
-primitives: slider round-trip, spin-pad unit-circle clamp, Shoot-guard
-mirror, HUD-icon-anchor, rotate_vector round-trip, dial_angle inverse,
-trail_dot_style tapering) · drill **18/18** (tangent-true, corners 81.3 mm /
-middles 100 mm) · containment 0 escapes over batch-30 (PHYS_DT 480 Hz +
-per-sub-step capture) · cushion_path.py standalone green · classic render
-**byte-identical to the R6.1 baseline** (verified by raw byte comparison,
-re-confirmed after the R6.10 GL removal specifically, since that was the
-largest structural change to `run_gui` since the baseline was set) · panel/
-dial/trails exercised via scripted interactive sessions captured to PNG and
-eyeballed by this instance — live two-way sync confirmed throughout (slider
-drag moves the same figure the key changes; dial drag sets the exact angle
-`Sim.strike` fires with; trail tapers and vanishes in step with the
-`STOP_SPEED` threshold the Shoot-button guard also uses) · break rattle
-finding preserved (0.50 pots/break at the smash vs legacy 1.10).
-USE_TANGENT_CUSHIONS retained for legacy A/B.
+---
 
-*Handoff updated July 2026 (R6.10 — GL removed entirely, Maker's call, after
-R6.8's EGL-forcing-scope fix and R6.9's surface-format-conversion fix both
-failed to resolve a real black-screen bug on Iain's own hardware (nix5).
-`GLPostProcessor`, `GLUnavailable`, the three GL pixel-probes, `smoke_gl()`,
-bloom, SSAA render-scale, and the `--gl`/`--smoke-gl`/`--classic` flags are
-gone; `moderngl` is no longer a dependency, optional or otherwise. Selftest
-35→32 (the three GL pixel-probes removed, nothing else touched). Full chain
-re-validated green including a fresh byte-identical `--snap` comparison
-against the original R6.1 baseline. R6.7 (spectator motion trails) is
-unaffected — it was already classic-capable — and still awaits Maker's
-eyeball. R6.10's finding entry has the full removal record and a rethink
-note for Increment 4c, whose original "bloom ramp" brief no longer has
-bloom to ramp. Good hunting, next instance.)*
+*(Written at r23. The file is safe to play. Good hunting, next instance.)*
