@@ -1,39 +1,12 @@
 # Known Issues
 
-The honest state of the open threads as of r23. None of these stop the game
+The honest state of the open threads as of r24. None of these stop the game
 being playable. Each is written up with its diagnosis so the next person to
 touch it (quite possibly future me) starts from the answer, not the symptom.
 
 ---
 
-## 1. Can't place balls right on the pocket jaws in custom mode
-
-**Symptom:** in custom mode you can't set a ball close enough to a pocket to
-have it sitting on the lip, ready to pot.
-
-**Diagnosis:** the legal-placement test treats the table as a plain rectangle
-and keeps every ball a full ball-radius inside the rails. That rule is correct
-along a cushion — a ball can't be embedded in a rail — but it also walls off the
-pocket mouths, where there is no cushion. A corner pocket's centre actually sits
-slightly *outside* the rectangle, so the whole jaws area fails the test.
-
-**Status:** one part of this is fixed (an over-cautious margin around each
-pocket has been trimmed to the true minimum). The remaining part — the
-rectangle not knowing about pocket mouths — is **not** fixed. An attempt to
-exempt circular "mouth" zones from the rail rule was tried and reverted: the
-middle-pocket zones reached out over the side rails and briefly let balls embed
-in the cushion. A regression guard is now in the test suite to prevent that
-class of mistake recurring.
-
-**The right fix (not yet attempted):** test placement against the real cushion
-geometry (the tangent-true nose path) instead of a rectangle. That handles rails
-and pocket mouths in a single rule, with no special cases. It only *reads* the
-existing geometry, so it doesn't disturb the table spec. Resist the temptation
-to try another margin adjustment — that approach has now failed twice.
-
----
-
-## 2. Full-screen at startup can run slowly on some systems
+## 1. Full-screen at startup can run slowly on some systems
 
 **Symptom:** the game can be sluggish or jerky when it starts full-screen, even
 where a manually-maximised window runs smoothly.
@@ -59,7 +32,7 @@ the result, rather than recomputing while you line the shot up.
 
 ---
 
-## 3. The AI is too cautious at distance
+## 2. The AI is too cautious at distance
 
 The AI plays a complete, legal game — it breaks, pots, plays safeties, and wins
 or loses by the rules. It currently errs on the cautious side, declining a lot
@@ -79,16 +52,25 @@ be over-harsh in the first place.
 
 ## Recently fixed
 
-Resolved in r23 — kept here briefly because the diagnoses are worth having if
-anything similar shows up again. Full descriptions are in the changelog.
+Resolved in r23–r24 — kept here briefly because the diagnoses are worth having
+if anything similar shows up again. Full descriptions are in the changelog.
 
-- **Cue ball couldn't be repositioned after a scratch or on the break.** The
-  simulation auto-respotted the white before the rules layer could offer you the
-  placement. Fixed with an explicit flag set by whoever builds the simulation,
-  so the physics layer still knows nothing about the rules layer.
-- **Potting your last colour handed the table back** on a phantom foul.
-- **Spin didn't reset between shots.**
-- **Sandbox had no ball-in-hand concept**, so solo play couldn't place the white.
+- **Couldn't place a ball on the pocket jaws in custom mode (r24).** The
+  placement test treated the table as a rectangle, which walls off the pocket
+  mouths (there is no cushion across a mouth). It now tests against the real
+  tangent-true cushion-nose polyline — inside the loop and a ball-radius clear
+  of every edge — handling rails and mouths in one rule, no special cases. An
+  earlier "exempt the mouths" attempt leaked along the side rails and was
+  reverted; the polyline approach has no such failure mode, and the regression
+  guard that caught it is still in the suite.
+- **Cue ball couldn't be repositioned after a scratch or on the break (r23).**
+  The simulation auto-respotted the white before the rules layer could offer you
+  the placement. Fixed with an explicit flag set by whoever builds the
+  simulation, so the physics layer still knows nothing about the rules layer.
+- **Potting your last colour handed the table back (r23)** on a phantom foul.
+- **Spin didn't reset between shots (r23).**
+- **Sandbox had no ball-in-hand concept (r23)**, so solo play couldn't place the
+  white.
 
 ---
 

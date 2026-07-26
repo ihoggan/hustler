@@ -2254,78 +2254,6 @@ def cue_was_potted(pot_events, cue_id=0):
     return any(ev[0] == cue_id for ev in (pot_events or ()))
 
 
-def dist_point_segment(p, a, b):
-    """Shortest distance from point p to the line segment a-b. Pure geometry --
-    no pygame, no pymunk -- so it is directly unit-testable and reusable. The
-    aiming/coach overlay will want this same primitive to reflect a projected
-    path off the real cushion nose."""
-    px, py = p
-    ax, ay = a
-    bx, by = b
-    dx, dy = bx - ax, by - ay
-    L2 = dx * dx + dy * dy
-    if L2 == 0.0:
-        return math.hypot(px - ax, py - ay)
-    t = ((px - ax) * dx + (py - ay) * dy) / L2
-    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
-    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
-
-
-def point_in_polygon(p, poly):
-    """Even-odd ray-cast: is point p inside the closed polygon `poly` (a list of
-    (x, y) vertices, implicitly closed)? Pure. Correct for the NON-CONVEX
-    cushion loop -- the pocket throats bulge outward -- because ray-casting
-    counts edge crossings and doesn't care about convexity. On-edge points are
-    ambiguous for ray-casting, but a real placement is always rejected first by
-    the ball-radius clearance test in can_place_ball, so that ambiguity never
-    decides anything."""
-    x, y = p
-    inside = False
-    n = len(poly)
-    j = n - 1
-    for i in range(n):
-        xi, yi = poly[i]
-        xj, yj = poly[j]
-        if ((yi > y) != (yj > y)) and \
-           (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
-            inside = not inside
-        j = i
-    return inside
-
-
-_nose_loop_cache = {}
-
-
-def nose_loop_m():
-    """The tangent-true cushion-nose loop as a closed vertex list in METRES --
-    the very geometry the physics builds its cushions from (cushion_path.py,
-    driven at this table's dimensions, mm -> m at the boundary). This is the
-    real boundary a ball must stay inside, pocket mouths and all, which a plain
-    play_rect() rectangle cannot represent: the rectangle walls off the mouths,
-    where there is no cushion at all.
-
-    Cached exactly like capture_points(), and keyed on the same values, because
-    it is read on every placement test -- the custom-mode mouse drag and the
-    AI's ball-in-hand candidate search -- and the flatten is not free. The key
-    tracks the only things that change the loop (table size and the two mouth
-    widths), so a live panel change rebuilds it rather than serving a stale
-    loop. Tessellated at 3 deg, matching the physics build."""
-    MM = 1000.0
-    key = (play_rect(), pocket_half_mouth(), pocket_middle_half_mouth())
-    hit = _nose_loop_cache.get(key)
-    if hit is not None:
-        return hit
-    cushion_geo.configure(
-        play_w=CFG["PLAY_W_M"] * MM, play_h=CFG["PLAY_H_M"] * MM,
-        corner_mouth=CFG["POCKET_MOUTH_M"] * MM,
-        middle_mouth=CFG["POCKET_MIDDLE_MOUTH_M"] * MM,
-    )
-    loop = [(x / MM, y / MM) for (x, y)
-            in cushion_geo.flatten(cushion_geo.build_cushion_path(), 3.0)]
-    _nose_loop_cache[key] = loop
-    return loop
-
-
 # r10 custom mode: ball kinds the user can place. "cue" is special -- there can
 # only ever be one, so placing a second REPLACES the first rather than adding.
 PLACE_KINDS = ["cue", "red", "yellow", "black"]
@@ -2346,25 +2274,10 @@ def can_place_ball(pos, existing, r_new, r_others):
     trick-shot setup custom mode exists for. Capture is a test on the ball's
     CENTRE (see _capture_pockets: centre within cap_r), so the real constraint
     is `dist >= cap_r`, plus a hair so it can't drop the instant physics
-    resumes. 1mm of clearance, not 25mm.
-
-    r24: the table boundary is now the real tangent-true cushion-nose loop
-    (nose_loop_m: the centre must be inside the loop AND at least a ball radius
-    clear of every nose edge), not a play_rect() rectangle. The rectangle kept a
-    ball a full radius inside straight rails -- right along a cushion, but it
-    also walled off the pocket MOUTHS, where there is no cushion, so a hanger
-    could never be set on the lip. The polyline handles rails and mouths in one
-    rule with no mouth special-casing -- which is exactly what the reverted r22
-    "circular mouth exemption" got wrong (its middle-mouth circles leaked out
-    over the side rails and let a ball embed there). The capture and overlap
-    tests below are unchanged, so a ball still cannot be placed where it would
-    instantly drop, nor on top of another ball."""
-    poly = nose_loop_m()
-    if not point_in_polygon(pos, poly):
-        return False
-    n = len(poly)
-    if min(dist_point_segment(pos, poly[i], poly[(i + 1) % n])
-           for i in range(n)) < r_new:
+    resumes. 1mm of clearance, not 25mm."""
+    x0, y0, x1, y1 = play_rect()
+    if not (x0 + r_new <= pos[0] <= x1 - r_new
+            and y0 + r_new <= pos[1] <= y1 - r_new):
         return False
     for (pc, cap_r) in capture_points():
         if math.dist(pos, pc) < cap_r + 0.001:
@@ -5712,26 +5625,19 @@ def selftest():
     # any future attempt must not break:
     #   (a) a ball can never be placed where the pocket would instantly eat it
     #   (b) a ball can never be embedded in a rail
-    # NOTE: the jaws limitation this guard was written alongside is RESOLVED at
-    # r24 -- can_place_ball now tests the real cushion-nose polyline, so a ball
-    # CAN be set on a pocket lip. These two invariants still hold and still
-    # matter, which is why the guard stays:
-    #   (a) a ball can never be placed where the pocket would instantly eat it
-    #   (b) a ball can never be embedded in a rail (a TRUE rail, not a mouth)
-    # The old "embedded" probe point (0.91, 0.015) sat in the top-middle
-    # POCKET MOUTH, which r24 now legitimately makes placeable -- so it is moved
-    # to a genuine straight-rail spot, well clear of any pocket, where a centre
-    # closer than a ball radius to the nose is still an embed and must be
-    # rejected. Do not reach for another margin fudge (see r22's reverted try).
+    # NOTE (known limitation, deliberately left): because play_rect() is a plain
+    # rectangle that knows nothing about pockets, the jaws area is still
+    # unreachable in custom mode. Fixing that properly means testing containment
+    # against cushion_path.py's real cushion-nose polyline rather than a
+    # rectangle -- see the handoff. Do not reach for another margin fudge.
     r51 = ball_r()
     pc51, cap51 = capture_points()[0]
     ang51 = math.atan2(0.455 - pc51[1], 0.91 - pc51[0])
     in_pocket51 = can_place_ball(
         (pc51[0] + math.cos(ang51) * cap51 * 0.5,
          pc51[1] + math.sin(ang51) * cap51 * 0.5), [], r51, [])
-    # a genuine straight-rail spot (well clear of any pocket mouth): a centre
-    # 10mm from the top rail is INSIDE the cushion and must stay rejected.
-    embedded51 = can_place_ball((0.30 * CFG["PLAY_W_M"], 0.010), [], r51, [])
+    # mid-table, against the bottom rail: centre 15mm out is INSIDE the cushion
+    embedded51 = can_place_ball((0.91, 0.015), [], r51, [])
     clear51 = can_place_ball((0.91, 0.455), [], r51, [])      # open table: fine
     check("r22 placement invariants — a ball can never be placed inside a "
           "pocket's capture zone, nor embedded in a rail (the mouth-exemption "
@@ -5851,31 +5757,6 @@ def selftest():
           f"cue-potted={cue_was_potted(pot_cue55, Sim.CUE_ID)}, "
           f"red-only={cue_was_potted(pot_red55, Sim.CUE_ID)}, "
           f"empty={cue_was_potted([], Sim.CUE_ID)}")
-
-    # 56. r24 jaws placement -- the point of the feature: a ball CAN now be set
-    #     on a pocket lip, because containment is tested against the real
-    #     cushion-nose polyline (nose_loop_m) instead of a play_rect rectangle
-    #     that walled off the mouths. The two r22 invariants (no in-throat drop,
-    #     no rail embedding) are re-checked right here so the feature can't quietly
-    #     reopen either hole. Coordinates are the ones the geometry probe found.
-    r56 = ball_r()
-    W56, H56 = CFG["PLAY_W_M"], CFG["PLAY_H_M"]
-    tm_lip56 = (W56 / 2.0, 0.012)          # a hanger on the top-middle lip
-    bm_lip56 = (W56 / 2.0, H56 - 0.012)    # ... and the bottom-middle lip
-    # the rectangle rule these replace would have rejected both, the centre
-    # being nearer the rail line than a ball radius:
-    old_walled56 = (0.012 < r56) and (H56 - 0.012 > H56 - r56)
-    lip_ok56 = (can_place_ball(tm_lip56, [], r56, [])
-                and can_place_ball(bm_lip56, [], r56, []))
-    throat_rej56 = not can_place_ball((W56 / 2.0, -0.030), [], r56, [])  # in throat
-    rail_rej56 = not can_place_ball((0.30 * W56, 0.010), [], r56, [])    # true rail
-    check("r24 jaws placement — a hanger can now be set on a pocket lip "
-          "(containment tested against the real cushion-nose polyline, not a "
-          "rectangle), while a ball in the throat or embedded in a rail stays "
-          "rejected",
-          lip_ok56 and old_walled56 and throat_rej56 and rail_rej56,
-          f"lips-now-legal={lip_ok56}, rectangle-would-wall={old_walled56}, "
-          f"throat-rejected={throat_rej56}, rail-rejected={rail_rej56}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

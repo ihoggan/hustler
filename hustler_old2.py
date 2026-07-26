@@ -690,19 +690,15 @@ class Sim:
         self._live_side = 0.0
         self._live_follow = 0.0
         self._cue_prev = (0.0, 0.0)
-        # r23 (BUG 3, part i): should potting the cue ball immediately put it
-        # back on the baulk line? TRUE is the original sandbox behaviour -- this
-        # Sim was built long before the rules layer existed and was never meant
-        # to be without a cue ball, so it respotted instantly. Once `Game`
-        # arrived that became a bug: the sim had already decided where the white
-        # goes before the rules could grant ball-in-hand, so the player was
-        # "placing" a ball that had been placed for them.
-        #
-        # Whoever CONSTRUCTS the sim sets this, so the physics layer still knows
-        # nothing whatsoever about the rules layer -- that separation is
-        # load-bearing and is not being spent here. new_game() sets it False;
-        # a bare Sim() (--batch, --breaks, the selftests) keeps the old
-        # behaviour untouched.
+        # r23 bug 3: True (default) keeps the old SANDBOX behaviour -- a
+        # potted cue ball is respotted immediately, so a bare Sim (drills,
+        # the r5-r8 selftests, custom mode with no Game) is never left
+        # without a cue ball. A Game sets this False on its own sim in
+        # new_game(): rules-driven play must be able to remove the cue ball
+        # and leave it OUT until the rules layer (ball_in_hand) and the
+        # player decide where it goes -- Sim deliberately knows nothing
+        # about Game, so this flag is how the caller opts out rather than
+        # Sim reaching into rules state.
         self.auto_respot = True
 
         # --- Rules (r9 phase 1): shot-scoped event report ----------------------
@@ -1104,13 +1100,14 @@ class Sim:
             self.potted_all.append(bid)   # r22: game-scoped, survives strike()
             self.last_pot_events.append((bid, self.colours.get(bid, "red"), pos, radius))
             if bid == self.CUE_ID:
-                # Spin dies with the ball either way.
-                self._live_side = 0.0
-                self._live_follow = 0.0
-                # r23 (BUG 3): only the SANDBOX respots automatically. When a
-                # rules layer is driving, potting the white simply removes it
-                # and the rules decide where it goes back -- see auto_respot.
+                # r23 bug 3: only respot automatically in pure sandbox use
+                # (auto_respot True). A Game-driven sim leaves the cue ball
+                # OUT of the table entirely once potted -- Game.on_rest()
+                # grants ball_in_hand and the player/AI places it, rather
+                # than the sim silently deciding before the rules get a say.
                 if self.auto_respot:
+                    self._live_side = 0.0
+                    self._live_follow = 0.0
                     self._respot_cue()
 
 
@@ -1307,26 +1304,18 @@ class Game:
     def legal_colours(self, sim, potted_this_shot=None):
         """Colours the current striker may target.
 
-        r23 (BUG 1 -- turn handover): `sim.remaining()` counts what is on the
-        table RIGHT NOW, but on_rest() asks this question AFTER the shot's pots
-        have already been removed. So potting your LAST colour made
-        remaining(own) read 0, this function wrongly returned ["black"], and the
-        striker's own perfectly legal first contact was then judged "wrong ball
-        first" -- a phantom foul that handed the visit back instead of letting
-        them go on to the black.
-
-        `potted_this_shot` folds those pots back in before the count, so what is
-        answered is "what was legal WHEN THE SHOT WAS PLAYED". Live callers
-        (place_cue/choose, and the two GUI call sites) pass nothing and are
-        completely unaffected -- they genuinely do want the table as it stands.
-        """
+        r23: potted_this_shot lets on_rest assess the shot that just finished
+        against the table AT ADDRESS -- before this shot's own pots were
+        removed. Without it, potting your LAST colour made remaining(own) read
+        0 here, so the shot was judged as if you should have been on the
+        black, and hitting your own colour was wrongly called a wrong-ball
+        foul -- clearing your colours ended your turn instead of leaving you
+        on the black. Called with no argument (live play, choosing the next
+        shot), behaviour is unchanged."""
         own = self.own_colour()
-        # Balls of the striker's own colour that went down on THIS shot were
-        # still on the table when the shot was played.
-        back = 0
-        if potted_this_shot and own is not None:
-            back = sum(1 for c in potted_this_shot if c == own)
-        remaining_own = (sim.remaining(own) + back) if own is not None else 0
+        remaining_own = sim.remaining(own) if own else 0
+        if potted_this_shot and own:
+            remaining_own += sum(1 for c in potted_this_shot if c == own)
         if self.free_shot:
             # r9: on a free shot ANY ball may be struck first, so everything
             # on the table is a legal first contact.
@@ -1371,11 +1360,9 @@ class Game:
         obj = [c for c in potted if c in ("red", "yellow")]
         own = self.colours.get(striker)
         # Snapshot the legality the shot was PLAYED under, before any colour
-        # assignment below mutates it. r23 (BUG 1): `potted` must be passed in,
-        # because the shot's pots are already off the table by the time we get
-        # here -- without it, potting your last colour looks like "you are on
-        # the black now", and your own colour becomes an illegal first contact
-        # retrospectively.
+        # assignment below mutates it. r23: pass potted_this_shot so a
+        # cleared-out own colour still reads as "on" for THIS shot's
+        # assessment, not as "should have been on the black" (bug 1).
         legal = self.legal_colours(sim, potted_this_shot=potted)
         was_free = self.free_shot
 
@@ -1420,13 +1407,14 @@ class Game:
             self.visits += 1
             self.free_shot = True
             self.visits_left = 2
-            # r23 (BUG 3, part ii): ball-in-hand was cleared a few lines above
-            # on EVERY shot but never set back True on a foul, so it was only
-            # ever True once, at __init__. Nobody noticed because the sim's
-            # auto-respot was silently placing the cue anyway. WEPF blackball
-            # gives the incoming player ball in hand for ANY foul, not just a
-            # scratch, so it is granted here on the same branch as the free
-            # shot and the two visits.
+            # r23 bug 3: WEPF blackball grants ball-in-hand-in-baulk to the
+            # incoming player after ANY foul, not just a scratch -- this was
+            # never granted at all beyond the initial break (line above sets
+            # it False unconditionally on every completed shot, and nothing
+            # ever set it back True). Previously masked because the sim
+            # auto-respotted a potted cue ball on its own, so a scratch
+            # LOOKED handled even though the rules layer was never actually
+            # the one deciding.
             self.ball_in_hand = True
             return
 
@@ -1508,14 +1496,7 @@ class PoolAI:
         already uses to pick a shot, so a greedy AI naturally sets up a pot and a
         cautious one naturally sets up something safe.
 
-        r23 (BUG 3, part iii): the cue ball may now genuinely be ABSENT when
-        this is called -- that is the whole point of the auto_respot change, and
-        the old `if cue is None: return None` guard would have silently eaten
-        every placement. Scoring never needed the cue body anyway (`_search` is
-        parameterised by the candidate position), so only the commit step at the
-        bottom cares, and it re-adds the ball when there isn't one.
-
-        Returns the chosen position, or None if no legal placement was found."""
+        Returns the chosen position, or None if no legal candidate scores."""
         rc = CFG["CUE_R_M"]
         existing = [((b.position.x, b.position.y), s.radius)
                     for bid, (b, s) in sim.balls.items() if bid != Sim.CUE_ID]
@@ -1529,6 +1510,11 @@ class PoolAI:
                 best_pos, best_u = cand, u
         if best_pos is None:
             return None
+        # r23 bug 3: the cue ball may genuinely be OFF the table (potted,
+        # auto_respot now False for a Game-driven sim) rather than merely
+        # needing repositioning. _search above never touches an actual cue
+        # body -- it's parameterised entirely by the candidate position -- so
+        # placement itself only needs to handle the commit step here.
         cue = sim.cue()
         if cue is None:
             sim._add_ball(Sim.CUE_ID, best_pos, "cue")
@@ -1699,9 +1685,8 @@ def new_game(controllers=("ai", "ai"), names=("SHARK", "STEADY")):
     sim = Sim(layout="empty")
     sim._respot_cue()
     sim.rack()
-    # r23 (BUG 3): a rules-driven sim leaves the cue OFF the table when it is
-    # potted, so ball-in-hand is a real choice rather than a decision already
-    # taken by the physics layer.
+    # r23 bug 3: a Game-driven sim must NOT auto-respot a potted cue ball --
+    # Game.on_rest() grants ball_in_hand instead, and the player/AI places it.
     sim.auto_respot = False
     return sim, Game(names=names, controllers=controllers)
 
@@ -2219,111 +2204,18 @@ def nudge_spin(follow, side, d_follow, d_side):
 
 
 def shot_spin_and_reset(side, follow):
-    """r23 (BUG 2 -- spin not resetting between shots): return the spin to apply
-    to THIS strike, followed by the values the HUD must fall back to afterwards.
+    """r23 bug 2: the spin a shot fires with, and what the HUD's spin state
+    must fall back to immediately after -- dead centre, every time.
 
-    The bug was not two pieces of state disagreeing, as first theorised.
-    `Sim._live_side`/`_live_follow` are an internal physics copy, set fresh from
-    the arguments on every `strike()` call, and were never at fault. The fault
-    was in the HUD closure: `do_shoot()` read `spin_side`/`spin_follow` and then
-    left them exactly as they were, so the SAME non-zero spin (which the SpinPad
-    reads directly, which is why it also would not de-select) was re-sent shot
-    after shot. Bottom spin, once chosen, stayed chosen forever.
-
-    Returned as a 4-tuple so the caller applies and clears in one statement and
-    cannot forget the second half. The reset value is deliberately the same
-    dead-centre the manual "Reset spin" button uses, without duplicating it.
-
-    Pure: no pygame, no Sim, no closure -- directly unit-testable.
-    """
+    Before this fix, do_shoot() consumed spin_side/spin_follow into the
+    strike but never reset them, so whatever spin was dialled in on the
+    SpinPad carried straight into the NEXT shot's aim (the Maker found bottom
+    / draw spin stuck on and unable to de-select). Pulled out as a pure
+    function so do_shoot()'s automatic reset and the existing manual
+    Reset-spin button share exactly the same fallback value and can never
+    drift apart, and so the fix is testable without the pygame wrapper.
+    Returns (side_to_apply, follow_to_apply, new_side, new_follow)."""
     return side, follow, 0.0, 0.0
-
-
-def cue_was_potted(pot_events, cue_id=0):
-    """r23: did the cue ball go down on the shot these pot events describe?
-
-    `pot_events` is Sim.last_pot_events -- a list of (bid, colour, pos, radius).
-    Sandbox mode has no Game object and therefore no rules layer to notice a
-    scratch, so it needs this to know when to hand the player the ball. Kept as
-    a pure function over the event list rather than a peek at sim.balls, because
-    "the cue is missing" and "the cue was just potted" are different questions
-    and only the second one should grant ball in hand.
-
-    Pure: no pygame, no Sim -- directly unit-testable.
-    """
-    return any(ev[0] == cue_id for ev in (pot_events or ()))
-
-
-def dist_point_segment(p, a, b):
-    """Shortest distance from point p to the line segment a-b. Pure geometry --
-    no pygame, no pymunk -- so it is directly unit-testable and reusable. The
-    aiming/coach overlay will want this same primitive to reflect a projected
-    path off the real cushion nose."""
-    px, py = p
-    ax, ay = a
-    bx, by = b
-    dx, dy = bx - ax, by - ay
-    L2 = dx * dx + dy * dy
-    if L2 == 0.0:
-        return math.hypot(px - ax, py - ay)
-    t = ((px - ax) * dx + (py - ay) * dy) / L2
-    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
-    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
-
-
-def point_in_polygon(p, poly):
-    """Even-odd ray-cast: is point p inside the closed polygon `poly` (a list of
-    (x, y) vertices, implicitly closed)? Pure. Correct for the NON-CONVEX
-    cushion loop -- the pocket throats bulge outward -- because ray-casting
-    counts edge crossings and doesn't care about convexity. On-edge points are
-    ambiguous for ray-casting, but a real placement is always rejected first by
-    the ball-radius clearance test in can_place_ball, so that ambiguity never
-    decides anything."""
-    x, y = p
-    inside = False
-    n = len(poly)
-    j = n - 1
-    for i in range(n):
-        xi, yi = poly[i]
-        xj, yj = poly[j]
-        if ((yi > y) != (yj > y)) and \
-           (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
-            inside = not inside
-        j = i
-    return inside
-
-
-_nose_loop_cache = {}
-
-
-def nose_loop_m():
-    """The tangent-true cushion-nose loop as a closed vertex list in METRES --
-    the very geometry the physics builds its cushions from (cushion_path.py,
-    driven at this table's dimensions, mm -> m at the boundary). This is the
-    real boundary a ball must stay inside, pocket mouths and all, which a plain
-    play_rect() rectangle cannot represent: the rectangle walls off the mouths,
-    where there is no cushion at all.
-
-    Cached exactly like capture_points(), and keyed on the same values, because
-    it is read on every placement test -- the custom-mode mouse drag and the
-    AI's ball-in-hand candidate search -- and the flatten is not free. The key
-    tracks the only things that change the loop (table size and the two mouth
-    widths), so a live panel change rebuilds it rather than serving a stale
-    loop. Tessellated at 3 deg, matching the physics build."""
-    MM = 1000.0
-    key = (play_rect(), pocket_half_mouth(), pocket_middle_half_mouth())
-    hit = _nose_loop_cache.get(key)
-    if hit is not None:
-        return hit
-    cushion_geo.configure(
-        play_w=CFG["PLAY_W_M"] * MM, play_h=CFG["PLAY_H_M"] * MM,
-        corner_mouth=CFG["POCKET_MOUTH_M"] * MM,
-        middle_mouth=CFG["POCKET_MIDDLE_MOUTH_M"] * MM,
-    )
-    loop = [(x / MM, y / MM) for (x, y)
-            in cushion_geo.flatten(cushion_geo.build_cushion_path(), 3.0)]
-    _nose_loop_cache[key] = loop
-    return loop
 
 
 # r10 custom mode: ball kinds the user can place. "cue" is special -- there can
@@ -2346,25 +2238,10 @@ def can_place_ball(pos, existing, r_new, r_others):
     trick-shot setup custom mode exists for. Capture is a test on the ball's
     CENTRE (see _capture_pockets: centre within cap_r), so the real constraint
     is `dist >= cap_r`, plus a hair so it can't drop the instant physics
-    resumes. 1mm of clearance, not 25mm.
-
-    r24: the table boundary is now the real tangent-true cushion-nose loop
-    (nose_loop_m: the centre must be inside the loop AND at least a ball radius
-    clear of every nose edge), not a play_rect() rectangle. The rectangle kept a
-    ball a full radius inside straight rails -- right along a cushion, but it
-    also walled off the pocket MOUTHS, where there is no cushion, so a hanger
-    could never be set on the lip. The polyline handles rails and mouths in one
-    rule with no mouth special-casing -- which is exactly what the reverted r22
-    "circular mouth exemption" got wrong (its middle-mouth circles leaked out
-    over the side rails and let a ball embed there). The capture and overlap
-    tests below are unchanged, so a ball still cannot be placed where it would
-    instantly drop, nor on top of another ball."""
-    poly = nose_loop_m()
-    if not point_in_polygon(pos, poly):
-        return False
-    n = len(poly)
-    if min(dist_point_segment(pos, poly[i], poly[(i + 1) % n])
-           for i in range(n)) < r_new:
+    resumes. 1mm of clearance, not 25mm."""
+    x0, y0, x1, y1 = play_rect()
+    if not (x0 + r_new <= pos[0] <= x1 - r_new
+            and y0 + r_new <= pos[1] <= y1 - r_new):
         return False
     for (pc, cap_r) in capture_points():
         if math.dist(pos, pc) < cap_r + 0.001:
@@ -3243,12 +3120,6 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                               (self.rect.x, self.rect.bottom), (self.rect.right, self.rect.bottom), 1)
 
     sim = Sim()
-    # r23 (BUG 3 follow-up): "people play solo on pool tables" -- sandbox has no
-    # Game object and so had no ball-in-hand concept at all. `sandbox_bih`
-    # mirrors game.ball_in_hand for mode 0: true at the start and whenever the
-    # white is potted, spent by taking a shot.
-    sim.auto_respot = False
-    sandbox_bih = True
     game = None
     ais = None
     ai_plan = None
@@ -3305,33 +3176,29 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 and game.controllers[game.current] == "human"))
 
     def do_shoot():
-        nonlocal pending, spin_side, spin_follow, sandbox_bih
+        nonlocal pending, spin_side, spin_follow
         cue = sim.cue()
         if not shoot_enabled(cue is not None, sim.all_at_rest(), my_turn()):
             return
         dx, dy = rotate_vector(1.0, 0.0, aim_angle)
-        # r23 (BUG 2): apply the chosen spin, then immediately clear the HUD's
-        # copy of it. Without the clear, the same spin was silently re-applied
-        # to every subsequent shot and the SpinPad would not de-select.
-        use_side, use_follow, spin_side, spin_follow = \
+        # r23 bug 2: fire with the spin that was dialled in, then reset the
+        # HUD's spin state to centre -- it must not carry into the next shot.
+        side_to_apply, follow_to_apply, spin_side, spin_follow = \
             shot_spin_and_reset(spin_side, spin_follow)
-        sim.strike((dx, dy), power, side=use_side, follow=use_follow)
-        sandbox_bih = False   # r23: placement is spent by playing the shot
+        sim.strike((dx, dy), power, side=side_to_apply, follow=follow_to_apply)
         if not smoke:
             play_sound("cue_strike", power / CFG["POWER_MAX"])
         if game is not None:
             pending = True
 
     def do_cycle_mode():
-        nonlocal mode, sim, game, ais, ai_plan, ai_wait, pending, sandbox_bih
+        nonlocal mode, sim, game, ais, ai_plan, ai_wait, pending
         mode = (mode + 1) % len(MODES)
         ai_plan, ai_wait, pending = None, 0, False
         trail_history.clear()
         pot_anims.clear()
         if mode == 0:
             sim, game, ais = Sim(), None, None
-            sim.auto_respot = False       # r23: sandbox places its own cue
-            sandbox_bih = True
         else:
             sim, game, ais = start_game(mode)
             if game.controllers[0] == "ai":
@@ -3341,13 +3208,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 game.last_event = "your break — aim at the pack"
 
     def do_rack():
-        nonlocal sim, game, ais, ai_plan, ai_wait, pending, sandbox_bih
+        nonlocal sim, game, ais, ai_plan, ai_wait, pending
         trail_history.clear()
         pot_anims.clear()
         finale = None
         if mode == 0:
             sim.rack()
-            sandbox_bih = True   # r23: a fresh rack means a fresh placement
         else:
             sim, game, ais = start_game(mode)
             ai_plan, ai_wait, pending = None, 0, False
@@ -3801,9 +3667,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 # the first): it is gated to a human striker who actually HAS
                 # ball in hand, on a table at rest, and the cue ball ONLY -- no
                 # other ball is touchable, and aiming remains HUD-only always.
-                elif (((game is not None and game.ball_in_hand)
-                       or (mode == 0 and sandbox_bih))
-                      and my_turn() and sim.all_at_rest()):
+                elif (game is not None and game.ball_in_hand and my_turn()
+                      and sim.all_at_rest()):
                     on_panel = (ev.__dict__.get("pos", (0, 0))[0]
                                 >= win_w - PANEL_W)
                     if not on_panel and ev.type in (pygame.MOUSEBUTTONDOWN,
@@ -3818,11 +3683,13 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                             others = [((b.position.x, b.position.y), s.radius)
                                       for bid, (b, s) in sim.balls.items()
                                       if bid != Sim.CUE_ID]
-                            # r23 (BUG 3, part iii): with auto-respot off the
-                            # cue is genuinely GONE after a scratch, so this
-                            # has to be able to put a ball back, not just move
-                            # one that is already there. The old `cue is not
-                            # None` guard silently swallowed every attempt.
+                            # r23 bug 3: the cue ball may genuinely be OFF the
+                            # table (potted, auto_respot now False) rather
+                            # than merely needing repositioning -- the old
+                            # `cue is not None` guard silently ate every
+                            # click/drag in that case. First press re-adds it
+                            # at the clicked point; a drag afterwards moves
+                            # the now-existing body, same as always.
                             if can_place_cue(wp, others, CFG["CUE_R_M"]):
                                 if cue is None:
                                     sim._add_ball(Sim.CUE_ID, wp, "cue")
@@ -3833,14 +3700,6 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     drag_bid = None
 
         sim.step(1.0 / CFG["FPS"])
-
-        # r23 (BUG 3 follow-up): sandbox has no rules layer to spot a scratch,
-        # so the scratch is read straight off the sim's own pot events. This is
-        # deliberately NOT `not smoke` gated -- it is game state, not an
-        # overlay, and gating state behind the render flag is exactly how the
-        # smoke path and the real path drift apart.
-        if mode == 0 and cue_was_potted(sim.last_pot_events, Sim.CUE_ID):
-            sandbox_bih = True
 
         # ---- game logic (modes 1 and 2) ----
         if game is not None and sim.all_at_rest():
@@ -4226,8 +4085,6 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 f"balls {len(sim.balls)}  potted {len(sim.potted_log)}"
                 f" [{','.join(sim.potted_colours()) or '-'}]"
             ]
-            if mode == 0 and sandbox_bih:
-                status_lines2.append("BALL IN HAND — drag cue in baulk")
             if aim_txt:
                 status_lines2.append(aim_txt)
         # r12: the spin-position icon is GONE from the frame (Maker's call --
@@ -4253,12 +4110,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             # asked for the baize to be left as it is), and being `not smoke`
             # gated it never touches the --snap baseline. Without it the player
             # has no way to see where placement is legal.
-            # r23: `== "you"` compared a controller slot to a player NAME and
-            # so never matched -- the highlight never drew for a human at all.
-            # The controller values are "human" and "ai".
-            if (((game is not None and game.ball_in_hand
-                  and game.controllers[game.current] == "human")
-                 or (mode == 0 and sandbox_bih))
+            if (game is not None and game.ball_in_hand
+                    and game.controllers[game.current] == "you"
                     and sim.all_at_rest()):
                 bx0, by0, bx1, by1 = baulk_rect()
                 tl = w2s((bx0, by0))
@@ -5712,26 +5565,19 @@ def selftest():
     # any future attempt must not break:
     #   (a) a ball can never be placed where the pocket would instantly eat it
     #   (b) a ball can never be embedded in a rail
-    # NOTE: the jaws limitation this guard was written alongside is RESOLVED at
-    # r24 -- can_place_ball now tests the real cushion-nose polyline, so a ball
-    # CAN be set on a pocket lip. These two invariants still hold and still
-    # matter, which is why the guard stays:
-    #   (a) a ball can never be placed where the pocket would instantly eat it
-    #   (b) a ball can never be embedded in a rail (a TRUE rail, not a mouth)
-    # The old "embedded" probe point (0.91, 0.015) sat in the top-middle
-    # POCKET MOUTH, which r24 now legitimately makes placeable -- so it is moved
-    # to a genuine straight-rail spot, well clear of any pocket, where a centre
-    # closer than a ball radius to the nose is still an embed and must be
-    # rejected. Do not reach for another margin fudge (see r22's reverted try).
+    # NOTE (known limitation, deliberately left): because play_rect() is a plain
+    # rectangle that knows nothing about pockets, the jaws area is still
+    # unreachable in custom mode. Fixing that properly means testing containment
+    # against cushion_path.py's real cushion-nose polyline rather than a
+    # rectangle -- see the handoff. Do not reach for another margin fudge.
     r51 = ball_r()
     pc51, cap51 = capture_points()[0]
     ang51 = math.atan2(0.455 - pc51[1], 0.91 - pc51[0])
     in_pocket51 = can_place_ball(
         (pc51[0] + math.cos(ang51) * cap51 * 0.5,
          pc51[1] + math.sin(ang51) * cap51 * 0.5), [], r51, [])
-    # a genuine straight-rail spot (well clear of any pocket mouth): a centre
-    # 10mm from the top rail is INSIDE the cushion and must stay rejected.
-    embedded51 = can_place_ball((0.30 * CFG["PLAY_W_M"], 0.010), [], r51, [])
+    # mid-table, against the bottom rail: centre 15mm out is INSIDE the cushion
+    embedded51 = can_place_ball((0.91, 0.015), [], r51, [])
     clear51 = can_place_ball((0.91, 0.455), [], r51, [])      # open table: fine
     check("r22 placement invariants — a ball can never be placed inside a "
           "pocket's capture zone, nor embedded in a rail (the mouth-exemption "
@@ -5740,145 +5586,141 @@ def selftest():
           f"in-pocket={in_pocket51}, embedded-in-rail={embedded51}, "
           f"open-table={clear51}")
 
-    # 52. r23 BUG 1 -- turn handover. legal_colours() is asked, from on_rest(),
-    #     what was legal WHEN THE SHOT WAS PLAYED, but the shot's pots are
-    #     already off the table by then. Potting your LAST colour therefore made
-    #     remaining(own) read 0, legal_colours returned ["black"], and the
-    #     striker's own colour became an illegal first contact retrospectively
-    #     -- a phantom "wrong ball first" foul that handed the visit back
-    #     instead of letting them shoot the black.
-    class _RemSim:
-        """Minimal stand-in: only remaining() matters to legal_colours."""
-        def __init__(self, rem):
-            self._rem = rem
-        def remaining(self, colour):
-            return self._rem
-
+    # 52. r23 bug 1 fix -- legal_colours must judge the shot against the table
+    #     AT ADDRESS, not after this shot's own pots have already been
+    #     removed. Before the fix, potting your LAST colour made
+    #     sim.remaining(own) read 0 by the time on_rest checked it, so the
+    #     game wrongly decided you should have been on the black and called
+    #     your own colour a wrong-ball foul -- clearing your colours ended
+    #     your turn instead of leaving you on the black.
     g52 = Game()
     g52.colours = {0: "red", 1: "yellow"}
     g52.current = 0
-    # THE BUG: table shows 0 reds because the last one just went down this shot.
-    last_colour52 = g52.legal_colours(_RemSim(0), potted_this_shot=["red"])
-    # Live callers pass nothing and must be untouched -- a genuinely cleared
-    # table really is on the black.
-    cleared52 = g52.legal_colours(_RemSim(0))
-    # Mid-game pot: still reds left, still on reds.
-    midgame52 = g52.legal_colours(_RemSim(2), potted_this_shot=["red"])
-    # Potting the OPPONENT'S colour must not keep you on your own once cleared.
-    wrong52 = g52.legal_colours(_RemSim(0), potted_this_shot=["yellow"])
-    # Double pot of the last two reds is still "was on reds".
-    double52 = g52.legal_colours(_RemSim(0), potted_this_shot=["red", "red"])
-    # A scratch alongside the last red does not change what was legal.
-    scratch52 = g52.legal_colours(_RemSim(0), potted_this_shot=["red", "cue"])
-    check("r23 turn handover — potting your LAST colour leaves your own colour "
-          "legal for the shot just played, so the visit continues to the black "
-          "instead of being handed back on a phantom foul",
-          last_colour52 == ["red"] and cleared52 == ["black"]
-          and midgame52 == ["red"] and wrong52 == ["black"]
-          and double52 == ["red"] and scratch52 == ["red"],
-          f"last-red={last_colour52}, cleared={cleared52}, mid={midgame52}, "
-          f"opp-colour={wrong52}, double={double52}, scratch={scratch52}")
+    # (a) pot the LAST red cleanly -> must stay on, no foul
+    g52.on_rest(_FakeSimFull(first_contact="red", cushion=True,
+                             potted=["red"], remaining=0))
+    ok52_last = g52.current == 0 and "foul" not in g52.last_event
+    # (b) pot a MID-GAME red (3 left after this pot) -> must stay on
+    g52b = Game()
+    g52b.colours = {0: "red", 1: "yellow"}
+    g52b.current = 0
+    g52b.on_rest(_FakeSimFull(first_contact="red", cushion=True,
+                              potted=["red"], remaining=3))
+    ok52_mid = g52b.current == 0 and "foul" not in g52b.last_event
+    # (c) genuine wrong-ball-first, nothing potted -> still a foul, turn passes
+    g52c = Game()
+    g52c.colours = {0: "red", 1: "yellow"}
+    g52c.current = 1        # on yellow
+    g52c.on_rest(_FakeSimFull(first_contact="red", cushion=True,
+                              potted=[], remaining=3))
+    ok52_wrong = (g52c.current == 0 and g52c.fouls == 1
+                 and "wrong ball first" in g52c.last_event)
+    # (d) black potted legitimately (own colour cleared, black struck clean)
+    #     -> striker wins
+    g52d = Game()
+    g52d.colours = {0: "red", 1: "yellow"}
+    g52d.current = 0
+    g52d.on_rest(_FakeSimFull(first_contact="black", cushion=True,
+                              potted=["black"], remaining=0))
+    ok52_black = g52d.over and g52d.winner == 0
+    # (e) pot the last colour but scratch -> still a foul, turn passes
+    g52e = Game()
+    g52e.colours = {0: "red", 1: "yellow"}
+    g52e.current = 0
+    g52e.on_rest(_FakeSimFull(first_contact="red", cushion=True,
+                              potted=["red", "cue"], remaining=0))
+    ok52_scratch = (g52e.current == 1 and g52e.fouls == 1
+                    and g52e.last_event == "foul — scratch")
+    # (f) pot the last TWO reds in one shot -> must stay on
+    g52f = Game()
+    g52f.colours = {0: "red", 1: "yellow"}
+    g52f.current = 0
+    g52f.on_rest(_FakeSimFull(first_contact="red", cushion=True,
+                              potted=["red", "red"], remaining=0))
+    ok52_double = g52f.current == 0 and "foul" not in g52f.last_event
+    check("r23 bug 1 — clearing your last colour cleanly stays on (no phantom "
+          "wrong-ball foul), a mid-game pot still stays on, a genuine "
+          "wrong-ball-first still fouls, a clean black still wins, a scratch "
+          "on the last colour still fouls, and potting two at once still "
+          "stays on",
+          ok52_last and ok52_mid and ok52_wrong and ok52_black
+          and ok52_scratch and ok52_double,
+          f"last={ok52_last} mid={ok52_mid} wrong={ok52_wrong} "
+          f"black={ok52_black} scratch={ok52_scratch} double={ok52_double}")
 
-    # 53. r23 BUG 2 -- spin not resetting between shots. do_shoot() read the
-    #     HUD's spin and never cleared it, so the same value was re-sent on
-    #     every subsequent shot and the SpinPad would not de-select. The pure
-    #     core is tested directly; the closure that uses it is not testable
-    #     headless.
-    a53, b53, r53a, r53b = shot_spin_and_reset(-0.6, 0.4)
-    # Simulate two shots through the helper the way do_shoot does.
-    side53, follow53 = 0.0, -0.8
-    used53 = []
-    for _ in range(2):
-        u_s, u_f, side53, follow53 = shot_spin_and_reset(side53, follow53)
-        used53.append((u_s, u_f))
-    check("r23 spin reset — the spin chosen is applied to THIS shot and then "
-          "cleared, so it cannot silently carry into the next one",
-          (a53, b53) == (-0.6, 0.4) and (r53a, r53b) == (0.0, 0.0)
-          and used53[0] == (0.0, -0.8) and used53[1] == (0.0, 0.0),
-          f"applied={(a53, b53)}, reset={(r53a, r53b)}, "
-          f"shot1={used53[0]}, shot2={used53[1]}")
+    # 53. r23 bug 2 fix -- spin must fire with whatever was dialled in, then
+    #     fall back to dead centre so it can never carry into the NEXT shot.
+    #     Before the fix, do_shoot() consumed spin_side/spin_follow into the
+    #     strike but never reset them, so bottom/draw spin stayed selected
+    #     shot after shot. shot_spin_and_reset() is the single source of
+    #     truth do_shoot()'s automatic reset shares with the manual
+    #     Reset-spin button.
+    applied53 = shot_spin_and_reset(-0.7, 0.4)
+    idle53 = shot_spin_and_reset(0.0, 0.0)
+    ok53 = (applied53 == (-0.7, 0.4, 0.0, 0.0)
+            and idle53 == (0.0, 0.0, 0.0, 0.0))
+    check("r23 bug 2 — a shot fires with the spin that was set, then the HUD "
+          "state resets to centre so it can't carry into the next shot",
+          ok53, f"drawn spin -> {applied53}, no spin -> {idle53}")
 
-    # 54. r23 BUG 3 -- cue ball could not be repositioned. Three coupled
-    #     pieces: the sim auto-respotted the white before the rules could grant
-    #     ball-in-hand; on_rest never set ball_in_hand back True on a foul; and
-    #     both placement paths could only MOVE an existing cue, not re-add a
-    #     missing one.
-    sandbox54 = Sim(layout="empty")           # regression guard: unchanged
-    game_sim54, g54 = new_game(controllers=("human", "ai"))
-    # A plain wrong-ball foul (no scratch) must still grant ball in hand.
+    # 54. r23 bug 3 fix -- three coupled pieces of the same incident: the sim
+    #     silently deciding cue placement before the rules/player got a say.
+    #     (i) a Game-driven sim (auto_respot=False, set by new_game()) must
+    #     leave a potted cue ball OFF the table, not silently respot it; a
+    #     bare sandbox Sim (auto_respot defaults True) must still respot
+    #     exactly as before -- this is an opt-out, not a behaviour change to
+    #     the default. (ii) Game.on_rest() must grant ball_in_hand on ANY
+    #     foul, not just a scratch -- this was NEVER granted before (only set
+    #     True once, at Game.__init__, and never again), a gap the sim's old
+    #     auto-respot masked because the table always looked "handled"
+    #     regardless of what the rules layer decided. (iii) PoolAI.place_cue
+    #     must be able to RE-ADD a genuinely absent cue ball, not just
+    #     reposition an existing body -- _search never touches the cue body
+    #     itself, so only the commit step needed this.
+    pot54 = capture_points()[0][0]
+    s54 = Sim(layout="empty")           # auto_respot defaults True (sandbox)
+    s54._add_ball(s54.CUE_ID, (0.30, 0.455), "cue")
+    s54.balls[s54.CUE_ID][0].position = pot54
+    s54.step(1.0 / 60.0)
+    ok54_sandbox_respots = s54.cue() is not None
+    s54g = Sim(layout="empty")
+    s54g.auto_respot = False            # r23: what new_game() sets
+    s54g._add_ball(s54g.CUE_ID, (0.30, 0.455), "cue")
+    s54g.balls[s54g.CUE_ID][0].position = pot54
+    s54g.step(1.0 / 60.0)
+    ok54_no_respot = (s54g.cue() is None and s54g.CUE_ID not in s54g.balls
+                      and s54g.CUE_ID in s54g.potted_log)
+    g54 = Game()
     g54.colours = {0: "red", 1: "yellow"}
     g54.current = 0
     g54.ball_in_hand = False
-    g54.on_rest(_FakeSimFull("yellow", True, [], remaining=3))
-    foul_bih54 = g54.ball_in_hand
-    # And so must a scratch.
-    g54b = Game(controllers=("human", "ai"))
+    g54.on_rest(_FakeSimFull(first_contact="red", cushion=True,
+                             potted=["red", "cue"], remaining=3))
+    ok54_bih_scratch = g54.ball_in_hand is True and g54.current == 1
+    g54b = Game()
     g54b.colours = {0: "red", 1: "yellow"}
-    g54b.current = 0
+    g54b.current = 1
     g54b.ball_in_hand = False
-    g54b.on_rest(_FakeSimFull("red", True, ["cue"], remaining=3))
-    scratch_bih54 = g54b.ball_in_hand
-    # The AI must be able to place a cue ball that is genuinely absent.
-    ai54 = PoolAI("T", aim_jitter=0.0)
-    body54, shape54 = game_sim54.balls.pop(Sim.CUE_ID)
-    game_sim54.space.remove(body54, shape54)
-    placed54 = ai54.place_cue(game_sim54, ["red", "yellow"])
-    readded54 = game_sim54.cue() is not None
-    check("r23 cue repositioning — a rules-driven sim leaves a potted cue OFF "
-          "the table (a bare sandbox Sim still respots), any foul grants ball "
-          "in hand, and the AI can re-add a cue that is genuinely absent",
-          sandbox54.auto_respot is True and game_sim54.auto_respot is False
-          and foul_bih54 and scratch_bih54
-          and placed54 is not None and readded54,
-          f"sandbox-respots={sandbox54.auto_respot}, "
-          f"game-respots={game_sim54.auto_respot}, foul-bih={foul_bih54}, "
-          f"scratch-bih={scratch_bih54}, ai-replaced={readded54}")
-
-    # 55. r23 follow-up -- sandbox ball in hand. "People play solo on pool
-    #     tables": sandbox has no Game object, so it had no ball-in-hand concept
-    #     at all and the white was simply respotted for you. The pure predicate
-    #     that drives it is tested here; the closure state it feeds is not
-    #     testable headless.
-    pot_cue55 = [(Sim.CUE_ID, "cue", (0.1, 0.1), 0.024)]
-    pot_red55 = [(3, "red", (0.1, 0.1), 0.0254)]
-    check("r23 sandbox ball in hand — a scratch is read straight off the sim's "
-          "own pot events, so solo play gets the white back in hand instead of "
-          "having it respotted for them",
-          cue_was_potted(pot_cue55, Sim.CUE_ID) is True
-          and cue_was_potted(pot_red55, Sim.CUE_ID) is False
-          and cue_was_potted([], Sim.CUE_ID) is False
-          and cue_was_potted(pot_red55 + pot_cue55, Sim.CUE_ID) is True,
-          f"cue-potted={cue_was_potted(pot_cue55, Sim.CUE_ID)}, "
-          f"red-only={cue_was_potted(pot_red55, Sim.CUE_ID)}, "
-          f"empty={cue_was_potted([], Sim.CUE_ID)}")
-
-    # 56. r24 jaws placement -- the point of the feature: a ball CAN now be set
-    #     on a pocket lip, because containment is tested against the real
-    #     cushion-nose polyline (nose_loop_m) instead of a play_rect rectangle
-    #     that walled off the mouths. The two r22 invariants (no in-throat drop,
-    #     no rail embedding) are re-checked right here so the feature can't quietly
-    #     reopen either hole. Coordinates are the ones the geometry probe found.
-    r56 = ball_r()
-    W56, H56 = CFG["PLAY_W_M"], CFG["PLAY_H_M"]
-    tm_lip56 = (W56 / 2.0, 0.012)          # a hanger on the top-middle lip
-    bm_lip56 = (W56 / 2.0, H56 - 0.012)    # ... and the bottom-middle lip
-    # the rectangle rule these replace would have rejected both, the centre
-    # being nearer the rail line than a ball radius:
-    old_walled56 = (0.012 < r56) and (H56 - 0.012 > H56 - r56)
-    lip_ok56 = (can_place_ball(tm_lip56, [], r56, [])
-                and can_place_ball(bm_lip56, [], r56, []))
-    throat_rej56 = not can_place_ball((W56 / 2.0, -0.030), [], r56, [])  # in throat
-    rail_rej56 = not can_place_ball((0.30 * W56, 0.010), [], r56, [])    # true rail
-    check("r24 jaws placement — a hanger can now be set on a pocket lip "
-          "(containment tested against the real cushion-nose polyline, not a "
-          "rectangle), while a ball in the throat or embedded in a rail stays "
-          "rejected",
-          lip_ok56 and old_walled56 and throat_rej56 and rail_rej56,
-          f"lips-now-legal={lip_ok56}, rectangle-would-wall={old_walled56}, "
-          f"throat-rejected={throat_rej56}, rail-rejected={rail_rej56}")
-
-    print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
-    return failures == 0
+    g54b.on_rest(_FakeSimFull(first_contact="red", cushion=True,
+                              potted=[], remaining=3))    # wrong-ball, no scratch
+    ok54_bih_wrongball = g54b.ball_in_hand is True
+    s54c = Sim(layout="empty")
+    s54c.auto_respot = False
+    s54c._add_ball(s54c.alloc_id(), (0.9, 0.455), "red")
+    ai54 = PoolAI("T", aim_jitter=0.0, threshold=0.05, greed=0.5, caution=0.5,
+                 rng=random.Random(7))
+    placed54 = ai54.place_cue(s54c, ["red"])
+    ok54_ai_readd = placed54 is not None and s54c.cue() is not None
+    ok54 = (ok54_sandbox_respots and ok54_no_respot and ok54_bih_scratch
+            and ok54_bih_wrongball and ok54_ai_readd)
+    check("r23 bug 3 — a Game-driven sim no longer auto-respots a potted cue "
+          "ball (sandbox Sim still does), any foul grants ball_in_hand (not "
+          "just a scratch, and not only once at game start), and the AI can "
+          "re-place a genuinely missing cue ball",
+          ok54,
+          f"sandbox_respots={ok54_sandbox_respots} no_respot={ok54_no_respot} "
+          f"bih_scratch={ok54_bih_scratch} bih_wrongball={ok54_bih_wrongball} "
+          f"ai_readd={ok54_ai_readd}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

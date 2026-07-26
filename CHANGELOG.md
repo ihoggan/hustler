@@ -5,7 +5,25 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r23 — single-player gameplay fixes (current)
+## r24 — custom-mode jaws placement (current)
+
+You can now set a ball right on the lip of any pocket in custom mode — a hanger
+ready to pot — which the placement rule previously walled off.
+
+The old rule treated the table as a plain rectangle and kept every ball a full
+ball-radius inside the rails. That is correct along a cushion, but a pocket
+mouth has no cushion, so the rectangle blocked the one spot you most want when
+setting a trick shot up. Placement is now tested against the real tangent-true
+cushion nose: a ball is legal if its centre sits inside the cushion loop and at
+least a ball-radius clear of every cushion edge. That single rule handles the
+straight rails and the pocket mouths together, with no special cases — which is
+what an earlier "exempt the pocket mouths" attempt got wrong (it leaked along
+the side rails and was reverted). Balls still cannot be embedded in a rail, nor
+set where the pocket would instantly swallow them.
+
+This is the fix flagged as pending in the r22 notes and Known Issues #1.
+
+## r23 — single-player gameplay fixes
 
 Four bugs, all found by actually playing the game rather than by the test
 suite. That's the headline: the validation chain (compile, self-test, batch,
@@ -42,7 +60,7 @@ player was human, so it had never once appeared in a game against the AI.
   order, so you can read back the whole frame — previously it only showed the
   most recent shot.
 - Trimmed an over-cautious margin around the pockets in custom-mode placement
-  (full jaws placement still pending — see Known Issues).
+  (full jaws placement completed later, at r24).
 
 ## r19–r21 — AI study tools and calibration
 

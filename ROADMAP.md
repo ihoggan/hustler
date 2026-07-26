@@ -1,20 +1,20 @@
 # Roadmap
 
-## Current status: r23 — playable, validated
+## Current status: r24 — playable, validated
 
-**Validation snapshot (r23):**
+**Validation snapshot (r24):**
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 63 assertions |
+| `--selftest` | ALL PASS — 64 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY, all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 
-`hustler.py` is ~5,850 lines; `cushion_path.py` ~515. Two files, no assets, no
+`hustler.py` is ~5,960 lines; `cushion_path.py` ~515. Two files, no assets, no
 dependencies beyond pygame and pymunk.
 
 > **Note on older revision tags.** This file previously tracked "R6.x" graphics
@@ -47,12 +47,6 @@ a blank page.
 
 ### Near-term candidates
 
-**Custom-mode jaws placement** — see [KNOWN_ISSUES.md](KNOWN_ISSUES.md) #1. The
-fix is identified (test containment against the real cushion polyline rather
-than a rectangle) but not attempted. Two previous margin-based attempts failed,
-so the polyline approach is the one to take. Also builds a ray/polyline helper
-that the aiming overlay work below would reuse.
-
 **Scripted play-through tests.** All four r23 bugs escaped the entire validation
 chain because that chain has no test that plays a whole frame. Driving a
 complete game through the rules engine and asserting turn, visit, spin and
@@ -71,6 +65,10 @@ naturally belongs to. Several open design questions remain (which geometry to
 reflect against, how many bounces to trust, whether the table read should
 account for cue-ball position). Note that the physics applies spin as an impulse
 at contact and models no in-flight curve, so a projected path must not draw one.
+The r24 jaws-placement work built the primitives this would reflect against —
+`dist_point_segment` and the cached `nose_loop_m()` cushion-nose polyline — so
+the "which geometry" question is already half-answered: reflect off the real
+nose loop, not a rectangle.
 
 **League mode.** Single player against a series of AI opponents across a fixture
 list, with results feeding a standings table and a final ranking. Fits the

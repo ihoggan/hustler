@@ -11,7 +11,7 @@ workflow and expectations.
 4. **Verify your baseline** before changing anything:
 
 ```bash
-python3 hustler.py --selftest      # expect: ALL PASS (63 assertions at r23)
+python3 hustler.py --selftest      # expect: ALL PASS (64 assertions at r24)
 ```
 
 If that doesn't pass on a clean checkout, stop and work out why before writing
@@ -70,7 +70,7 @@ Two notes on reading the results:
   If a count looks different, run it a few times on both versions before
   concluding anything.
 - `--snap` must stay **byte-identical** (md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`
-  as of r23) unless you are deliberately changing the rendered scene, in which
+  as of r24) unless you are deliberately changing the rendered scene, in which
   case say so explicitly in the commit message.
 
 If your change touches rules or the AI, also run a seeded game batch:

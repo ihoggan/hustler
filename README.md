@@ -95,7 +95,10 @@ solo on pool tables and being able to set the white where you want it is half
 the point.
 
 Ball placement in custom mode is also done with the mouse: click to place, drag
-to move, right-click to remove.
+to move, right-click to remove. You can set a ball right on a pocket lip — a
+hanger ready to pot — because placement is bounded by the real cushion-nose
+geometry, not a rectangle; only spots that would embed a ball in a rail or drop
+it straight into a pocket are refused.
 
 ## Command-line tools
 

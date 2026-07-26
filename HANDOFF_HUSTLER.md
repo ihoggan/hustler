@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r23 — playable, validated, no known blocking bugs.
+**Status:** r24 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~5,850 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~5,960 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r23
+## Validation snapshot at r24
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 63 assertions |
+| `--selftest` | ALL PASS — 64 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -42,19 +42,21 @@ them remains accurate as history and the engine facts in §3 are still current
 and still worth reading — but roughly sixteen revisions of work happened
 afterwards. That later work is documented in:
 
-- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r23
-- [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — the three open threads, each with its diagnosis
+- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r24
+- [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — the two open threads, each with its diagnosis
 - [ROADMAP.md](ROADMAP.md) — what's under discussion and what it depends on
 - [CONTRIBUTING.md](CONTRIBUTING.md) — workflow, standards, and the traps that have cost real time
 
-**The short version of r15–r23:** a JSONL per-shot study log and seeded
+**The short version of r15–r24:** a JSONL per-shot study log and seeded
 reproducible games; a major fix to the AI's shot-quality estimate (it had been
 wildly over-confident); a ~3.8× performance pass, every step proved
 behaviour-preserving by diffing study output; the two AI personalities re-tuned
 so they differ only in strategy, not aiming skill; a long calibration
 investigation that concluded the estimator is sound and the gap is a
 shot-selection artefact; full-screen startup and a game-scoped potted-ball
-chamber; and finally four single-player gameplay fixes at r23.
+chamber; four single-player gameplay fixes at r23; and custom-mode jaws
+placement at r24 (containment now tests the real cushion-nose polyline instead
+of a rectangle, so a ball can be set on a pocket lip).
 
 **The most important lesson of the whole period** is from r23: all four of those
 gameplay bugs — turn handover, spin reset, cue placement, sandbox ball-in-hand —
@@ -77,7 +79,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 63 assertions, all
+  out) rather than the pygame wrapper around it. Currently 64 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -745,7 +747,7 @@ ask — the git history has the old implementation if it's ever worth mining.
 
 Current open work now lives in two places, kept up to date:
 
-- **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** — three open threads, each written up
+- **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** — two open threads, each written up
   with its diagnosis so the next person starts from the answer rather than the
   symptom: custom-mode jaws placement, full-screen software-render performance,
   and the AI's over-harsh distance term.
@@ -781,7 +783,7 @@ Paste into a fresh session along with this file, `hustler.py` and
 > parameters and utility weights, never scripted shots.
 >
 > **Confirm the chain passes on the attached files before proposing anything:**
-> selftest ALL PASS (63 assertions), `--batch 30` with 0 containment escapes,
+> selftest ALL PASS (64 assertions), `--batch 30` with 0 containment escapes,
 > `--smoke` 90 frames, `--snap` md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`
 > byte-identical, `cushion_path.py` standalone green. If a marker is missing or
 > a number is off, say so before editing anything — an earlier session was very
