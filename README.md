@@ -4,9 +4,11 @@ A UK blackball pool physics sandbox, written in Python. Real table geometry,
 real units, honest cushions — and a set of brutal, tangent-true pocket jaws
 that reward a properly lined-up shot and punish a lazy one.
 
-Everything you see and hear is generated from code. There are no image files,
-no sound files, and no third-party assets of any kind. The table, the balls,
-the shading, the knock of a contact — all synthesised at runtime.
+![HUSTLER — the table, balls and pockets, every pixel drawn from code](Screenshot.png)
+
+Everything you see and hear in the game is generated from code — no image
+files, no sound files, no third-party assets loaded at runtime. The table, the
+balls, the shading, the knock of a contact are all synthesised.
 
 ![status](https://img.shields.io/badge/status-playable-brightgreen)
 ![python](https://img.shields.io/badge/python-3.12-blue)
