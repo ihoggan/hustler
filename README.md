@@ -152,6 +152,10 @@ they're the honest state of the last few open threads.
 See [CHANGELOG.md](CHANGELOG.md) for how it got here — the graphics, sound,
 rules, HUD, custom mode, and the long tail of physics and AI work.
 
+## Credits
+
+**David Hoggan** — Software Tester #1, and the man who taught me the game.
+
 ## Licence
 
 See [LICENSE](LICENSE).
