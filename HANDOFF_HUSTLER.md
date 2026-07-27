@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r24 — playable, validated, no known blocking bugs.
+**Status:** r27 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~5,960 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~6,130 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,23 +16,28 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r24
+## Validation snapshot at r27
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 64 assertions |
+| `--selftest` | ALL PASS — 67 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY, all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 
-Two notes on reading those. `--batch` uses an **unseeded** RNG, so pot and
+Three notes on reading those. `--batch` uses an **unseeded** RNG, so pot and
 scratch counts vary run to run — the invariant is `containment escapes: 0`, not
-the counts. And seeded AI games are extremely sensitive to behavioural change,
+the counts. Seeded AI games are extremely sensitive to behavioural change,
 which makes `--aigame N --seed S` an excellent regression check: if a refactor
-was meant to preserve behaviour, the result should be identical.
+was meant to preserve behaviour, the result should be identical. But that
+sensitivity cuts both ways — the physics is float-heavy and the result is
+**platform-sensitive**, so a recorded score is a check against *the same
+machine*, not an absolute. The r25 and r26 figures recorded in the roadmap
+(SHARK 4–8 and 5–7) did not reproduce elsewhere on identical code. Note the
+machine when you record one; re-baseline rather than debug if you move.
 
 ## What changed since this document was last fully rewritten
 
@@ -42,12 +47,12 @@ them remains accurate as history and the engine facts in §3 are still current
 and still worth reading — but roughly sixteen revisions of work happened
 afterwards. That later work is documented in:
 
-- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r24
-- [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — the two open threads, each with its diagnosis
+- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r27
+- [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — the three open threads, each with its diagnosis
 - [ROADMAP.md](ROADMAP.md) — what's under discussion and what it depends on
 - [CONTRIBUTING.md](CONTRIBUTING.md) — workflow, standards, and the traps that have cost real time
 
-**The short version of r15–r24:** a JSONL per-shot study log and seeded
+**The short version of r15–r27:** a JSONL per-shot study log and seeded
 reproducible games; a major fix to the AI's shot-quality estimate (it had been
 wildly over-confident); a ~3.8× performance pass, every step proved
 behaviour-preserving by diffing study output; the two AI personalities re-tuned
@@ -58,9 +63,26 @@ chamber; four single-player gameplay fixes at r23; and custom-mode jaws
 placement at r24 (containment now tests the real cushion-nose polyline instead
 of a rectangle, so a ball can be set on a pocket lip).
 
+**r25–r27** are all one thread plus a tail. r25 fixed the AI's distance
+calibration: `pot_estimate()`'s distance term had no floor and decayed toward
+zero, rating a real ~19%-to-drop long shot at under 2%, so the AI declined
+makeable long pots. `POT_FLOOR = 0.19` clamps it to a rate *measured* by firing
+300 real simulated shots per cell across a distance/cut grid — fitted against
+the rig, not derived and hoped for, which is the mistake that made the term
+over-harsh in the first place. r26 cleaned up after it: the new floor sat
+*above* both AI personalities' attempt thresholds, so every floored shot
+cleared both identically and `threshold` lost its power to reject anything — a
+measured 30.6% of all AI shots, of which 88.7% would otherwise have been
+safeties. STEADY's threshold moved to 0.24, clear of the floor; SHARK's stayed
+at 0.10, since attempting a genuine 19% shot is in character for it. r27 fixed
+a sandbox bug (the potted-ball chamber never cleared when the table was
+emptied) and added the assertion r26 should have shipped with, guarding the
+threshold-above-floor invariant.
+
 **The most important lesson of the whole period** is from r23: all four of those
 gameplay bugs — turn handover, spin reset, cue placement, sandbox ball-in-hand —
 passed the *entire* validation chain and were found by sitting down and playing.
+So did r27's chamber bug. That is five.
 The suite is strong on pure functions and physics invariants and blind to
 whether a turn passes to the right player. Add the assertion, run the chain,
 **and then play the game.**
@@ -79,7 +101,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 64 assertions, all
+  out) rather than the pygame wrapper around it. Currently 67 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -747,10 +769,14 @@ ask — the git history has the old implementation if it's ever worth mining.
 
 Current open work now lives in two places, kept up to date:
 
-- **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** — two open threads, each written up
+- **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** — three open threads, each written up
   with its diagnosis so the next person starts from the answer rather than the
-  symptom: custom-mode jaws placement, full-screen software-render performance,
-  and the AI's over-harsh distance term.
+  symptom: full-screen software-render performance; the pot-chance floor being
+  a reasonable average rather than an exact fit; and ball-to-ball throw, which
+  the estimator does not model and which only bites at extreme cut angles.
+  Custom-mode jaws placement and the AI's over-harsh distance term were both
+  open here once and are now fixed (r24 and r25/r26) — their diagnoses are kept
+  under "Recently fixed".
 - **[ROADMAP.md](ROADMAP.md)** — candidates under discussion, with dependencies:
   scripted play-through tests, the coach-mode aiming overlay, league mode, the
   "Grannie" whitewash rule, and a possible snooker project.
@@ -783,7 +809,7 @@ Paste into a fresh session along with this file, `hustler.py` and
 > parameters and utility weights, never scripted shots.
 >
 > **Confirm the chain passes on the attached files before proposing anything:**
-> selftest ALL PASS (64 assertions), `--batch 30` with 0 containment escapes,
+> selftest ALL PASS (67 assertions), `--batch 30` with 0 containment escapes,
 > `--smoke` 90 frames, `--snap` md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`
 > byte-identical, `cushion_path.py` standalone green. If a marker is missing or
 > a number is off, say so before editing anything — an earlier session was very
@@ -799,10 +825,15 @@ Paste into a fresh session along with this file, `hustler.py` and
 > potting them myself. AI-vs-AI was a way to test the physics and is a secondary
 > interest. Ask before assuming study or AI work is the priority.
 >
-> Finally: the last four bugs all passed the whole validation chain and were
+> **Don't trust a seeded `--aigame` score across machines.** It is a
+> behaviour-preservation check against one machine, not an absolute; two
+> previously recorded figures did not reproduce elsewhere on identical code.
+>
+> Finally: the last five bugs all passed the whole validation chain and were
 > found by playing. If we change rules or turn logic, propose a scripted
 > play-through test alongside the unit assertion.
 
 ---
 
-*(Written at r23. The file is safe to play. Good hunting, next instance.)*
+*(Written at r23, refreshed at r27. The file is safe to play. Good hunting,
+next instance.)*

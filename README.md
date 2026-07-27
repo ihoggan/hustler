@@ -124,8 +124,21 @@ hustler.py        the game — physics, rules, AI, rendering, sound, HUD
 cushion_path.py   tangent-true cushion-nose geometry (imported as cushion_geo)
 ```
 
-Two files, by design. The whole thing is meant to stay small, readable, and
-free of binary assets.
+**The game is two files, by design** — small, readable, and free of binary
+assets. Two further scripts sit alongside it as measurement tools. They are not
+part of the game and the game never imports them:
+
+```
+distance_calibration_sweep.py   fires real simulated shots on a grid and
+                                compares the measured pot rate against the
+                                AI's own prediction, with confidence intervals
+floor_threshold_audit.py        watches real AI-vs-AI games to ask whether a
+                                given tuning constant actually changes play
+```
+
+Both are slow, both only measure, and neither is part of the validation chain.
+They exist because two separate AI bugs were solved by measuring rather than
+reasoning, and the rigs were worth keeping.
 
 ## Design principles
 

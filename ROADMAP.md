@@ -1,21 +1,31 @@
 # Roadmap
 
-## Current status: r24 — playable, validated
+## Current status: r27 — playable, validated
 
-**Validation snapshot (r24):**
+**Validation snapshot (r27):**
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 64 assertions |
+| `--selftest` | ALL PASS — 67 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY, all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 
-`hustler.py` is ~5,960 lines; `cushion_path.py` ~515. Two files, no assets, no
-dependencies beyond pygame and pymunk.
+The `--aigame` figure is unchanged from the pre-r27 run on the same machine,
+which is the point: r27 touches sandbox and the rules layer, so the AI must be
+untouched. **Record which machine an `--aigame` number came from.** The physics
+is float-heavy and the result is platform-sensitive; the r25/r26 figures
+recorded here previously (SHARK 4–8 and 5–7) did not reproduce elsewhere on the
+same code, so treat a seeded score as a regression check against one machine
+rather than an absolute. `--snap` staying byte-identical confirms nothing about
+rendering moved.
+
+`hustler.py` is ~6,130 lines; `cushion_path.py` ~515. The game is two files,
+no assets, no dependencies beyond pygame and pymunk; the two measurement
+scripts alongside it are tools, not part of the game.
 
 > **Note on older revision tags.** This file previously tracked "R6.x" graphics
 > increments and a GL renderer. Both are long since resolved: the tabbed panel
@@ -48,13 +58,19 @@ a blank page.
 ### Near-term candidates
 
 **Scripted play-through tests.** All four r23 bugs escaped the entire validation
-chain because that chain has no test that plays a whole frame. Driving a
+chain because that chain has no test that plays a whole frame — and so did the
+r27 chamber bug, which makes five. Driving a
 complete game through the rules engine and asserting turn, visit, spin and
 placement state at each step would close the gap. Arguably the highest-value
 item on this list, since it protects everything else.
 
-**AI distance calibration** — see [KNOWN_ISSUES.md](KNOWN_ISSUES.md) #3. Must be
-fitted against the Monte Carlo rig, not derived analytically.
+> **AI distance calibration (r25/r26/r27) is done.** `pot_estimate()`'s distance
+> floor was fitted and shipped at r25; STEADY's attempt threshold was moved
+> clear of it at r26 after `floor_threshold_audit.py` showed the two sitting
+> on the same side of `POT_FLOOR` was changing 27% of all AI shots, not an
+> edge case. Two small residuals remain, tracked but not pursued further for
+> now — see [KNOWN_ISSUES.md](KNOWN_ISSUES.md) #2 and #3. Selftest 59 (r27)
+> guards the threshold-above-floor invariant if `POT_FLOOR` is ever re-derived.
 
 ### Larger features under discussion
 

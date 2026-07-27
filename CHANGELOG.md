@@ -5,7 +5,107 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r24 — custom-mode jaws placement (current)
+## r27 — the potted-ball chamber clears when the table does (current)
+
+Emptying the table now empties the chamber. In sandbox, re-racking (`T`),
+resetting (`R`) or clearing (`C`) rebuilt the table but left the *previous*
+frame's balls sitting in the glass, so the chamber quietly accumulated across
+frames until it bore no relation to what was actually missing from the table.
+
+The cause is a promise nothing kept. `potted_all` — the game-scoped pot
+history added at r22, which the chamber reads — carries a comment saying it is
+"never cleared by `strike()`; only a rebuild/new rack resets it." No code ever
+did that second part. It went unseen because the game modes are unaffected:
+re-racking there builds an entirely new simulation, so the chamber is new too.
+Sandbox is the only path that reuses one, and sandbox is exactly where the
+game is mainly played.
+
+A new `reset_potted_history()` empties both pot records, called from
+`clear_objects()` (which covers re-rack, sandbox clear, the custom-mode clear
+button and layout load in one place) and from `rebuild()` — but only when
+there are no ball positions to carry over. That condition is the whole care of
+the fix: a rebuild *with* positions is a live-slider rebuild, which is what the
+ball-radius, cushion-elasticity and rolling-friction keys do, and the frame in
+progress survives those. So must its chamber. An over-broad version of this fix
+would wipe the chamber every time you nudged the ball size mid-frame, and the
+new assertion pins that case specifically.
+
+Also added, unrelated to the above: an assertion guarding the r26 fix. It holds
+STEADY's attempt threshold above `POT_FLOOR` as an *invariant* rather than
+checking it equals 0.24, because the number likely to move is the floor — its
+own comment invites re-deriving it — and if the floor ever rises past the
+threshold, r26's bug returns with nothing to catch it.
+
+Found by playing, not by the validation chain. That makes five.
+
+## r26 — STEADY's attempt threshold moved above the distance floor
+
+STEADY (the cautious AI personality) now actually plays cautiously again at
+long range. Follow-on from r25: fixing `pot_estimate()`'s distance floor left
+both SHARK's (0.10) and STEADY's (0.18) "confident enough to attempt"
+threshold sitting BELOW `POT_FLOOR` (0.19) — so any geometrically valid
+long or thin shot read as exactly 0.19 and cleared both thresholds
+identically, regardless of how different those numbers were meant to be.
+
+`floor_threshold_audit.py`, a new tool, watched 50 real headless AI-vs-AI
+games and measured the actual size of this: 30.6% of ALL shots were pots
+sitting exactly on the floor, and 88.7% of those would have been a safety
+instead if the floor read its old, collapsed value. Not a rare corner case —
+roughly one shot in three. Mechanically, `_search()` takes the best pot that
+clears `threshold` outright and only falls to a safety when NOTHING clears
+it, so once `POT_FLOOR` sits above a personality's threshold, that threshold
+stops being able to reject anything.
+
+SHARK's threshold is left at 0.10 — an aggressive personality attempting a
+genuine ~19% shot is in-character. STEADY's moves to 0.24, clear of the
+floor, restoring its ability to prefer a safety over a bare-floor pot. Re-
+running the audit confirms it: STEADY now shows 0% floored pots (its
+threshold correctly rejects them) and its safety rate rose from a blended
+~9% to 41.8%. SHARK is essentially unchanged (34.5% floored, same as before).
+
+This is a personality-tuning change, not a physics or geometry fix —
+`POT_FLOOR` itself is untouched and still measured correct.
+
+## r25 — AI distance calibration
+
+The AI no longer treats long or thin pots as nearly hopeless. A dead-straight
+shot from about two-thirds of a table length was rated at roughly 9% when it
+actually drops closer to 19-20% of the time — the AI's shot-selection estimate
+was declining a lot of makeable long shots, per Known Issues #2.
+
+`pot_estimate()`'s distance handling had two problems, only one of which
+turned out to matter. The r16 lever-arm term, which narrows the pocket's
+angular tolerance as cue-throw distance grows, is sound physics but had no
+floor, so it kept shrinking the predicted pot chance toward true zero the
+longer and thinner a shot got. On top of that sat a second, flat
+`exp(-t_cue / 10.0)` knockdown with no stated physical basis — the one Known
+Issues named as "derived from first principles and hoped for." Measuring
+showed the flat term was a minor contributor (an 8-10% reduction at 1 m); the
+lever-arm term's missing floor was the real cause.
+
+The fix is `distance_calibration_sweep.py`, a new headless tool that fires
+real, physically simulated shots — the AI's own aim-jitter and power model,
+not a hand-picked stand-in — across a grid of cue-to-object distance and cut
+angle, and compares the measured pot rate against `pot_estimate()`'s
+prediction with a Wilson interval on each cell (300 trials/cell). It found
+that from about 0.9 m out, measured pot rate goes flat at ~19% (7 cells,
+mean 0.192, s.d. 0.016) regardless of exactly how bad the shot gets within
+that range, while the old prediction kept falling toward zero. `POT_FLOOR =
+0.19` now clamps the prediction to that measured floor via `max(p_aim,
+POT_FLOOR)` — a hard floor rather than a blend, deliberately, so it only
+bites once the aim-error term has already collapsed below it and leaves the
+model's short/mid-range behaviour untouched. The flat decay term is removed
+outright rather than retuned.
+
+This is the fix Known Issues #2 called for and is exactly the discipline it
+insisted on: fitted against the Monte Carlo rig, not derived and hoped for —
+the same mistake that made the term over-harsh the first time. It also
+surfaced two new open threads (Known Issues #2 and #3): the floor sits above
+both AI personalities' attempt threshold, so a floored shot always clears it
+now, and the floor itself is validated at only one pocket/distance
+combination.
+
+## r24 — custom-mode jaws placement
 
 You can now set a ball right on the lip of any pocket in custom mode — a hanger
 ready to pot — which the placement rule previously walled off.

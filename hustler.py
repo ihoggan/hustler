@@ -460,12 +460,44 @@ def object_corridor(r_obj, jitter, t_cue):
     return 2.0 * r_obj + CORRIDOR_SIGMA_K * jitter * max(0.0, t_cue)
 
 
+# r25: measured rattle-in floor (KNOWN_ISSUES #2). Beyond ~0.9 m cue-throw the
+# analytic Gaussian aim-error term keeps collapsing toward zero, but real play
+# doesn't: a badly-missed long or thin shot can still clip the jaw and drop.
+# distance_calibration_sweep.py fired 300 real, physically-simulated shots per
+# cell across t_cue 0.9-1.3 m x cut 0-30 deg (7 cells, one corner pocket,
+# d_tp=0.3 m fixed) and measured a pot rate essentially flat at 0.192 (s.d.
+# 0.016) regardless of exactly how bad the shot got within that range, while
+# the model's own prediction over the same cells ranged 0.006-0.180 -- nowhere
+# near flat. That is the "fitted against measured results, not derived from
+# first principles" fix Known Issues calls for; POT_FLOOR is that measurement.
+# Deliberately a HARD floor (max, not a blend): a blended floor added at every
+# distance would also inflate the model's SEPARATE, already-known mid-range
+# behaviour (t_cue 0.3-0.5 m reads high against measured pot rate there too --
+# a real discrepancy, but a different one, not what #2 is about and not fixed
+# by this change). max() leaves anything already above the floor untouched,
+# so it only bites exactly where the sweep has data: the long tail.
+# Validated across d_tp and pocket type since (KNOWN_ISSUES #2): a widened
+# sweep (d_tp 0.15-1.0 m) and a corner-vs-middle sweep both hold, and pocket
+# type is ruled OUT as a factor. What the wider data did show is that the floor
+# is a reasonable AVERAGE, not a genuine plateau -- measured pot rate rises
+# smoothly with the pre-floor aim-error term even inside the floored region
+# (~0.15 at the deepest collapse, ~0.28 near the crossover), so 0.19 under-
+# predicts by up to ~0.09 at one end and over-predicts by ~0.04 at the other.
+# Both errors are far smaller than the pre-r25 bug (up to 30x), so fitting that
+# curve was deliberately not chased -- it would need 2-3 new free parameters
+# against ~24 points. If this number is ever re-derived, see selftest 59: it
+# must stay BELOW STEADY's attempt threshold or r26's bug returns.
+POT_FLOOR = 0.19
+
+
 def pot_estimate(cp, t, pc, cap_r, r_cue, r_obj, jitter):
     """Analytic pot-chance estimate for a cue ball at cp potting the ball at
     t into pocket capture point pc: ghost-ball aim, pocket acceptance angle
-    narrowed by cut thinness and by cue-ball throw distance, distance decay.
-    Single source of truth shared by the AI's shot choice and its leave-quality
-    assessment (R5). Returns None if the shot is degenerate or the cut too thin.
+    narrowed by cut thinness and by cue-ball throw distance, floored at
+    POT_FLOOR for long/thin shots the aim-error term alone would rate as
+    hopeless. Single source of truth shared by the AI's shot choice and its
+    leave-quality assessment (R5). Returns None if the shot is degenerate or
+    the cut too thin.
 
     Calibration fix (r16): `jitter` is an aim-angle error measured at the CUE
     ball; `tol` is a pocket-acceptance angle measured at the OBJECT ball, over
@@ -476,7 +508,17 @@ def pot_estimate(cp, t, pc, cap_r, r_cue, r_obj, jitter):
     travel to reach it. `lever` folds that in: it is 1.0 at point-blank range
     (t_cue -> 0, unchanged from the old formula) and shrinks smoothly as t_cue
     grows relative to the ball-to-ball contact scale (r_cue + r_obj, ~51mm --
-    far smaller than a typical 0.3-2m shot), narrowing `allowed` accordingly."""
+    far smaller than a typical 0.3-2m shot), narrowing `allowed` accordingly.
+
+    Calibration fix (r25): the old formula also multiplied in a flat
+    `exp(-t_cue / 10.0)` decay on top of `lever` -- KNOWN_ISSUES #2 names this
+    as derived-and-hoped-for rather than measured, and the sweep confirmed it
+    was a minor contributor (~8-10% at 1m) next to the real problem, which was
+    `lever`/`tol` having no floor and so decaying toward true zero where
+    measured play holds ~19%. Removed outright rather than re-tuned: POT_FLOOR
+    now carries the whole long-range correction, so keeping a second,
+    still-ungrounded knob alongside it would just muddy which term is doing
+    what the next time this needs recalibrating."""
     d_tp = math.dist(t, pc)
     if d_tp < 1e-6:
         return None
@@ -494,8 +536,8 @@ def pot_estimate(cp, t, pc, cap_r, r_cue, r_obj, jitter):
     contact = r_cue + r_obj
     lever = contact / (t_cue + contact)   # r16: cue-throw lever arm, 1.0 at t_cue=0
     allowed = tol * max(fullness, 0.15) * lever
-    p = math.exp(-0.5 * (jitter / max(allowed, 1e-5)) ** 2)
-    p *= math.exp(-t_cue / 10.0)
+    p_aim = math.exp(-0.5 * (jitter / max(allowed, 1e-5)) ** 2)
+    p = max(p_aim, POT_FLOOR)   # r25: measured rattle-in floor, see above
     return {"p": p, "aim": aim, "ghost": G, "ad": ad, "od": od,
             "fullness": fullness, "t_cue": t_cue, "d_tp": d_tp}
 
@@ -669,7 +711,9 @@ class Sim:
         # Two features wanted the same variable to mean two different things;
         # they now get one each. potted_log KEEPS its exact meaning (the rules
         # engine depends on it), and the chamber reads potted_all instead.
-        # Never cleared by strike(); only a rebuild/new rack resets it.
+        # Never cleared by strike(); only a rebuild/new rack resets it --
+        # which, until r27, nothing actually did. reset_potted_history() is
+        # what makes that sentence true; see it for what went wrong.
         self.potted_all = []
         self.last_pot_events = []  # Increment 4b: (bid, colour, pos, radius)
                                     # captured in the MOST RECENT step() call
@@ -758,6 +802,14 @@ class Sim:
         self._build_cushions()
         self._build_pockets()
         old = keep_positions or {}
+        # r27: a rebuild with nothing to carry over IS a new table (sandbox's
+        # R reset, and construction) -- so the chamber starts empty. One WITH
+        # keep_positions is a live-slider rebuild (ball radius B, cushion
+        # elasticity E, rolling friction F): the frame in progress survives it,
+        # so its pot history must survive it too. That distinction is the whole
+        # reason this sits here rather than at the top of the method.
+        if not old:
+            self.reset_potted_history()
         self.balls = {}
         if old:
             for bid, pos in old.items():
@@ -996,11 +1048,33 @@ class Sim:
                 return self._add_ball(self.alloc_id(), p, "red")
         return None
 
+    def reset_potted_history(self):
+        """Empty BOTH pot records because the table itself is being emptied.
+
+        r27: `potted_all`'s own comment has always said "only a rebuild/new
+        rack resets it" -- nothing ever did. Nothing called this, so in
+        SANDBOX the chamber accumulated across frames: re-rack (T), reset (R)
+        or clear (C) rebuilt the table but left the previous frame's balls
+        sitting in the glass. Game modes never showed it because do_rack()
+        there builds a whole new Sim via start_game(); sandbox is the only
+        path that reuses one.
+
+        `potted_log` goes with it, and that is NOT conflating the two (they
+        keep their different scopes -- see strike(), which still wipes
+        potted_log every shot and leaves potted_all alone). It is that a
+        shot-scoped record describing a shot on a table that no longer exists
+        is meaningless either way. Inert in practice: strike() clears it
+        before the rules ever read it.
+        """
+        self.potted_log = []
+        self.potted_all = []
+
     def clear_objects(self):
         for bid in [i for i in self.balls if i != self.CUE_ID]:
             body, shape = self.balls.pop(bid)
             self.space.remove(body, shape)
         self.black_id = None
+        self.reset_potted_history()
 
     def set_ball_radius(self, r_m):
         CFG["BALL_R_M"] = max(0.015, min(0.035, r_m))
@@ -1714,7 +1788,20 @@ def default_ais(rng=None):
     """Two distinguishable players from STRATEGY parameters alone: SHARK
     attempts more, plays for position and risks more (threshold 0.10, greed
     0.55, caution 0.35); STEADY demands a better chance, takes the surest pot
-    and avoids fouls (threshold 0.18, greed 0.25, caution 0.70).
+    and avoids fouls (threshold 0.24, greed 0.25, caution 0.70).
+
+    r26: STEADY's threshold moved 0.18 -> 0.24 (KNOWN_ISSUES #2). Both
+    thresholds used to sit below POT_FLOOR (0.19, r25's measured rattle-in
+    floor), so any geometrically valid long/thin shot reads as exactly 0.19
+    and cleared BOTH thresholds identically -- `floor_threshold_audit.py`
+    measured this as 30.6% of all AI shots across 50 real games, 88.7% of
+    which would have been a safety without the floor's rescue. That erased
+    the one thing `threshold` exists to express: SHARK and STEADY behaved
+    identically for a third of all shots, regardless of their different
+    numbers. SHARK's 0.10 is left alone -- an aggressive personality
+    attempting a genuine ~19% shot is in-character, not a bug. STEADY's is
+    the one meant to fold here, so it moves clear of the floor to 0.24,
+    restoring its ability to prefer a safety over a bare-floor pot.
 
     r18: both now aim with the SAME aim_jitter (STUDY_JITTER), and this is the
     whole point of the pass. aim_jitter is a SKILL parameter; threshold/greed/
@@ -1737,7 +1824,7 @@ def default_ais(rng=None):
     rng = rng or random.Random()
     return [PoolAI("SHARK", aim_jitter=STUDY_JITTER, threshold=0.10, greed=0.55,
                    caution=0.35, rng=rng),
-            PoolAI("STEADY", aim_jitter=STUDY_JITTER, threshold=0.18, greed=0.25,
+            PoolAI("STEADY", aim_jitter=STUDY_JITTER, threshold=0.24, greed=0.25,
                    caution=0.70, rng=rng)]
 
 
@@ -5877,8 +5964,90 @@ def selftest():
           f"lips-now-legal={lip_ok56}, rectangle-would-wall={old_walled56}, "
           f"throat-rejected={throat_rej56}, rail-rejected={rail_rej56}")
 
-    print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
-    return failures == 0
+    # 57. r25 pot_estimate distance floor (KNOWN_ISSUES #2) -- the AI was
+    #     rating a real ~19%-to-drop long/thin shot at under 2%, and declining
+    #     it outright. Same dead-straight rig as check 44 (fixed fullness=1.0
+    #     so only t_cue varies): at t_cue=1.50+contact the aim-error term alone
+    #     is already near zero (this is the exact regression check 44 measures
+    #     as "far shot meaningfully harder" -- it must STAY meaningfully harder,
+    #     just not harder than the floor), so the result must be pulled up to
+    #     exactly POT_FLOOR. At t_cue=0.05+contact the aim-error term is well
+    #     above the floor, so max() must leave it alone -- the fix must not
+    #     inflate short shots the model already had right.
+    t57, pc57, cap57 = (0.45, 0.455), (1.6, 0.455), 0.032512
+    od57 = vnorm(pc57[0] - t57[0], pc57[1] - t57[1])
+    G57 = (t57[0] - od57[0] * (CFG["CUE_R_M"] + ball_r()),
+           t57[1] - od57[1] * (CFG["CUE_R_M"] + ball_r()))
+    def cp_at57(dist):
+        return (G57[0] - od57[0] * dist, G57[1] - od57[1] * dist)
+    est_near57 = pot_estimate(cp_at57(0.05), t57, pc57, cap57,
+                              CFG["CUE_R_M"], ball_r(), 0.011)
+    est_far57 = pot_estimate(cp_at57(1.50), t57, pc57, cap57,
+                             CFG["CUE_R_M"], ball_r(), 0.011)
+    ok57 = (est_near57 is not None and est_far57 is not None
+            and abs(est_far57["p"] - POT_FLOOR) < 1e-9
+            and est_near57["p"] > POT_FLOOR + 0.3)   # nowhere near the floor
+    check("r25 pot_estimate distance floor — a long/thin shot the aim-error "
+          "term alone rates near-zero is pulled up to the measured POT_FLOOR "
+          "rather than left to decay to nothing, while a short shot the model "
+          "already had right is untouched",
+          ok57, f"near(t_cue=0.05+contact) p={est_near57['p']:.3f}, "
+                f"far(t_cue=1.50+contact) p={est_far57['p']:.3f}, "
+                f"POT_FLOOR={POT_FLOOR}"
+                if est_near57 and est_far57 else "estimate returned None")
+
+    # 58. r27 chamber reset -- the sandbox chamber accumulated across frames,
+    #     because nothing ever cleared the game-scoped potted_all despite its
+    #     own comment promising "only a rebuild/new rack resets it". Both
+    #     halves are pinned, and the second is the one that matters: a rebuild
+    #     that CARRIES POSITIONS (the live B/E/F sliders) must NOT clear the
+    #     chamber, or the over-broad version of this fix wipes the frame you
+    #     are in the middle of playing.
+    sim58 = Sim(layout="empty")
+    sim58.potted_all = [3, 4]
+    sim58.potted_log = [4]
+    sim58.rack()                                  # T -- new frame
+    after_rack58 = (list(sim58.potted_all), list(sim58.potted_log))
+    sim58.potted_all = [5]
+    sim58.clear_objects()                         # C / custom-mode clear
+    after_clear58 = list(sim58.potted_all)
+    sim58.potted_all = [6]
+    sim58.rebuild()                               # R -- fresh table
+    after_reset58 = list(sim58.potted_all)
+    sim58.potted_all = [7]
+    keep58 = {bid: tuple(b.position) for bid, (b, _) in sim58.balls.items()}
+    sim58.rebuild(keep_positions=keep58)          # B/E/F slider -- frame survives
+    after_slider58 = list(sim58.potted_all)
+    check("r27 chamber reset — emptying the table empties the potted-ball "
+          "chamber (a re-rack, reset or clear starts a new frame), while a "
+          "live-slider rebuild that keeps every ball in place keeps the "
+          "chamber too",
+          after_rack58 == ([], []) and after_clear58 == []
+          and after_reset58 == [] and after_slider58 == [7],
+          f"after rack={after_rack58[0]}/log={after_rack58[1]}, "
+          f"after clear={after_clear58}, after reset={after_reset58}, "
+          f"after slider rebuild={after_slider58}")
+
+    # 59. r26 guard -- STEADY's attempt threshold must sit ABOVE POT_FLOOR.
+    #     This pins the r26 bug as an invariant rather than checking a value:
+    #     when both thresholds sat below the floor, every geometrically valid
+    #     long/thin shot read as exactly POT_FLOOR and cleared BOTH of them
+    #     identically (measured at 30.6% of all AI shots), so `threshold` could
+    #     no longer reject anything and the two personalities played the same
+    #     for a third of the game. POT_FLOOR is explicitly flagged for
+    #     re-derivation (see its comment: per-d_tp, per-pocket), so the number
+    #     most likely to move is the FLOOR, not the threshold -- and if it ever
+    #     rises past STEADY's, the bug returns silently. SHARK is deliberately
+    #     NOT guarded: attempting a genuine ~19% shot is in character for it.
+    ais59 = {a.name: a.threshold for a in default_ais()}
+    check("r26 guard — STEADY's attempt threshold stays clear of POT_FLOOR, so "
+          "it can still refuse a bare-floor pot and play the safety instead "
+          "(the r26 bug was both personalities' thresholds sitting under the "
+          "floor, leaving threshold unable to reject anything)",
+          ais59["STEADY"] > POT_FLOOR,
+          f"STEADY threshold={ais59['STEADY']}, POT_FLOOR={POT_FLOOR}, "
+          f"margin={ais59['STEADY'] - POT_FLOOR:.3f} "
+          f"(SHARK={ais59['SHARK']}, deliberately below)")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

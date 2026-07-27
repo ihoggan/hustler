@@ -11,7 +11,7 @@ workflow and expectations.
 4. **Verify your baseline** before changing anything:
 
 ```bash
-python3 hustler.py --selftest      # expect: ALL PASS (64 assertions at r24)
+python3 hustler.py --selftest      # expect: ALL PASS (67 assertions at r27)
 ```
 
 If that doesn't pass on a clean checkout, stop and work out why before writing
@@ -69,9 +69,23 @@ Two notes on reading the results:
   counts vary run to run. The invariant being tested is `containment escapes: 0`.
   If a count looks different, run it a few times on both versions before
   concluding anything.
-- `--snap` must stay **byte-identical** (md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`
-  as of r24) unless you are deliberately changing the rendered scene, in which
-  case say so explicitly in the commit message.
+- `--snap` must stay **byte-identical** (md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`,
+  unchanged from R6.1 through r27) unless you are deliberately changing the
+  rendered scene, in which case say so explicitly in the commit message.
+- Seeded `--aigame` results are **platform-sensitive**: the physics is
+  float-heavy, so a recorded score is a regression check against *the same
+  machine*, not an absolute. Note which machine a number came from when you
+  record one, and re-baseline rather than debug if you move machines.
+
+Two measurement tools live alongside the game and are **not** part of the gate
+— they are slow, they only measure, and they change nothing:
+
+```bash
+python3 distance_calibration_sweep.py --trials 300   # pot_estimate vs measured
+python3 floor_threshold_audit.py -n 50               # does POT_FLOOR change play?
+```
+
+Reach for them when a number in the AI is in question. Both write `--jsonl`.
 
 If your change touches rules or the AI, also run a seeded game batch:
 
@@ -172,7 +186,9 @@ Collected from real time lost. Each of these cost somebody a session.
 The self-test suite is strong on pure functions and physics invariants and
 blind to gameplay flow. Every one of the four r23 bugs — turn handover, spin
 reset, cue placement, sandbox ball-in-hand — passed the entire validation chain
-and was found by sitting down and playing.
+and was found by sitting down and playing. So did the r27 chamber bug. That is
+five, and the tally is the argument for the scripted play-through tests at the
+top of the roadmap.
 
 So: add the assertion, run the chain, **and then play the game**. If you're
 adding rules or turn logic, consider a scripted play-through test that drives a

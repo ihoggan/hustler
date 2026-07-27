@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 hustler_old*.py
 md
+
+# Runtime state, not source: custom-mode save slots and study logs.
+hustler_layout_*.json
+*.jsonl
