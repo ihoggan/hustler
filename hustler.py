@@ -108,10 +108,7 @@ Command line:
 
 import argparse
 import math
-import json
 import os
-import functools
-import multiprocessing
 import random
 import sys
 
@@ -222,43 +219,23 @@ def pocket_centres():
     return [(x0, y0), (mx, y0), (x1, y0), (x0, y1), (mx, y1), (x1, y1)]
 
 
-_capture_points_cache = {}
-
-
 def capture_points():
     """
     Pocket capture points: (centre, radius) per pocket, inside the throat.
     A ball must genuinely enter the mouth to drop. Shared by simulation,
     assessor and drill so there is a single source of truth.
-
-    r9: CACHED. This is fixed table geometry, but _capture_pockets() calls it
-    inside a per-ball loop on every physics step -- a profile of one AI game
-    showed 1.28 MILLION calls, rebuilding the identical six pockets from
-    scratch each time, and _capture_pockets dominating the run at 22.8s
-    cumulative. The r9 spin grid didn't cause that; it just made enough shots
-    to expose it.
-
-    The cache is keyed on the values this actually reads rather than being
-    unconditional, because ball radius IS adjustable live from the panel (and
-    the pocket mouths scale with it) -- a blind cache would silently freeze the
-    pockets at their old size the moment that slider moved. Behaviour is
-    identical; only the recomputation goes away."""
-    key = (play_rect(), pocket_half_mouth(), pocket_middle_half_mouth())
-    hit = _capture_points_cache.get(key)
-    if hit is not None:
-        return hit
-    x0, y0, x1, y1 = key[0]
-    pr = key[1]
+    """
+    x0, y0, x1, y1 = play_rect()
+    pr = pocket_half_mouth()
     mx = (x0 + x1) / 2.0
     s2 = math.sqrt(2.0) / 2.0
     pts = []
     for (c, o) in [((x0, y0), (-s2, -s2)), ((x1, y0), (s2, -s2)),
                    ((x0, y1), (-s2, s2)), ((x1, y1), (s2, s2))]:
         pts.append(((c[0] + o[0] * pr * 0.5, c[1] + o[1] * pr * 0.5), pr * 0.8))
-    prm = key[2]
+    prm = pocket_middle_half_mouth()
     pts.append(((mx, y0 - prm * 0.6), prm * 0.7))
     pts.append(((mx, y1 + prm * 0.6), prm * 0.7))
-    _capture_points_cache[key] = pts
     return pts
 
 
@@ -412,113 +389,18 @@ def seg_point_dist(a, b, p):
     return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
 
-CORRIDOR_SIGMA_K = 2.0   # r20: how many sigma of aim jitter the corridor check
-                         # must survive. 2.0 = a ~95% band; see cue_corridor().
-
-
 def corridor_clear(a, b, clearance, obstacles):
     """True if no obstacle centre lies within `clearance` of segment ab.
     Used by the AI to check the cue path and the object-ball path."""
     return all(seg_point_dist(a, b, ob) >= clearance for ob in obstacles)
 
 
-def cue_corridor(r_cue, r_obj, jitter, t_cue):
-    """r20: half-width the CUE path must keep clear of any obstacle centre.
-
-    Two bugs are fixed here, and they compounded (measured: ~10% of ALL pot
-    attempts struck the wrong ball first, flat across every confidence bin, and
-    those attempts potted at 1.4% while being rated 56%).
-
-    1. GEOMETRY. Two balls graze when their centres are (r_cue + r_obj) apart,
-       so that IS the clearance. The old code passed `r_cue + r_obj - 0.002`,
-       an unjustified 2mm shave off the very margin the test exists to enforce
-       -- a ball 2mm inside a genuine collision was reported clear.
-
-    2. JITTER. The old check validated the IDEAL aim line, but _execute() then
-       perturbs that line by aim_jitter before the cue is struck. So the AI was
-       clearing a line it had no intention of shooting. The lateral drift at the
-       object ball is jitter * t_cue, which routinely DWARFS the margin that was
-       shaved off: at t_cue 0.9m, 1 sigma is already 9.9mm.
-
-    Adding CORRIDOR_SIGMA_K sigma of that drift makes the check ask the right
-    question -- "will the shot I am ACTUALLY going to play clear this ball?"
-    rather than "would a perfect robot clear it?". It is also properly emergent:
-    a jittery player demands wider corridors and so plays more conservatively,
-    and that falls straight out of the existing aim_jitter parameter rather than
-    any new rule or scripted caution."""
-    return r_cue + r_obj + CORRIDOR_SIGMA_K * jitter * max(0.0, t_cue)
-
-
-def object_corridor(r_obj, jitter, t_cue):
-    """r20: half-width the OBJECT ball's path to the pocket must keep clear.
-
-    Two object balls graze at (2 * r_obj) apart -- the old code passed
-    `2*r_obj - 0.006`, a 6mm shave, so up to 6mm of REAL overlap was called
-    clear. The object ball carries no aim jitter of its own, but it inherits the
-    cue's: an aim error rotates the contact point, which swings the object
-    ball's departure line. Same CORRIDOR_SIGMA_K allowance, same reasoning."""
-    return 2.0 * r_obj + CORRIDOR_SIGMA_K * jitter * max(0.0, t_cue)
-
-
-# r25: measured rattle-in floor (KNOWN_ISSUES #2). Beyond ~0.9 m cue-throw the
-# analytic Gaussian aim-error term keeps collapsing toward zero, but real play
-# doesn't: a badly-missed long or thin shot can still clip the jaw and drop.
-# distance_calibration_sweep.py fired 300 real, physically-simulated shots per
-# cell across t_cue 0.9-1.3 m x cut 0-30 deg (7 cells, one corner pocket,
-# d_tp=0.3 m fixed) and measured a pot rate essentially flat at 0.192 (s.d.
-# 0.016) regardless of exactly how bad the shot got within that range, while
-# the model's own prediction over the same cells ranged 0.006-0.180 -- nowhere
-# near flat. That is the "fitted against measured results, not derived from
-# first principles" fix Known Issues calls for; POT_FLOOR is that measurement.
-# Deliberately a HARD floor (max, not a blend): a blended floor added at every
-# distance would also inflate the model's SEPARATE, already-known mid-range
-# behaviour (t_cue 0.3-0.5 m reads high against measured pot rate there too --
-# a real discrepancy, but a different one, not what #2 is about and not fixed
-# by this change). max() leaves anything already above the floor untouched,
-# so it only bites exactly where the sweep has data: the long tail.
-# Validated across d_tp and pocket type since (KNOWN_ISSUES #2): a widened
-# sweep (d_tp 0.15-1.0 m) and a corner-vs-middle sweep both hold, and pocket
-# type is ruled OUT as a factor. What the wider data did show is that the floor
-# is a reasonable AVERAGE, not a genuine plateau -- measured pot rate rises
-# smoothly with the pre-floor aim-error term even inside the floored region
-# (~0.15 at the deepest collapse, ~0.28 near the crossover), so 0.19 under-
-# predicts by up to ~0.09 at one end and over-predicts by ~0.04 at the other.
-# Both errors are far smaller than the pre-r25 bug (up to 30x), so fitting that
-# curve was deliberately not chased -- it would need 2-3 new free parameters
-# against ~24 points. If this number is ever re-derived, see selftest 59: it
-# must stay BELOW STEADY's attempt threshold or r26's bug returns.
-POT_FLOOR = 0.19
-
-
 def pot_estimate(cp, t, pc, cap_r, r_cue, r_obj, jitter):
     """Analytic pot-chance estimate for a cue ball at cp potting the ball at
     t into pocket capture point pc: ghost-ball aim, pocket acceptance angle
-    narrowed by cut thinness and by cue-ball throw distance, floored at
-    POT_FLOOR for long/thin shots the aim-error term alone would rate as
-    hopeless. Single source of truth shared by the AI's shot choice and its
-    leave-quality assessment (R5). Returns None if the shot is degenerate or
-    the cut too thin.
-
-    Calibration fix (r16): `jitter` is an aim-angle error measured at the CUE
-    ball; `tol` is a pocket-acceptance angle measured at the OBJECT ball, over
-    the object-to-pocket distance. These pivot from different points separated
-    by t_cue (the cue-to-object travel distance) -- comparing them directly,
-    as the pre-r16 formula did, ignores that the same angular aim error swings
-    the actual contact point further off target the longer the cue ball has to
-    travel to reach it. `lever` folds that in: it is 1.0 at point-blank range
-    (t_cue -> 0, unchanged from the old formula) and shrinks smoothly as t_cue
-    grows relative to the ball-to-ball contact scale (r_cue + r_obj, ~51mm --
-    far smaller than a typical 0.3-2m shot), narrowing `allowed` accordingly.
-
-    Calibration fix (r25): the old formula also multiplied in a flat
-    `exp(-t_cue / 10.0)` decay on top of `lever` -- KNOWN_ISSUES #2 names this
-    as derived-and-hoped-for rather than measured, and the sweep confirmed it
-    was a minor contributor (~8-10% at 1m) next to the real problem, which was
-    `lever`/`tol` having no floor and so decaying toward true zero where
-    measured play holds ~19%. Removed outright rather than re-tuned: POT_FLOOR
-    now carries the whole long-range correction, so keeping a second,
-    still-ungrounded knob alongside it would just muddy which term is doing
-    what the next time this needs recalibrating."""
+    narrowed by cut thinness, distance decay. Single source of truth shared
+    by the AI's shot choice and its leave-quality assessment (R5).
+    Returns None if the shot is degenerate or the cut too thin."""
     d_tp = math.dist(t, pc)
     if d_tp < 1e-6:
         return None
@@ -533,31 +415,21 @@ def pot_estimate(cp, t, pc, cap_r, r_cue, r_obj, jitter):
     if fullness < 0.10:
         return None                 # cut too thin / wrong side
     tol = math.asin(min(1.0, cap_r / max(d_tp, cap_r)))
-    contact = r_cue + r_obj
-    lever = contact / (t_cue + contact)   # r16: cue-throw lever arm, 1.0 at t_cue=0
-    allowed = tol * max(fullness, 0.15) * lever
-    p_aim = math.exp(-0.5 * (jitter / max(allowed, 1e-5)) ** 2)
-    p = max(p_aim, POT_FLOOR)   # r25: measured rattle-in floor, see above
+    allowed = tol * max(fullness, 0.15)   # thin cuts amplify error
+    p = math.exp(-0.5 * (jitter / max(allowed, 1e-5)) ** 2)
+    p *= math.exp(-t_cue / 10.0)
     return {"p": p, "aim": aim, "ghost": G, "ad": ad, "od": od,
             "fullness": fullness, "t_cue": t_cue, "d_tp": d_tp}
 
 
-def estimate_leave(est, power, follow=0.0, side=0.0):
-    """Analytic cue-ball leave (R5, decision A3; r9 phase 2 adds spin):
-    estimated rest position of the cue ball after the pot described by `est`
-    (a pot_estimate dict), struck at `power` m/s with `follow` (+ = follow,
-    - = draw) and `side` english.
-
-    Model: constant-decel approach to contact, tangent-line deflection scaled
-    by cut thinness, a small carry along the aim line on full hits (negative --
-    the 94 g cue rebounds), constant-decel travel with at most one cushion
-    reflection at reduced energy.
-
-    r9: `follow` adds (or, for draw, subtracts) a component along the aim line
-    after contact -- the same physical effect FOLLOW_KICK applies in the live
-    sim, so the estimate and the simulation agree on the sign and roughly on
-    the magnitude. `side` biases the post-cushion direction, mirroring
-    SIDE_KICK. Pure geometry, no simulation. An estimate, not a promise."""
+def estimate_leave(est, power):
+    """Analytic cue-ball leave (R5, decision A3): estimated rest position of
+    the cue ball after the pot described by `est` (a pot_estimate dict),
+    struck at `power` m/s. Model: constant-decel approach to contact,
+    tangent-line deflection scaled by cut thinness, a small carry along the
+    aim line on full hits (negative — the 94 g cue rebounds), constant-decel
+    travel with at most one cushion reflection at reduced energy. Pure
+    geometry, no simulation. An estimate, not a promise."""
     a = CFG["ROLL_DECEL"]
     v2 = max(0.0, power * power - 2.0 * a * est["t_cue"])
     v_c = math.sqrt(v2)
@@ -567,11 +439,6 @@ def estimate_leave(est, power, follow=0.0, side=0.0):
     tn = math.hypot(tvx, tvy)
     v_tan = v_c * math.sqrt(max(0.0, 1.0 - f * f)) * CFG["LEAVE_TANGENT_KEEP"]
     v_fwd = v_c * f * f * CFG["LEAVE_CUE_CARRY"]
-    # r9 phase 2: spin. Follow drives the cue on THROUGH the contact along the
-    # aim line; draw (negative) pulls it back down that same line. Scaled by
-    # the same FOLLOW_KICK constant the live sim uses, so the AI's prediction
-    # and the physics don't disagree about which way the ball will go.
-    v_fwd += v_c * CFG["FOLLOW_KICK"] * follow
     if tn > 1e-9:
         vx = (tvx / tn) * v_tan + ad[0] * v_fwd
         vy = (tvy / tn) * v_tan + ad[1] * v_fwd
@@ -593,53 +460,11 @@ def estimate_leave(est, power, follow=0.0, side=0.0):
         e = CFG["LEAVE_CUSHION_E"]
         rem = (e * e * v_hit2) / (2.0 * a)
         d2 = reflect_off_rect(hit, d, r)
-        # r9 phase 2: side english deflects the rebound along the cushion
-        # tangent, same sign convention as SIDE_KICK in _cue_cushion_contact.
-        if abs(side) > 0.02:
-            tx, ty = -d2[1], d2[0]
-            k = CFG["SIDE_KICK"] * side
-            d2 = vnorm(d2[0] + tx * k, d2[1] + ty * k)
         rest = (hit[0] + d2[0] * rem, hit[1] + d2[1] * rem)
         x0, y0, x1, y1 = play_rect()
         rest = (min(max(rest[0], x0 + r), x1 - r),
                 min(max(rest[1], y0 + r), y1 - r))   # clamp beyond one bounce
     return {"rest": rest, "speed": s}
-
-
-def scratch_risk(rest, speed):
-    """r9 phase 2 (foul-risk term): 0..1 estimate that the cue ball ends up in
-    a pocket -- i.e. a scratch, which is a foul. Pure geometry: how close the
-    PREDICTED cue rest position sits to a capture point, relative to that
-    pocket's capture radius, softened by how fast the cue is still moving
-    (a cue crawling to a stop beside a jaw is far more likely to drop than one
-    still travelling that merely passes nearby).
-
-    This is deliberately an estimate over the predicted rest position, not a
-    simulation: the AI stays emergent -- it scores a risk and lets utility do
-    the rest -- rather than being scripted to avoid specific pockets."""
-    worst = 0.0
-    for (pc, cap_r) in capture_points():
-        d = math.dist(rest, pc)
-        if d >= cap_r * 3.0:
-            continue
-        near = max(0.0, 1.0 - d / (cap_r * 3.0))     # 1 at the pocket, 0 at 3r
-        slow = 1.0 / (1.0 + speed)                   # slower -> likelier to drop
-        worst = max(worst, near * (0.5 + 0.5 * slow))
-    return min(1.0, worst)
-
-
-def safety_quality(rest, opp_targets, obstacles, r_cue, r_obj, jitter):
-    """r9 phase 2 (safety term): how GOOD a safety leaves the table, 0..1.
-    A safety is good exactly when the opponent's best available pot is bad, so
-    this is 1 - (their best pot chance from where we leave the cue). Snookers
-    score highest, because corridor_clear inside leave_quality rejects every
-    blocked line and their best chance collapses to zero.
-
-    Note this scores the OPPONENT's prospects, which is why it takes their
-    targets, not ours -- the one place in the AI where we evaluate the table
-    from the other side."""
-    opp_best = leave_quality(rest, opp_targets, obstacles, r_cue, r_obj, jitter)
-    return 1.0 - opp_best
 
 
 def leave_quality(rest, targets, obstacles, r_cue, r_obj, jitter):
@@ -652,13 +477,9 @@ def leave_quality(rest, targets, obstacles, r_cue, r_obj, jitter):
             est = pot_estimate(rest, t, pc, cap_r, r_cue, r_obj, jitter)
             if est is None:
                 continue
-            if not corridor_clear(rest, est["ghost"],
-                                  cue_corridor(r_cue, r_obj, jitter,
-                                               est["t_cue"]), obs):
+            if not corridor_clear(rest, est["ghost"], r_cue + r_obj - 0.002, obs):
                 continue
-            if not corridor_clear(t, pc,
-                                  object_corridor(r_obj, jitter,
-                                                  est["t_cue"]), obs):
+            if not corridor_clear(t, pc, 2 * r_obj - 0.006, obs):
                 continue
             if est["p"] > best:
                 best = est["p"]
@@ -672,11 +493,6 @@ import pymunk  # noqa: E402  (import after geometry so geometry stays pure)
 import cushion_path as cushion_geo  # noqa: E402  (R6 tangent-true table geometry)
 
 COLL_CUE, COLL_OBJ, COLL_CUSHION = 1, 2, 3
-# r17 (perf item 3): two pocket-sensor collision types, one per ball size, so
-# the cue ball and object balls each get sensor shapes shrunk by THEIR OWN
-# radius (see _build_pockets) -- a single shared sensor size would silently
-# widen the capture zone for whichever ball is smaller than the other.
-COLL_POCKET_CUE, COLL_POCKET_OBJ = 4, 5
 
 # R6 Fork C: adopt cushion_path.py's tangent-true nose loop (22mm knuckle arcs,
 # C1 jaws) as the physical cushions, driven at this table's 7ft dimensions and
@@ -702,19 +518,6 @@ class Sim:
         self.black_id = None
         self.next_id = 1
         self.potted_log = []
-        # r22: GAME-scoped pot history, in order. `potted_log` above is
-        # SHOT-scoped -- strike() clears it every shot, deliberately (r9: the
-        # rules must see what went down on THIS shot to judge a foul). The r12
-        # potted-ball chamber wrongly read that same list expecting a whole-game
-        # history, so it showed the current shot's pots and then emptied on the
-        # next strike -- the "only shows one ball then it disappears" bug.
-        # Two features wanted the same variable to mean two different things;
-        # they now get one each. potted_log KEEPS its exact meaning (the rules
-        # engine depends on it), and the chamber reads potted_all instead.
-        # Never cleared by strike(); only a rebuild/new rack resets it --
-        # which, until r27, nothing actually did. reset_potted_history() is
-        # what makes that sentence true; see it for what went wrong.
-        self.potted_all = []
         self.last_pot_events = []  # Increment 4b: (bid, colour, pos, radius)
                                     # captured in the MOST RECENT step() call
                                     # only -- a pure event report, consumed by
@@ -722,53 +525,9 @@ class Sim:
                                     # animation. Never read by physics/rules/
                                     # AI; potted_log remains the single
                                     # source of truth there.
-        self.last_hit_events = []  # Sound effects: (kind, strength) logged
-                                    # in the MOST RECENT step() call only --
-                                    # 'strength' is arbiter.total_impulse's
-                                    # magnitude, a physically-grounded proxy
-                                    # for how hard the contact was, used to
-                                    # scale playback volume. Pure event
-                                    # logging, same as last_pot_events --
-                                    # never applies any force itself, never
-                                    # read by physics/rules/AI.
         self._live_side = 0.0
         self._live_follow = 0.0
         self._cue_prev = (0.0, 0.0)
-        # r23 (BUG 3, part i): should potting the cue ball immediately put it
-        # back on the baulk line? TRUE is the original sandbox behaviour -- this
-        # Sim was built long before the rules layer existed and was never meant
-        # to be without a cue ball, so it respotted instantly. Once `Game`
-        # arrived that became a bug: the sim had already decided where the white
-        # goes before the rules could grant ball-in-hand, so the player was
-        # "placing" a ball that had been placed for them.
-        #
-        # Whoever CONSTRUCTS the sim sets this, so the physics layer still knows
-        # nothing whatsoever about the rules layer -- that separation is
-        # load-bearing and is not being spent here. new_game() sets it False;
-        # a bare Sim() (--batch, --breaks, the selftests) keeps the old
-        # behaviour untouched.
-        self.auto_respot = True
-
-        # --- Rules (r9 phase 1): shot-scoped event report ----------------------
-        # UNLIKE last_pot_events/last_hit_events (per-STEP, pure, render/sound
-        # only), these are per-SHOT and ARE read by the rules engine -- they
-        # exist precisely because the most common real foul, "wrong ball hit
-        # first", is NOT derivable from potted_log. potted_log records what went
-        # DOWN; nothing recorded what the cue ball TOUCHED. Reset in strike(),
-        # read by Game.on_rest() once the table settles.
-        #
-        # This is a DELIBERATE, signed-off exception to the standing rule that
-        # the (COLL_OBJ, COLL_OBJ) handler carries "no gameplay behaviour,
-        # ever": it now also feeds first-contact/cushion facts to the rules.
-        # It still applies no force and alters no trajectory -- physics is
-        # untouched; it only *observes*.
-        self.first_contact = None      # colour of the FIRST object ball the cue
-                                       # ball touched this shot (None = cue hit
-                                       # nothing at all -> a foul in itself)
-        self.cushion_after_contact = False  # did ANY ball reach a cushion after
-                                            # the cue's first object contact?
-        self._contact_made = False     # internal latch: has first contact
-                                       # happened yet this shot?
         self.rebuild(layout=layout)
 
     # -- construction --------------------------------------------------------
@@ -781,35 +540,8 @@ class Sim:
                                 post_solve=self._cue_ball_contact)
         self.space.on_collision(collision_type_a=COLL_CUE, collision_type_b=COLL_CUSHION,
                                 post_solve=self._cue_cushion_contact)
-        self.space.on_collision(collision_type_a=COLL_OBJ, collision_type_b=COLL_OBJ,
-                                post_solve=self._obj_ball_contact)
-        # Rules (r9): NEW handler. There was deliberately no (OBJ, CUSHION)
-        # handler until now because nothing needed one. The "no cushion, no
-        # pot" foul needs one -- pure observation, no force applied.
-        self.space.on_collision(collision_type_a=COLL_OBJ, collision_type_b=COLL_CUSHION,
-                                post_solve=self._obj_cushion_contact)
-        # r17 (perf item 3): pocket capture moves into pymunk's own collision
-        # detection (sensor shapes, built in _build_pockets below) instead of
-        # a Python distance loop polled every substep. begin() only APPENDS
-        # to self._pending_pot_ids -- it never mutates the space mid-step
-        # (unsafe) -- and _capture_pockets() (called right after space.step(),
-        # same cadence as before) does the actual removal/logging.
-        self.space.on_collision(collision_type_a=COLL_CUE, collision_type_b=COLL_POCKET_CUE,
-                                begin=self._pocket_sensor_hit)
-        self.space.on_collision(collision_type_a=COLL_OBJ, collision_type_b=COLL_POCKET_OBJ,
-                                begin=self._pocket_sensor_hit)
-        self._pending_pot_ids = set()
         self._build_cushions()
-        self._build_pockets()
         old = keep_positions or {}
-        # r27: a rebuild with nothing to carry over IS a new table (sandbox's
-        # R reset, and construction) -- so the chamber starts empty. One WITH
-        # keep_positions is a live-slider rebuild (ball radius B, cushion
-        # elasticity E, rolling friction F): the frame in progress survives it,
-        # so its pot history must survive it too. That distinction is the whole
-        # reason this sits here rather than at the top of the method.
-        if not old:
-            self.reset_potted_history()
         self.balls = {}
         if old:
             for bid, pos in old.items():
@@ -916,47 +648,6 @@ class Sim:
             seg((mx - pr * 1.1, py + oy * pr * 1.5),
                 (mx + pr * 1.1, py + oy * pr * 1.5), 0.1)
 
-    def _build_pockets(self):
-        """r17 (perf item 3): one sensor shape per pocket per ball SIZE (cue
-        vs object), attached to the static body. Sensor shapes report overlap
-        without any physical response, so this adds no force/behaviour of its
-        own -- it only tells us when a ball has entered a pocket, via pymunk's
-        own collision broad-phase instead of a Python distance loop.
-
-        Radius is cap_r MINUS the relevant ball's own radius. This is the bit
-        that makes it an exact substitute rather than a lenient one: a plain
-        cap_r-radius sensor would fire on CIRCLE overlap (distance < cap_r +
-        ball_radius), which is a bigger, earlier-triggering zone than the old
-        centre-point test (distance < cap_r alone). Shrinking the sensor by
-        the ball's radius first means overlap now happens at EXACTLY
-        distance < (cap_r - r) + r == cap_r -- the same threshold as before,
-        just tested by pymunk's C broad-phase instead of our own math.dist
-        loop. Clamped at a small epsilon in case a live ball-radius slider is
-        ever pushed larger than a pocket's own capture radius (not the case
-        at any WEPF-spec default, where cap_r - r is 7-11mm of headroom)."""
-        for (pc, cap_r) in capture_points():
-            r_cue = max(1e-6, cap_r - CFG["CUE_R_M"])
-            s_cue = pymunk.Circle(self.space.static_body, r_cue, pc)
-            s_cue.sensor = True
-            s_cue.collision_type = COLL_POCKET_CUE
-            self.space.add(s_cue)
-            r_obj = max(1e-6, cap_r - ball_r())
-            s_obj = pymunk.Circle(self.space.static_body, r_obj, pc)
-            s_obj.sensor = True
-            s_obj.collision_type = COLL_POCKET_OBJ
-            self.space.add(s_obj)
-
-    def _pocket_sensor_hit(self, arbiter, space, data):
-        """begin() callback for a ball/pocket-sensor overlap. Queues the ball
-        id only -- NEVER mutates self.balls or self.space here (unsafe mid-
-        step); _capture_pockets(), called right after space.step() returns,
-        does the actual removal at the same cadence pot capture always ran
-        at (every substep, not just once per frame -- see its docstring)."""
-        for bid, (body, shape) in self.balls.items():
-            if shape in arbiter.shapes:
-                self._pending_pot_ids.add(bid)
-                return
-
     def _default_layout(self):
         x0, y0, x1, y1 = play_rect()
         w, h = x1 - x0, y1 - y0
@@ -1048,33 +739,11 @@ class Sim:
                 return self._add_ball(self.alloc_id(), p, "red")
         return None
 
-    def reset_potted_history(self):
-        """Empty BOTH pot records because the table itself is being emptied.
-
-        r27: `potted_all`'s own comment has always said "only a rebuild/new
-        rack resets it" -- nothing ever did. Nothing called this, so in
-        SANDBOX the chamber accumulated across frames: re-rack (T), reset (R)
-        or clear (C) rebuilt the table but left the previous frame's balls
-        sitting in the glass. Game modes never showed it because do_rack()
-        there builds a whole new Sim via start_game(); sandbox is the only
-        path that reuses one.
-
-        `potted_log` goes with it, and that is NOT conflating the two (they
-        keep their different scopes -- see strike(), which still wipes
-        potted_log every shot and leaves potted_all alone). It is that a
-        shot-scoped record describing a shot on a table that no longer exists
-        is meaningless either way. Inert in practice: strike() clears it
-        before the rules ever read it.
-        """
-        self.potted_log = []
-        self.potted_all = []
-
     def clear_objects(self):
         for bid in [i for i in self.balls if i != self.CUE_ID]:
             body, shape = self.balls.pop(bid)
             self.space.remove(body, shape)
         self.black_id = None
-        self.reset_potted_history()
 
     def set_ball_radius(self, r_m):
         CFG["BALL_R_M"] = max(0.015, min(0.035, r_m))
@@ -1113,16 +782,9 @@ class Sim:
         self._live_side = max(-1.0, min(1.0, side))
         self._live_follow = max(-1.0, min(1.0, follow))
         self.potted_log = []
-        # Rules (r9): shot-scoped, so they reset here with potted_log -- not in
-        # step(), which fires many times per shot and would wipe the very facts
-        # the rules need to see at rest.
-        self.first_contact = None
-        self.cushion_after_contact = False
-        self._contact_made = False
 
     def step(self, dt):
         self.last_pot_events = []  # Increment 4b: fresh per step() call
-        self.last_hit_events = []  # Sound effects: fresh per step() call
         steps = max(1, int(round(dt / CFG["PHYS_DT"])))
         h = CFG["PHYS_DT"]
         spin_decay = math.exp(-CFG["SPIN_DECAY"] * h)
@@ -1159,57 +821,26 @@ class Sim:
                 body.angular_velocity = 0.0
 
     def _capture_pockets(self):
-        # r17 (perf item 3): DETECTION now happens via the pocket sensor
-        # shapes' begin() callback during space.step() (see _build_pockets /
-        # _pocket_sensor_hit); this only does the REMOVAL, at the same
-        # cadence as before (called right after every space.step(), not just
-        # once per frame -- same tunnelling protection this always had).
-        if not self._pending_pot_ids:
-            return
-        hits, self._pending_pot_ids = self._pending_pot_ids, set()
         pots = []
         for bid, (body, shape) in list(self.balls.items()):
-            if bid in hits:
-                pots.append((bid, tuple(body.position), shape.radius))
+            for (pc, cap_r) in capture_points():
+                if math.dist(body.position, pc) < cap_r:
+                    pots.append((bid, tuple(body.position), shape.radius))
+                    break
         for bid, pos, radius in pots:
             body, shape = self.balls.pop(bid)
             self.space.remove(body, shape)
             self.potted_log.append(bid)
-            self.potted_all.append(bid)   # r22: game-scoped, survives strike()
             self.last_pot_events.append((bid, self.colours.get(bid, "red"), pos, radius))
             if bid == self.CUE_ID:
-                # Spin dies with the ball either way.
+                # Sandbox/rules-lite behaviour: respot behind baulk, nudged
                 self._live_side = 0.0
                 self._live_follow = 0.0
-                # r23 (BUG 3): only the SANDBOX respots automatically. When a
-                # rules layer is driving, potting the white simply removes it
-                # and the rules decide where it goes back -- see auto_respot.
-                if self.auto_respot:
-                    self._respot_cue()
+                self._respot_cue()
 
-
-    def _record_first_contact(self, arbiter):
-        """Rules (r9): latch the colour of the FIRST object ball the cue ball
-        touched this shot. Pure observation -- applies no force, alters no
-        trajectory. Identifies the ball by matching the arbiter's shapes back
-        to self.balls, since pymunk hands us shapes, not our ids."""
-        if self._contact_made:
-            return
-        for bid, (body, shape) in self.balls.items():
-            if bid == self.CUE_ID:
-                continue
-            if shape in arbiter.shapes:
-                self.first_contact = self.colours.get(bid)
-                self._contact_made = True
-                return
 
     # -- spin callbacks (pymunk post_solve) -----------------------------------
     def _cue_ball_contact(self, arbiter, space, data):
-        self.last_hit_events.append(("ball_hit", arbiter.total_impulse.length))
-        # Rules (r9): first-contact latch, unconditional, BEFORE the early
-        # return below -- a soft graze that produces no follow-kick is still
-        # very much a contact as far as the rules are concerned.
-        self._record_first_contact(arbiter)
         if abs(self._live_follow) < 0.02:
             return
         cue = self.cue()
@@ -1224,33 +855,7 @@ class Sim:
                         cue.velocity.y + (pvy / speed) * k)
         self._live_follow = 0.0
 
-    def _obj_ball_contact(self, arbiter, space, data):
-        # Sound effects, and (r9, deliberate signed-off exception) rules
-        # observation. This handler previously carried "no gameplay behaviour,
-        # ever"; it now also feeds the rules engine, because "wrong ball hit
-        # first" cannot be derived from potted_log. It STILL applies no force
-        # and alters no trajectory -- physics is completely untouched. It only
-        # observes.
-        self.last_hit_events.append(("ball_hit", arbiter.total_impulse.length))
-
-    def _obj_cushion_contact(self, arbiter, space, data):
-        # Rules (r9): new handler. WEPF requires that, after the cue ball
-        # strikes a legal object ball, EITHER a ball is potted OR some ball
-        # reaches a cushion -- otherwise it's a foul (the "no cushion, no pot"
-        # rule, which stops a player nudging balls around safely forever).
-        # Cue-cushion contacts were already handled for side-spin; object-ball
-        # cushion contacts had no handler at all because nothing needed one.
-        # This feature needs one. Pure observation, applies no force.
-        if self._contact_made:
-            self.cushion_after_contact = True
-
     def _cue_cushion_contact(self, arbiter, space, data):
-        # Rules (r9): a cue-ball cushion contact counts for the "no cushion,
-        # no pot" rule too, but ONLY if it happens after the first object
-        # contact -- a cue ball that hits a cushion on its way TO the object
-        # ball satisfies nothing.
-        if self._contact_made:
-            self.cushion_after_contact = True
         if abs(self._live_side) < 0.02:
             return
         cue = self.cue()
@@ -1311,48 +916,21 @@ class Sim:
         return [tuple(b.position) for bid, (b, _) in self.balls.items() if bid != self.CUE_ID]
 
     def potted_colours(self):
-        """SHOT-scoped: what went down on the CURRENT shot. The rules engine
-        depends on this being cleared by strike() -- do not repoint it."""
         return [self.colours.get(b, "?") for b in self.potted_log]
-
-    def potted_colours_all(self):
-        """r22, GAME-scoped: everything potted this rack, in the order it went
-        down. This is what the r12 potted-ball chamber wants -- a real table's
-        chamber shows the whole game's history, not just the last shot."""
-        return [self.colours.get(b, "?") for b in self.potted_all]
 
 
 # ----------------------------------------------------------------------------
 # Rules-lite blackball (decision 1B)
 # ----------------------------------------------------------------------------
 class Game:
-    """WEPF blackball rules engine (r9 -- was "rules-lite" through R6).
+    """Rules-lite blackball state machine.
 
-    Now covered:
-      * turn order; colour assignment on the first potted colour (open table)
-      * pot-your-colour-to-continue
-      * FOULS (r9 phase 1), all of which now end the visit and hand the
-        opponent a free shot plus two visits:
-          - scratch (cue potted)             -> cue respotted behind baulk
-          - cue ball hits NOTHING at all
-          - WRONG BALL FIRST: the cue's first object contact was not a legal
-            colour. This is the most common real foul and was completely
-            invisible before, because on_rest() only ever looked at what went
-            DOWN (potted_log), never at what the cue ball TOUCHED. It needs
-            sim.first_contact, which is why the collision handlers now observe
-            it (a deliberate, signed-off exception -- they still apply no force).
-          - NO CUSHION, NO POT: after a legal contact, nothing was potted and
-            no ball reached a cushion. Stops a player nudging balls around
-            safely forever.
-      * FREE SHOT + TWO VISITS (r9 phase 3): after a foul, the incoming player
-        gets two visits (they may miss once and still shoot again) and, on the
-        first of them, a free shot -- wrong-ball-first does not foul.
-      * black legal only once your colour is cleared BEFORE the shot; potting
-        the black early, or with a foul, loses.
-
-    Simplifications still standing (documented, not accidental): on a free shot
-    the player may hit any ball first, but potting the opponent's colour still
-    doesn't extend their visit; no re-racks; no nominated-ball declarations.
+    Covered: turn order; colour assignment on first potted colour (open
+    table); pot-your-colour-to-continue; scratch = foul, cue respotted
+    behind baulk, turn passes; black legal only once your colour is cleared
+    BEFORE the shot; potting the black early (or with a scratch) loses.
+    Deliberately not covered (rules-lite): free shots, two-visit penalties,
+    wrong-ball-first fouls, re-racks. Logged for a future full-rules pass.
     """
 
     def __init__(self, names=("SHARK", "STEADY"), controllers=("ai", "ai")):
@@ -1367,75 +945,21 @@ class Game:
         self.fouls = 0
         self.shots = 0
         self.last_event = "break to open"
-        # r9 phase 3 -- penalty state, always describing the CURRENT striker.
-        self.free_shot = False     # this shot cannot foul on wrong-ball-first
-        self.visits_left = 1       # 2 after the opponent fouls: miss once, shoot again
-        # r13: ball in hand. True on the BREAK and after any FOUL -- the striker
-        # may reposition the cue ball anywhere in baulk before playing (WEPF
-        # blackball: "in hand in baulk"). NOT the D -- see baulk_rect().
-        self.ball_in_hand = True
 
     def own_colour(self, i=None):
         return self.colours.get(self.current if i is None else i)
 
-    def legal_colours(self, sim, potted_this_shot=None):
-        """Colours the current striker may target.
-
-        r23 (BUG 1 -- turn handover): `sim.remaining()` counts what is on the
-        table RIGHT NOW, but on_rest() asks this question AFTER the shot's pots
-        have already been removed. So potting your LAST colour made
-        remaining(own) read 0, this function wrongly returned ["black"], and the
-        striker's own perfectly legal first contact was then judged "wrong ball
-        first" -- a phantom foul that handed the visit back instead of letting
-        them go on to the black.
-
-        `potted_this_shot` folds those pots back in before the count, so what is
-        answered is "what was legal WHEN THE SHOT WAS PLAYED". Live callers
-        (place_cue/choose, and the two GUI call sites) pass nothing and are
-        completely unaffected -- they genuinely do want the table as it stands.
-        """
+    def legal_colours(self, sim):
+        """Colours the current striker may target."""
         own = self.own_colour()
-        # Balls of the striker's own colour that went down on THIS shot were
-        # still on the table when the shot was played.
-        back = 0
-        if potted_this_shot and own is not None:
-            back = sum(1 for c in potted_this_shot if c == own)
-        remaining_own = (sim.remaining(own) + back) if own is not None else 0
-        if self.free_shot:
-            # r9: on a free shot ANY ball may be struck first, so everything
-            # on the table is a legal first contact.
-            return ["red", "yellow", "black"] if own is None or remaining_own == 0 \
-                   else ["red", "yellow"]
         if own is None:
             return ["red", "yellow"]
-        if remaining_own == 0:
+        if sim.remaining(own) == 0:
             return ["black"]
         return [own]
 
-    def assess_foul(self, sim, legal, potted, scratch):
-        """r9 phase 1: pure foul determination for the shot just completed.
-        Returns a reason string, or None if the shot was legal. Split out from
-        on_rest() specifically so it can be unit-tested without a live table."""
-        if scratch:
-            return "scratch"
-        obj_potted = [c for c in potted if c in ("red", "yellow", "black")]
-        if sim.first_contact is None:
-            # An object ball in a pocket is itself proof the cue ball hit
-            # something -- trust the evidence over a missing latch. Without
-            # this, any path that pots a ball without the contact handler
-            # firing (a replayed//constructed state, a resumed shot) would be
-            # wrongly called a foul. Only a shot that potted NOTHING can
-            # honestly be judged "the cue ball never touched anything".
-            if not obj_potted:
-                return "no contact"
-        elif not self.free_shot and sim.first_contact not in legal:
-            return f"wrong ball first ({sim.first_contact})"
-        if not potted and not sim.cushion_after_contact:
-            return "no cushion, no pot"
-        return None
-
     def on_rest(self, sim):
-        """Apply the rules to the shot just completed."""
+        """Apply rules-lite to the shot just completed (sim.potted_log)."""
         if self.over:
             return
         self.shots += 1
@@ -1444,28 +968,19 @@ class Game:
         scratch = "cue" in potted
         obj = [c for c in potted if c in ("red", "yellow")]
         own = self.colours.get(striker)
-        # Snapshot the legality the shot was PLAYED under, before any colour
-        # assignment below mutates it. r23 (BUG 1): `potted` must be passed in,
-        # because the shot's pots are already off the table by the time we get
-        # here -- without it, potting your last colour looks like "you are on
-        # the black now", and your own colour becomes an illegal first contact
-        # retrospectively.
-        legal = self.legal_colours(sim, potted_this_shot=potted)
-        was_free = self.free_shot
 
         if "black" in potted:
-            foul = self.assess_foul(sim, legal, potted, scratch)
-            legal_black = (own is not None and sim.remaining(own) == 0
-                           and not any(c == own for c in obj) and foul is None)
+            # Legal only if own colour was cleared BEFORE this shot and no
+            # scratch accompanied it.
+            legal = (own is not None and sim.remaining(own) == 0
+                     and not any(c == own for c in obj) and not scratch)
             self.over = True
-            self.winner = striker if legal_black else 1 - striker
-            self.reason = ("black potted cleanly" if legal_black
-                           else f"black potted illegally ({foul or 'early'})")
+            self.winner = striker if legal else 1 - striker
+            self.reason = ("black potted cleanly" if legal
+                           else "black potted illegally")
             self.last_event = f"{self.names[self.winner]} wins: {self.reason}"
             return
 
-        # Open table: first potted colour assigns. A foul shot still assigns if
-        # a colour went down -- the ball is gone either way.
         if not self.colours and obj:
             first = obj[0]
             other = "yellow" if first == "red" else "red"
@@ -1473,54 +988,16 @@ class Game:
             own = first
             self.last_event = f"{self.names[striker]} is {first.upper()}S"
 
-        foul = self.assess_foul(sim, legal, potted, scratch)
-        self.free_shot = False     # a free shot is consumed by the shot itself
-        self.ball_in_hand = False  # r13: and so is ball-in-hand
-
-        if foul is not None:
+        if scratch:
             self.fouls += 1
-            self.last_event = f"foul — {foul}"
-            # r9 phase 3: fouling ends the visit outright -- the fouler's own
-            # remaining visits are forfeit, they do NOT get to use a second one
-            # to "recover". The table passes, and the incoming player receives
-            # the penalty: a free shot, and two visits.
-            #
-            # visits_left ALWAYS describes the CURRENT striker, so it must be
-            # set explicitly on every single handover, never left to carry over
-            # from whoever was at the table before (which was the bug the old
-            # `rules` selftest caught: the penalty was leaking to the wrong
-            # player and the turn bounced back and forth).
+            self.last_event = "scratch — cue respotted"
+
+        keep_going = (not scratch) and own is not None and any(c == own for c in obj)
+        if obj and not scratch and not keep_going:
+            self.last_event = "potted opponent's colour"
+        if not keep_going:
             self.current = 1 - striker
             self.visits += 1
-            self.free_shot = True
-            self.visits_left = 2
-            # r23 (BUG 3, part ii): ball-in-hand was cleared a few lines above
-            # on EVERY shot but never set back True on a foul, so it was only
-            # ever True once, at __init__. Nobody noticed because the sim's
-            # auto-respot was silently placing the cue anyway. WEPF blackball
-            # gives the incoming player ball in hand for ANY foul, not just a
-            # scratch, so it is granted here on the same branch as the free
-            # shot and the two visits.
-            self.ball_in_hand = True
-            return
-
-        keep_going = own is not None and any(c == own for c in obj)
-        if keep_going:
-            if not was_free:
-                self.last_event = "potted — continue"
-            return                  # striker stays at the table, visits_left intact
-
-        # Legal shot, nothing of theirs potted. r9 phase 3: if they arrived on
-        # two visits (because the opponent fouled), they get the second one
-        # rather than handing the table straight back.
-        if self.visits_left > 1:
-            self.visits_left -= 1
-            self.last_event = "missed — second visit"
-            return
-        self.current = 1 - striker
-        self.visits += 1
-        self.visits_left = 1        # normal handover: one visit, no penalty
-        self.last_event = "dry visit — turn passes"
 
 
 # ----------------------------------------------------------------------------
@@ -1530,104 +1007,33 @@ class PoolAI:
     """Evaluates every legal (ball, pocket) pot via ghost-ball geometry,
     corridor clearance and an analytic success estimate. Candidates that
     beat the confidence threshold are ranked by utility
-
-        u = p_pot x ((1 - greed) + greed x leave_quality) x (1 - caution x foul_risk)
-
+        u = p_pot x ((1 - greed) + greed x leave_quality)
     where leave_quality is the best analytic next-shot chance from the
-    estimated cue-ball rest position (R5), and foul_risk (r9 phase 2) is the
-    estimated chance the cue ball scratches -- so the AI now genuinely weighs
-    a pot against the foul it might concede, instead of ignoring fouls
-    entirely. greed=0, caution=0 reproduces the R4 pot-chance-only behaviour.
-
-    Spin (r9 phase 2): once the best shot is chosen, a coarse 3x3 (follow x
-    side) grid is scored over it and the spin that best serves position --
-    while not raising foul risk -- is applied. Deliberately NOT a joint
-    ball x pocket x spin search: that multiplies the candidate space for
-    little gain, and this keeps --aigame batch times sane.
-
-    Safety (r9 phase 2): when nothing beats the threshold, the AI no longer
-    just rolls at the nearest ball. It scores real safety candidates by
-    safety_quality -- how badly the leave hurts the OPPONENT -- while still
-    requiring a legal first contact, so its own safeties don't foul.
-
-    Personality comes only from the numbers. Nothing here is scripted."""
+    estimated cue-ball rest position (R5). greed=0 reproduces the R4
+    pot-chance-only behaviour exactly. If nothing beats the threshold,
+    a soft safety is played on the nearest legal ball. Aim jitter is
+    applied at execution so hard shots genuinely miss more often.
+    Personality comes only from the numbers."""
 
     def __init__(self, name, aim_jitter=0.010, threshold=0.15, greed=0.0,
-                 caution=0.5, rng=None):
+                 rng=None):
         self.name = name
         self.aim_jitter = aim_jitter     # radians (sigma)
         self.threshold = threshold       # minimum estimated pot chance
         self.greed = greed               # 0 = pure pot chance, 1 = position-led
-        self.caution = caution           # r9: 0 = ignores fouls, 1 = foul-averse
         self.rng = rng or random.Random()
-
-    # r9 phase 2: the coarse spin grid. Kept small on purpose -- these are
-    # PARAMETERS the AI scores over, never a scripted "use draw here" rule.
-    SPIN_GRID = (-0.7, 0.0, 0.7)
 
     def choose(self, sim, legal_colours):
         cue = sim.cue()
         if cue is None:
             return None
-        return self._search(sim, legal_colours,
-                            (cue.position.x, cue.position.y))
-
-    def place_cue(self, sim, legal_colours):
-        """r13 (ball in hand): choose where to put the cue ball in baulk.
-
-        EMERGENT, not scripted: every candidate position across baulk is scored
-        by re-running the AI's OWN shot search from there, and the position that
-        yields the best shot wins. There is no table of 'put it here in this
-        situation' -- the placement falls out of exactly the same utility the AI
-        already uses to pick a shot, so a greedy AI naturally sets up a pot and a
-        cautious one naturally sets up something safe.
-
-        r23 (BUG 3, part iii): the cue ball may now genuinely be ABSENT when
-        this is called -- that is the whole point of the auto_respot change, and
-        the old `if cue is None: return None` guard would have silently eaten
-        every placement. Scoring never needed the cue body anyway (`_search` is
-        parameterised by the candidate position), so only the commit step at the
-        bottom cares, and it re-adds the ball when there isn't one.
-
-        Returns the chosen position, or None if no legal placement was found."""
-        rc = CFG["CUE_R_M"]
-        existing = [((b.position.x, b.position.y), s.radius)
-                    for bid, (b, s) in sim.balls.items() if bid != Sim.CUE_ID]
-        best_pos, best_u = None, -1.0
-        for cand in baulk_candidates():
-            if not can_place_cue(cand, existing, rc):
-                continue
-            shot = self._search(sim, legal_colours, cand, execute=False)
-            u = shot["u"] if shot else 0.0
-            if u > best_u:
-                best_pos, best_u = cand, u
-        if best_pos is None:
-            return None
-        cue = sim.cue()
-        if cue is None:
-            sim._add_ball(Sim.CUE_ID, best_pos, "cue")
-        else:
-            cue.position = best_pos
-            cue.velocity = (0.0, 0.0)
-        return best_pos
-
-    def _search(self, sim, legal_colours, cp, execute=True):
-        """The shot search, parameterised by cue position `cp` so it can be run
-        from a HYPOTHETICAL position (r13 ball-in-hand) as well as the real one.
-        With execute=False it scores and returns the best shot WITHOUT applying
-        aim jitter or committing anything -- so placement can compare candidates
-        on equal terms."""
+        cp = (cue.position.x, cue.position.y)
         rc, ro = CFG["CUE_R_M"], ball_r()
         targets = [(bid, tuple(b.position)) for bid, (b, _) in sim.balls.items()
                    if bid != Sim.CUE_ID and sim.colours.get(bid) in legal_colours]
         if not targets:
             return None
         all_pos = {bid: tuple(b.position) for bid, (b, _) in sim.balls.items()}
-        # r9: the opponent's balls -- needed to score safeties from their side.
-        opp_targets = [tuple(b.position) for bid, (b, _) in sim.balls.items()
-                       if bid != Sim.CUE_ID
-                       and sim.colours.get(bid) not in legal_colours
-                       and sim.colours.get(bid) != "black"]
         best = None
         for (bid, t) in targets:
             others = [p for k, p in all_pos.items()
@@ -1636,135 +1042,43 @@ class PoolAI:
                 est = pot_estimate(cp, t, pc, cap_r, rc, ro, self.aim_jitter)
                 if est is None:
                     continue
-                if not corridor_clear(cp, est["ghost"],
-                                      cue_corridor(rc, ro, self.aim_jitter,
-                                                   est["t_cue"]), others):
+                if not corridor_clear(cp, est["ghost"], rc + ro - 0.002, others):
                     continue      # cue path blocked
-                if not corridor_clear(t, pc,
-                                      object_corridor(ro, self.aim_jitter,
-                                                      est["t_cue"]), others):
+                if not corridor_clear(t, pc, 2 * ro - 0.006, others):
                     continue      # object path blocked
                 p = est["p"]
                 if p < self.threshold:
                     continue      # not confident enough to attempt
                 d = est["t_cue"] + est["d_tp"]
-                power = min(3.5, 1.0 + 1.1 * d)
                 leave = 0.5       # neutral when position is not evaluated
-                lv = estimate_leave(est, power)
                 if self.greed > 0.0:
                     rem = [q for (qid, q) in targets if qid != bid]
                     if rem:
+                        lv = estimate_leave(est, min(3.5, 1.0 + 1.1 * d))
                         leave = leave_quality(lv["rest"], rem, others,
                                               rc, ro, self.aim_jitter)
-                # r9: foul risk -- a pot that scratches is a pot that hands the
-                # opponent a free shot and two visits, so it must cost something.
-                risk = scratch_risk(lv["rest"], lv["speed"])
-                u = (p * ((1.0 - self.greed) + self.greed * leave)
-                     * (1.0 - self.caution * risk))
+                u = p * ((1.0 - self.greed) + self.greed * leave)
                 if best is None or u > best["u"]:
                     best = {"type": "pot", "aim": est["aim"], "p": p, "u": u,
-                            "leave": leave, "risk": risk, "target": t,
-                            "ghost": est["ghost"], "pocket": pc, "d": d,
-                            "est": est, "power": power,
-                            "rem": [q for (qid, q) in targets if qid != bid],
-                            "others": others}
+                            "leave": leave, "target": t, "ghost": est["ghost"],
+                            "pocket": pc, "d": d}
         if best is not None:
-            if not execute:
-                return best        # r13: scoring only -- no jitter, nothing committed
-            follow, side = self._choose_spin(best, rc, ro)
-            return self._execute(best, best["power"], follow=follow, side=side)
-        return self._choose_safety(sim, cp, targets, opp_targets, all_pos, rc, ro,
-                                   execute=execute)
-
-    def _choose_spin(self, shot, rc, ro):
-        """r9 phase 2: score the coarse 3x3 (follow x side) grid over the
-        already-chosen shot and take the spin that best serves position without
-        raising the foul risk. Emergent: the spin falls out of the same
-        leave/risk scores everything else uses -- there is no table of
-        'situation -> spin'. Returns (follow, side)."""
-        best = (0.0, 0.0, -1.0)     # follow, side, score
-        for follow in self.SPIN_GRID:
-            for side in self.SPIN_GRID:
-                lv = estimate_leave(shot["est"], shot["power"],
-                                    follow=follow, side=side)
-                risk = scratch_risk(lv["rest"], lv["speed"])
-                if shot["rem"]:
-                    leave = leave_quality(lv["rest"], shot["rem"],
-                                          shot["others"], rc, ro, self.aim_jitter)
-                else:
-                    leave = 0.5
-                score = leave * (1.0 - self.caution * risk)
-                if score > best[2]:
-                    best = (follow, side, score)
-        return best[0], best[1]
-
-    def _choose_safety(self, sim, cp, targets, opp_targets, all_pos, rc, ro,
-                       execute=True):
-        """r9 phase 2: a real safety, scored rather than assumed. Rolls at each
-        legal ball at a few powers, and takes whichever leaves the OPPONENT
-        worst off (safety_quality) while keeping the cue ball out of a pocket.
-        Crucially it also requires a CLEAR path to the target -- the old
-        'nearest legal ball' fallback could send the cue straight through an
-        illegal ball, which under r9's rules is now a wrong-ball-first foul."""
-        best = None
-        for (bid, t) in targets:
-            others = [p for k, p in all_pos.items()
-                      if k not in (bid, Sim.CUE_ID)]
-            # A safety that fouls is not a safety. Legal first contact only.
-            # r20: a safety fires a REAL, jittered cue like any other shot, so
-            # it needs the same jitter-aware corridor -- the old -0.002 shave
-            # let the cue clip an illegal ball on its way to the target, which
-            # under r9's rules is a wrong-ball-first foul.
-            if not corridor_clear(cp, t,
-                                  cue_corridor(rc, ro, self.aim_jitter,
-                                               math.dist(cp, t)), others):
-                continue
-            for power in (0.8, 1.2, 1.8):
-                # Straight roll onto the ball: contact is full, so the leave
-                # model's ghost is the ball itself.
-                aim = (t[0] - cp[0], t[1] - cp[1])
-                d = math.hypot(*aim)
-                if d < 1e-9:
-                    continue
-                est = pot_estimate(cp, t, t, ro, rc, ro, self.aim_jitter)
-                if est is None:
-                    continue
-                lv = estimate_leave(est, power)
-                risk = scratch_risk(lv["rest"], lv["speed"])
-                q = safety_quality(lv["rest"], opp_targets, others, rc, ro,
-                                   self.aim_jitter)
-                u = q * (1.0 - self.caution * risk)
-                if best is None or u > best["u"]:
-                    best = {"type": "safety", "aim": aim, "p": 0.0, "u": u,
-                            "leave": 0.0, "risk": risk, "safety": q,
-                            "target": t, "ghost": t, "pocket": None, "d": d,
-                            "power": power}
-        if best is not None:
-            if not execute:
-                return best        # r13: scoring only
-            return self._execute(best, best["power"])
-        # Nothing legal and clear at all -- roll at the nearest legal ball and
-        # take what comes. Better than not striking, which is always a foul.
+            power = min(3.5, 1.0 + 1.1 * best["d"])
+            return self._execute(best, power)
+        # Safety: soft roll onto the nearest legal ball
         (bid, t) = min(targets, key=lambda kv: math.dist(cp, kv[1]))
         aim = (t[0] - cp[0], t[1] - cp[1])
-        fallback = {"type": "safety", "aim": aim, "p": 0.0,
-                    "u": 0.0, "leave": 0.0, "risk": 0.0,
-                    "target": t, "ghost": t, "pocket": None,
-                    "d": math.hypot(*aim)}
-        if not execute:
-            return fallback
-        return self._execute(fallback, 1.0)
+        return self._execute({"type": "safety", "aim": aim, "p": 0.0,
+                              "u": 0.0, "leave": 0.0,
+                              "target": t, "ghost": t, "pocket": None,
+                              "d": math.hypot(*aim)}, 1.0)
 
-    def _execute(self, shot, power, follow=0.0, side=0.0):
+    def _execute(self, shot, power):
         ang = math.atan2(shot["aim"][1], shot["aim"][0])
         ang += self.rng.gauss(0.0, self.aim_jitter)
         shot["aim"] = (math.cos(ang), math.sin(ang))
         shot["power"] = max(CFG["POWER_MIN"],
                             power * (1.0 + self.rng.gauss(0.0, 0.02)))
-        # r9 phase 2: spin travels with the shot so every caller (headless
-        # --aigame, the GUI, the drills) applies exactly the shot the AI chose.
-        shot["follow"] = follow
-        shot["side"] = side
         return shot
 
 
@@ -1773,189 +1087,20 @@ def new_game(controllers=("ai", "ai"), names=("SHARK", "STEADY")):
     sim = Sim(layout="empty")
     sim._respot_cue()
     sim.rack()
-    # r23 (BUG 3): a rules-driven sim leaves the cue OFF the table when it is
-    # potted, so ball-in-hand is a real choice rather than a decision already
-    # taken by the physics layer.
-    sim.auto_respot = False
     return sim, Game(names=names, controllers=controllers)
 
 
-STUDY_JITTER = 0.011   # r18: the SHARED skill level of both study personalities.
-                       # Deliberately ONE constant, not two: see default_ais().
-
-
 def default_ais(rng=None):
-    """Two distinguishable players from STRATEGY parameters alone: SHARK
-    attempts more, plays for position and risks more (threshold 0.10, greed
-    0.55, caution 0.35); STEADY demands a better chance, takes the surest pot
-    and avoids fouls (threshold 0.24, greed 0.25, caution 0.70).
-
-    r26: STEADY's threshold moved 0.18 -> 0.24 (KNOWN_ISSUES #2). Both
-    thresholds used to sit below POT_FLOOR (0.19, r25's measured rattle-in
-    floor), so any geometrically valid long/thin shot reads as exactly 0.19
-    and cleared BOTH thresholds identically -- `floor_threshold_audit.py`
-    measured this as 30.6% of all AI shots across 50 real games, 88.7% of
-    which would have been a safety without the floor's rescue. That erased
-    the one thing `threshold` exists to express: SHARK and STEADY behaved
-    identically for a third of all shots, regardless of their different
-    numbers. SHARK's 0.10 is left alone -- an aggressive personality
-    attempting a genuine ~19% shot is in-character, not a bug. STEADY's is
-    the one meant to fold here, so it moves clear of the floor to 0.24,
-    restoring its ability to prefer a safety over a bare-floor pot.
-
-    r18: both now aim with the SAME aim_jitter (STUDY_JITTER), and this is the
-    whole point of the pass. aim_jitter is a SKILL parameter; threshold/greed/
-    caution are STRATEGY. Before r18 SHARK had both the better strategy-of-
-    aggression AND a truer cue (0.008 vs 0.014), so a win-rate gap could not be
-    attributed to either -- and after the r16 calibration fix made pot chance
-    far more sensitive to aim error, skill came to SWAMP strategy outright.
-    Measured over 20 games/arm, holding strategy fixed and moving only jitter:
-
-        as-shipped (SHARK .008 / STEADY .014)   SHARK 90%
-        matched    (both .011)                  SHARK 65%
-        SWAPPED    (SHARK .014 / STEADY .008)   SHARK 45%
-
-    i.e. handing SHARK the WORSE cue while leaving its entire aggressive
-    playbook intact collapsed it from 90% to 45%. The study was measuring who
-    aimed straighter, not whose strategy was better. Matching the jitter makes
-    the AI-vs-AI study answer the question it exists to answer; skill is now an
-    independent axis, swept deliberately (pass a different aim_jitter) rather
-    than smuggled into the matchup."""
+    """Two distinguishable players from parameters alone: SHARK aims truer,
+    attempts more and plays for position (greed 0.55); STEADY jitters more,
+    demands a better chance and takes the surest pot (greed 0.25)."""
     rng = rng or random.Random()
-    return [PoolAI("SHARK", aim_jitter=STUDY_JITTER, threshold=0.10, greed=0.55,
-                   caution=0.35, rng=rng),
-            PoolAI("STEADY", aim_jitter=STUDY_JITTER, threshold=0.24, greed=0.25,
-                   caution=0.70, rng=rng)]
+    return [PoolAI("SHARK", aim_jitter=0.008, threshold=0.10, greed=0.55, rng=rng),
+            PoolAI("STEADY", aim_jitter=0.014, threshold=0.18, greed=0.25, rng=rng)]
 
 
-STUDY_SCHEMA = 2   # bump when the JSONL record shape changes, so old study
-                   # files can never be silently misread by a newer analysis.
-                   # 2 (r19): added cut_deg / t_cue / d_tp -- the pot geometry.
-
-
-def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
-                     cushion_after, foul, event, ball_in_hand, free_shot,
-                     cue_placed):
-    """r15 (study output): one shot -> one plain, JSON-safe dict.
-
-    The payload that matters for analysis is `p_pred` (what the AI THOUGHT the
-    pot chance was) alongside `potted` (what actually happened). Those two
-    together are the only way to ask whether pot_estimate is CALIBRATED -- i.e.
-    whether shots the AI rates at 80% actually go in 80% of the time. That
-    question is unanswerable from a game-summary log, which is exactly why the
-    per-shot log earns its keep.
-
-    r19: also logs the POT GEOMETRY -- cut_deg (how thin the cut is), t_cue
-    (cue-to-object distance) and d_tp (object-to-pocket distance). r16 fixed a
-    calibration bug that was ultimately ABOUT geometry, and the follow-up
-    investigation then stalled because none of it was in the log: 'are thin cuts
-    over-rated, or long pots?' was unanswerable, and total distance had to be
-    reverse-engineered from the power formula, which is a hack. These three
-    fields are exactly the inputs pot_estimate() already computes and throws
-    away, so logging them is free and makes the residual directly diagnosable.
-
-    Pure: no sim, no pygame, no file I/O -- just values in, dict out."""
-    est = plan.get("est") or {}
-    fullness = est.get("fullness")
-    return {
-        "n": n,
-        "striker": striker,
-        "striker_name": name,
-        "colour": colour,
-        "type": plan.get("type"),
-        "p_pred": round(float(plan.get("p", 0.0)), 4),
-        "u": round(float(plan.get("u", 0.0)), 4),
-        "risk": round(float(plan.get("risk", 0.0)), 4),
-        "power": round(float(plan.get("power", 0.0)), 4),
-        "follow": round(float(plan.get("follow", 0.0)), 3),
-        "side": round(float(plan.get("side", 0.0)), 3),
-        # r19 pot geometry -- None on a safety, which carries no ghost-ball est
-        "cut_deg": (round(math.degrees(math.acos(max(-1.0, min(1.0, fullness)))), 2)
-                    if fullness is not None else None),
-        "t_cue": (round(float(est["t_cue"]), 4) if "t_cue" in est else None),
-        "d_tp": (round(float(est["d_tp"]), 4) if "d_tp" in est else None),
-        "ball_in_hand": bool(ball_in_hand),
-        "free_shot": bool(free_shot),
-        "cue_placed": ([round(cue_placed[0], 4), round(cue_placed[1], 4)]
-                       if cue_placed else None),
-        "potted": list(potted),
-        "first_contact": first_contact,
-        "cushion_after": bool(cushion_after),
-        "foul": foul,
-        "event": event,
-    }
-
-
-def wilson_interval(wins, n, z=1.96):
-    """r15 (study output): 95% Wilson score interval for a win rate.
-
-    This is the whole point of larger-N. "SHARK 5 - 7 STEADY" over 12 games
-    means NOTHING -- it sits well inside coin-flip noise, and reporting it as a
-    result would be a lie. Wilson (rather than the naive normal interval)
-    because it stays sane at small n and near 0 or 1, which is exactly where a
-    study starts. Returns (lo, hi). Pure."""
-    if n <= 0:
-        return (0.0, 1.0)
-    p = wins / n
-    d = 1.0 + z * z / n
-    centre = (p + z * z / (2 * n)) / d
-    half = (z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / d
-    return (max(0.0, centre - half), min(1.0, centre + half))
-
-
-def pot_calibration(shot_records, bins=5):
-    """r15 (study output): is pot_estimate honest?
-
-    Bins every attempted POT by the chance the AI predicted, and reports what
-    fraction actually went down. A well-calibrated model has predicted ~= actual
-    in every bin. If the AI's 80% shots only land 50% of the time, its whole
-    utility function is built on a lie -- and no amount of tuning greed/caution
-    would fix that, because the inputs are wrong.
-
-    r21: FREE SHOTS ARE EXCLUDED, and this correction matters more than it
-    sounds. On a free shot (r9, awarded after the opponent fouls) ANY ball may
-    legally be struck first, so the AI will quite properly cannon into an
-    opponent's ball if that is the best-utility line -- it is exploiting the
-    rule, not misplaying. Measured, 39.2% of free-shot pot attempts strike
-    another colour first, against 5.4% on a normal shot. Leaving them in scores
-    pot_estimate against shots where the AI was not really trying to pot its own
-    colour at all, which silently drags 'actual' down and makes the model look
-    worse-calibrated than it is. A calibration table is only meaningful over a
-    population of COMPARABLE attempts.
-
-    (This was found the hard way: a 'wrong ball first' rate that looked like a
-    collision bug, and survived a corridor fix, turned out to be half legal free
-    shots. The lesson worth keeping: before treating a failure mode as a defect,
-    check whether it is even against the rules.)
-
-    Returns [(lo, hi, n, predicted_mean, actual_rate), ...]. Pure."""
-    out = []
-    pots = [s for s in shot_records
-            if s.get("type") == "pot" and not s.get("free_shot")]
-    for b in range(bins):
-        lo, hi = b / bins, (b + 1) / bins
-        sel = [s for s in pots
-               if (lo <= s.get("p_pred", 0.0) < hi
-                   or (b == bins - 1 and s.get("p_pred", 0.0) == 1.0))]
-        if not sel:
-            continue
-        pred = sum(s["p_pred"] for s in sel) / len(sel)
-        # "actual" = the striker's OWN colour went down. Potting the opponent's
-        # ball is not a successful pot, it's a foul -- counting it would flatter
-        # the model.
-        made = sum(1 for s in sel
-                   if s.get("colour") and s["colour"] in s.get("potted", []))
-        out.append((lo, hi, len(sel), pred, made / len(sel)))
-    return out
-
-
-def play_ai_game(seed=0, max_shots=300, verbose=False, log_shots=False):
-    """Headless AI-vs-AI game. Returns a result record.
-
-    r15: with log_shots=True the record also carries a per-shot event log and
-    everything needed to REPLAY the game exactly (the seed, and the AI
-    parameters). Without those, an interesting outlier is a curiosity you can
-    never reproduce."""
+def play_ai_game(seed=0, max_shots=300, verbose=False):
+    """Headless AI-vs-AI game. Returns a result record."""
     rng = random.Random(seed)
     sim, game = new_game()
     ais = default_ais(rng)
@@ -1965,18 +1110,8 @@ def play_ai_game(seed=0, max_shots=300, verbose=False, log_shots=False):
     sim.run_to_rest()
     game.on_rest(sim)
     safeties = 0
-    shot_log = []
     while not game.over and game.shots < max_shots:
         ai = ais[game.current]
-        striker = game.current
-        # r13: ball in hand (break / after a foul) -- the AI places the cue
-        # ball first, scoring candidate positions across baulk with its own
-        # shot search. Emergent: no scripted 'put it here'.
-        bih = game.ball_in_hand
-        free = game.free_shot
-        cue_placed = None
-        if game.ball_in_hand:
-            cue_placed = ai.place_cue(sim, game.legal_colours(sim))
         shot = ai.choose(sim, game.legal_colours(sim))
         if shot is None:
             break
@@ -1985,99 +1120,30 @@ def play_ai_game(seed=0, max_shots=300, verbose=False, log_shots=False):
         if verbose:
             print(f"    shot {game.shots:3d}: {ai.name:6s} {shot['type']:6s} "
                   f"p={shot['p']:.2f} pow={shot['power']:.2f}")
-        colour = game.colours.get(striker)
-        n_shot = game.shots + 1
-        sim.strike(shot["aim"], shot["power"],
-                   side=shot.get("side", 0.0), follow=shot.get("follow", 0.0))
+        sim.strike(shot["aim"], shot["power"])
         sim.run_to_rest()
-        # Snapshot what the shot actually DID, before on_rest() mutates state.
-        potted = sim.potted_colours()
-        first_contact = sim.first_contact
-        cushion_after = sim.cushion_after_contact
-        fouls_before = game.fouls
         game.on_rest(sim)
-        if log_shots:
-            foul = (game.last_event[len("foul — "):]
-                    if game.fouls > fouls_before
-                    and game.last_event.startswith("foul") else None)
-            shot_log.append(make_shot_record(
-                n_shot, striker, ai.name, colour, shot, potted, first_contact,
-                cushion_after, foul, game.last_event, bih, free, cue_placed))
-    rec = {"over": game.over, "winner": game.winner,
-           "winner_name": game.names[game.winner] if game.winner is not None else "-",
-           "reason": game.reason, "shots": game.shots, "visits": game.visits,
-           "fouls": game.fouls, "safeties": safeties}
-    if log_shots:
-        rec["schema"] = STUDY_SCHEMA
-        rec["seed"] = seed
-        rec["players"] = [{"name": a.name, "aim_jitter": a.aim_jitter,
-                           "threshold": a.threshold, "greed": a.greed,
-                           "caution": a.caution} for a in ais]
-        rec["shot_log"] = shot_log
-    return rec
+    return {"over": game.over, "winner": game.winner,
+            "winner_name": game.names[game.winner] if game.winner is not None else "-",
+            "reason": game.reason, "shots": game.shots, "visits": game.visits,
+            "fouls": game.fouls, "safeties": safeties}
 
 
-def aigame_batch(n, jsonl=None, seed=1000):
-    """r15: run n headless AI-vs-AI games, optionally streaming a per-shot JSONL
-    study log, and report the result WITH a confidence interval.
-
-    JSONL (one game per line) rather than one-file-per-game or a single array:
-    it streams, it appends, it survives a run that dies mid-study, and jq/pandas
-    read it directly. Written incrementally as each game finishes, so a study
-    that is killed at game 400 of 500 still leaves 400 usable games.
-
-    r17 (perf item 4): games are independent, so they run across a
-    multiprocessing.Pool rather than one at a time -- stdlib only, no physics
-    touched. pool.imap() (not .map()) is deliberate: it yields each game's
-    result in SEED ORDER as soon as it's ready, so the per-game print/flush
-    below still happens one game at a time in the same order as before, and
-    the mid-study crash resilience (every completed game already on disk)
-    is preserved rather than traded away for the parallel speedup."""
-    print(f"HUSTLER AI vs AI — {n} headless game(s), seed base {seed}")
+def aigame_batch(n):
+    print(f"HUSTLER AI vs AI — {n} headless game(s)")
     wins = {"SHARK": 0, "STEADY": 0}
     incomplete = 0
-    all_shots = []
-    fh = open(jsonl, "w", encoding="utf-8") if jsonl else None
-    worker = functools.partial(play_ai_game, log_shots=bool(jsonl))
-    try:
-        with multiprocessing.Pool() as pool:
-            results = pool.imap(worker, (seed + i for i in range(n)))
-            for i, rec in enumerate(results):
-                if rec["over"]:
-                    wins[rec["winner_name"]] += 1
-                else:
-                    incomplete += 1
-                if fh:
-                    fh.write(json.dumps(rec) + "\n")
-                    fh.flush()          # a killed study keeps every completed game
-                    all_shots.extend(rec.get("shot_log", []))
-                print(f"  game {i+1:3d}: {'winner ' + rec['winner_name'] if rec['over'] else 'NO RESULT':18s}"
-                      f"  ({rec['reason'] or 'shot cap reached'})  shots {rec['shots']:3d}"
-                      f"  visits {rec['visits']:3d}  fouls {rec['fouls']}  safeties {rec['safeties']}")
-    finally:
-        if fh:
-            fh.close()
-
-    decided = wins["SHARK"] + wins["STEADY"]
+    for i in range(n):
+        rec = play_ai_game(seed=1000 + i)
+        if rec["over"]:
+            wins[rec["winner_name"]] += 1
+        else:
+            incomplete += 1
+        print(f"  game {i+1:2d}: {'winner ' + rec['winner_name'] if rec['over'] else 'NO RESULT':18s}"
+              f"  ({rec['reason'] or 'shot cap reached'})  shots {rec['shots']:3d}"
+              f"  visits {rec['visits']:3d}  fouls {rec['fouls']}  safeties {rec['safeties']}")
     print(f"  totals: SHARK {wins['SHARK']} — {wins['STEADY']} STEADY"
           f"{'' if not incomplete else f'  ({incomplete} incomplete)'}")
-    if decided:
-        lo, hi = wilson_interval(wins["SHARK"], decided)
-        rate = wins["SHARK"] / decided
-        # Say plainly whether this is a RESULT or just noise. A win count with no
-        # interval invites exactly the false conclusion larger-N exists to avoid.
-        verdict = ("inconclusive — interval spans 50%" if lo <= 0.5 <= hi
-                   else "significant at 95%")
-        print(f"  SHARK win rate: {rate*100:.1f}%  "
-              f"(95% CI {lo*100:.1f}–{hi*100:.1f}%)  → {verdict}")
-    if all_shots:
-        print(f"  shot log: {len(all_shots)} shots → {jsonl}")
-        cal = pot_calibration(all_shots)
-        if cal:
-            print("  pot_estimate calibration (predicted vs actual):")
-            for lo_b, hi_b, cnt, pred, act in cal:
-                print(f"    p {lo_b:.1f}-{hi_b:.1f}: n={cnt:5d}  "
-                      f"predicted {pred*100:5.1f}%  actual {act*100:5.1f}%")
     return incomplete == 0
 
 
@@ -2155,338 +1221,6 @@ def spin_pad_map(dx, dy, radius):
     if mag > 1.0:
         fx, fy = fx / mag, fy / mag
     return fy, fx  # (follow, side)
-
-
-def pot_chance_colour(p):
-    """r14 (aim overlay): map a 0..1 pot chance to a colour -- RED (dead) through
-    AMBER (marginal) to GREEN (on). The single most useful thing the overlay can
-    tell you, and it was previously computed by pot_assessment() and then thrown
-    away into a text string. Colour is read instantly; text has to be parsed.
-
-    Interpolates red->amber over the bottom half and amber->green over the top,
-    so the amber band sits at p=0.5 where a shot genuinely is a coin-flip.
-    Pure -- no pygame, so the ramp is testable on its own."""
-    p = max(0.0, min(1.0, p))
-    # NB amber's red channel must be <= red's, or the red channel RISES as the
-    # shot gets better before falling -- which is exactly the bug the selftest
-    # caught on the first cut of this (red 232 -> amber 240). The ramp has to be
-    # monotonic in both channels or it misreports at a glance, which defeats the
-    # entire point of using colour instead of text.
-    red, amber, green = (232, 62, 58), (228, 176, 48), (86, 214, 106)
-    if p < 0.5:
-        t = p / 0.5
-        a, b = red, amber
-    else:
-        t = (p - 0.5) / 0.5
-        a, b = amber, green
-    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
-
-
-def aim_taper_alpha(i, n, lo=40, hi=210):
-    """r14 (aim overlay): alpha for segment i of n along the aim line, fading
-    from `hi` at the cue ball to `lo` at the far end.
-
-    A flat, uniform hairline is exactly what reads as a 1980s vector overlay --
-    real aim guides fade with distance, because certainty does. Pure."""
-    if n <= 1:
-        return hi
-    t = i / (n - 1)
-    return int(hi + (lo - hi) * t)
-
-
-def baulk_rect():
-    """r13 (ball in hand): the baulk area -- the rectangle bounded by the baulk
-    line and the three cushions at the head of the table. This is the legal
-    region for cue-ball placement on the break and after a foul.
-
-    NOT the 'D'. The D is a snooker/English-billiards marking; on modern UK pool
-    tables the rules moved on, and blackball simply gives ball-in-hand ANYWHERE
-    IN BAULK. Since r9 implements proper WEPF rules, restricting to a D would
-    knowingly diverge from the ruleset the rest of the engine follows.
-
-    Returns (x0, y0, x1, y1) in metres. Derived from BAULK_FRAC, the same
-    constant that already positions the baulk line and _respot_cue()."""
-    x0, y0, x1, y1 = play_rect()
-    baulk_x = x0 + (x1 - x0) * CFG["BAULK_FRAC"]
-    return (x0, y0, baulk_x, y1)
-
-
-def in_baulk(pos, r=0.0):
-    """r13: is a ball of radius r wholly inside the baulk area? A ball straddling
-    the baulk line is NOT in baulk -- it has to be fully behind it."""
-    bx0, by0, bx1, by1 = baulk_rect()
-    return (bx0 + r <= pos[0] <= bx1 - r) and (by0 + r <= pos[1] <= by1 - r)
-
-
-def can_place_cue(pos, existing, r_cue):
-    """r13: may the cue ball be placed at `pos`? It must be legal table-wise
-    (can_place_ball: inside the cushions, clear of pockets, not overlapping
-    anything) AND wholly within baulk. `existing` is [(pos, radius), ...].
-
-    Pure -- so the ball-in-hand rule is testable with no table and no window."""
-    return in_baulk(pos, r_cue) and can_place_ball(pos, existing, r_cue,
-                                                   [r for (_, r) in existing])
-
-
-def baulk_candidates(nx=6, ny=4):
-    """r13: a coarse grid of candidate cue positions across baulk, for the AI's
-    ball-in-hand search. Coarse on purpose -- the AI re-runs its whole pot search
-    from each candidate, and profiling already showed AI games are slow, so this
-    stays small. Inset by a ball's width so candidates aren't born illegal."""
-    bx0, by0, bx1, by1 = baulk_rect()
-    r = CFG["CUE_R_M"] * 1.2
-    xs = [bx0 + r + (bx1 - bx0 - 2 * r) * (i + 0.5) / nx for i in range(nx)]
-    ys = [by0 + r + (by1 - by0 - 2 * r) * (j + 0.5) / ny for j in range(ny)]
-    return [(x, y) for x in xs for y in ys]
-
-
-def chamber_slots(n, width, d_max, gap):
-    """r12 (potted-ball chamber): lay out n potted balls left-to-right inside a
-    `width`-px strip, at most d_max across, with `gap` px between them.
-
-    Returns (diameter, [x_centre, ...]). If n balls at d_max won't fit, the
-    DIAMETER SHRINKS until they do -- a blackball rack is 15 object balls, and a
-    fixed size that fits 15 would be uselessly tiny for the common case of 2 or
-    3. The order is the order they were potted, which is the whole point: a real
-    table's chamber shows you exactly what went down, and in what order.
-
-    Pure geometry, no pygame -- so the fit rule is testable without a window."""
-    if n <= 0 or width <= 0:
-        return 0, []
-    d = min(d_max, (width - gap * (n - 1)) / n)
-    d = max(1.0, d)
-    total = n * d + gap * (n - 1)
-    x = (width - total) / 2.0 + d / 2.0      # centre the row in the strip
-    return d, [x + i * (d + gap) for i in range(n)]
-
-
-def wrap_fields(fields, max_width, measure=len, sep="  "):
-    """r11 (persistent panel status strip): greedily pack short field strings
-    into as few lines as possible, none wider than max_width.
-
-    `measure` maps a string to its width -- len() by default, so the packing
-    logic is testable with no pygame at all, while the renderer passes
-    font.size(s)[0] to pack by ACTUAL pixel width instead of character count
-    (a proportional font makes those two very different things).
-
-    A single field wider than max_width still gets its own line rather than
-    being dropped or split mid-token -- a clipped-but-present readout beats a
-    silently missing one. The panel is only 260px wide and the vertical budget
-    is ~70px, so this packing is what makes a 5-field physics readout fit at
-    all."""
-    lines = []
-    cur = ""
-    for f in fields:
-        if not f:
-            continue
-        cand = f if not cur else cur + sep + f
-        if cur and measure(cand) > max_width:
-            lines.append(cur)
-            cur = f
-        else:
-            cur = cand
-    if cur:
-        lines.append(cur)
-    return lines
-
-
-def nudge_spin(follow, side, d_follow, d_side):
-    """r10 (HUD fine adjustment): apply a small delta to the spin contact point
-    and re-clamp to the UNIT CIRCLE, exactly as spin_pad_map does for a drag.
-
-    Nudging must obey the same physical spin budget as dragging -- otherwise the
-    buttons could walk the contact point outside the circle one 0.01 step at a
-    time and reach a spin the pad itself cannot express. Pure, no pygame."""
-    f = follow + d_follow
-    s = side + d_side
-    mag = math.hypot(f, s)
-    if mag > 1.0:
-        f, s = f / mag, s / mag
-    return f, s
-
-
-def shot_spin_and_reset(side, follow):
-    """r23 (BUG 2 -- spin not resetting between shots): return the spin to apply
-    to THIS strike, followed by the values the HUD must fall back to afterwards.
-
-    The bug was not two pieces of state disagreeing, as first theorised.
-    `Sim._live_side`/`_live_follow` are an internal physics copy, set fresh from
-    the arguments on every `strike()` call, and were never at fault. The fault
-    was in the HUD closure: `do_shoot()` read `spin_side`/`spin_follow` and then
-    left them exactly as they were, so the SAME non-zero spin (which the SpinPad
-    reads directly, which is why it also would not de-select) was re-sent shot
-    after shot. Bottom spin, once chosen, stayed chosen forever.
-
-    Returned as a 4-tuple so the caller applies and clears in one statement and
-    cannot forget the second half. The reset value is deliberately the same
-    dead-centre the manual "Reset spin" button uses, without duplicating it.
-
-    Pure: no pygame, no Sim, no closure -- directly unit-testable.
-    """
-    return side, follow, 0.0, 0.0
-
-
-def cue_was_potted(pot_events, cue_id=0):
-    """r23: did the cue ball go down on the shot these pot events describe?
-
-    `pot_events` is Sim.last_pot_events -- a list of (bid, colour, pos, radius).
-    Sandbox mode has no Game object and therefore no rules layer to notice a
-    scratch, so it needs this to know when to hand the player the ball. Kept as
-    a pure function over the event list rather than a peek at sim.balls, because
-    "the cue is missing" and "the cue was just potted" are different questions
-    and only the second one should grant ball in hand.
-
-    Pure: no pygame, no Sim -- directly unit-testable.
-    """
-    return any(ev[0] == cue_id for ev in (pot_events or ()))
-
-
-def dist_point_segment(p, a, b):
-    """Shortest distance from point p to the line segment a-b. Pure geometry --
-    no pygame, no pymunk -- so it is directly unit-testable and reusable. The
-    aiming/coach overlay will want this same primitive to reflect a projected
-    path off the real cushion nose."""
-    px, py = p
-    ax, ay = a
-    bx, by = b
-    dx, dy = bx - ax, by - ay
-    L2 = dx * dx + dy * dy
-    if L2 == 0.0:
-        return math.hypot(px - ax, py - ay)
-    t = ((px - ax) * dx + (py - ay) * dy) / L2
-    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
-    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
-
-
-def point_in_polygon(p, poly):
-    """Even-odd ray-cast: is point p inside the closed polygon `poly` (a list of
-    (x, y) vertices, implicitly closed)? Pure. Correct for the NON-CONVEX
-    cushion loop -- the pocket throats bulge outward -- because ray-casting
-    counts edge crossings and doesn't care about convexity. On-edge points are
-    ambiguous for ray-casting, but a real placement is always rejected first by
-    the ball-radius clearance test in can_place_ball, so that ambiguity never
-    decides anything."""
-    x, y = p
-    inside = False
-    n = len(poly)
-    j = n - 1
-    for i in range(n):
-        xi, yi = poly[i]
-        xj, yj = poly[j]
-        if ((yi > y) != (yj > y)) and \
-           (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
-            inside = not inside
-        j = i
-    return inside
-
-
-_nose_loop_cache = {}
-
-
-def nose_loop_m():
-    """The tangent-true cushion-nose loop as a closed vertex list in METRES --
-    the very geometry the physics builds its cushions from (cushion_path.py,
-    driven at this table's dimensions, mm -> m at the boundary). This is the
-    real boundary a ball must stay inside, pocket mouths and all, which a plain
-    play_rect() rectangle cannot represent: the rectangle walls off the mouths,
-    where there is no cushion at all.
-
-    Cached exactly like capture_points(), and keyed on the same values, because
-    it is read on every placement test -- the custom-mode mouse drag and the
-    AI's ball-in-hand candidate search -- and the flatten is not free. The key
-    tracks the only things that change the loop (table size and the two mouth
-    widths), so a live panel change rebuilds it rather than serving a stale
-    loop. Tessellated at 3 deg, matching the physics build."""
-    MM = 1000.0
-    key = (play_rect(), pocket_half_mouth(), pocket_middle_half_mouth())
-    hit = _nose_loop_cache.get(key)
-    if hit is not None:
-        return hit
-    cushion_geo.configure(
-        play_w=CFG["PLAY_W_M"] * MM, play_h=CFG["PLAY_H_M"] * MM,
-        corner_mouth=CFG["POCKET_MOUTH_M"] * MM,
-        middle_mouth=CFG["POCKET_MIDDLE_MOUTH_M"] * MM,
-    )
-    loop = [(x / MM, y / MM) for (x, y)
-            in cushion_geo.flatten(cushion_geo.build_cushion_path(), 3.0)]
-    _nose_loop_cache[key] = loop
-    return loop
-
-
-# r10 custom mode: ball kinds the user can place. "cue" is special -- there can
-# only ever be one, so placing a second REPLACES the first rather than adding.
-PLACE_KINDS = ["cue", "red", "yellow", "black"]
-
-
-def can_place_ball(pos, existing, r_new, r_others):
-    """r10 custom mode: is `pos` a legal spot to drop a ball?
-
-    Legal means: fully inside the cushion nose (not embedded in a rail), not
-    overlapping any existing ball, and not sitting where the pocket would
-    instantly swallow it. `existing` is a list of (pos, radius). Pure geometry,
-    no pygame, no pymunk -- so the editor's placement rule is testable without
-    a table.
-
-    r22: the pocket rule was `dist < cap_r + r_new`, which reserved a whole
-    extra BALL RADIUS (25mm) around every pocket for no physical reason and
-    made it impossible to set a ball on the jaws ready to pot -- exactly the
-    trick-shot setup custom mode exists for. Capture is a test on the ball's
-    CENTRE (see _capture_pockets: centre within cap_r), so the real constraint
-    is `dist >= cap_r`, plus a hair so it can't drop the instant physics
-    resumes. 1mm of clearance, not 25mm.
-
-    r24: the table boundary is now the real tangent-true cushion-nose loop
-    (nose_loop_m: the centre must be inside the loop AND at least a ball radius
-    clear of every nose edge), not a play_rect() rectangle. The rectangle kept a
-    ball a full radius inside straight rails -- right along a cushion, but it
-    also walled off the pocket MOUTHS, where there is no cushion, so a hanger
-    could never be set on the lip. The polyline handles rails and mouths in one
-    rule with no mouth special-casing -- which is exactly what the reverted r22
-    "circular mouth exemption" got wrong (its middle-mouth circles leaked out
-    over the side rails and let a ball embed there). The capture and overlap
-    tests below are unchanged, so a ball still cannot be placed where it would
-    instantly drop, nor on top of another ball."""
-    poly = nose_loop_m()
-    if not point_in_polygon(pos, poly):
-        return False
-    n = len(poly)
-    if min(dist_point_segment(pos, poly[i], poly[(i + 1) % n])
-           for i in range(n)) < r_new:
-        return False
-    for (pc, cap_r) in capture_points():
-        if math.dist(pos, pc) < cap_r + 0.001:
-            return False
-    for (p, r) in existing:
-        if math.dist(pos, p) < r_new + r + 0.0005:   # 0.5mm breathing room
-            return False
-    return True
-
-
-def serialise_layout(balls):
-    """r10 custom mode: (kind, (x, y)) list -> a plain JSON-safe dict.
-
-    Positions are stored in METRES, the same real WEPF units the physics layer
-    uses -- NOT pixels. A layout saved on one window size must load identically
-    on another, and pixels would silently break that."""
-    return {"version": 1,
-            "balls": [{"kind": k, "x": float(p[0]), "y": float(p[1])}
-                      for (k, p) in balls]}
-
-
-def deserialise_layout(data):
-    """r10 custom mode: inverse of serialise_layout. Skips any entry that is
-    malformed or names an unknown ball kind rather than raising -- a hand-edited
-    or truncated layout file should cost you that ball, not crash the game."""
-    out = []
-    for b in (data or {}).get("balls", []):
-        try:
-            kind = b["kind"]
-            if kind not in PLACE_KINDS:
-                continue
-            out.append((kind, (float(b["x"]), float(b["y"]))))
-        except (KeyError, TypeError, ValueError):
-            continue
-    return out
 
 
 def shoot_enabled(cue_present, all_at_rest, my_turn):
@@ -2617,402 +1351,12 @@ def grade_params(idx):
     return GRADE_DEFS[idx]
 
 
-def synth_tone_samples(freq_hz, duration_s, sample_rate, decay, noise_mix=0.0, seed=0):
-    """Sound effects: pure, dependency-free (stdlib `math`/`random` only --
-    no numpy) waveform generator. A sine tone at freq_hz, optionally mixed
-    with seeded pseudo-random noise (noise_mix in [0,1], 0=pure tone,
-    1=pure noise -- deterministic given the same seed, so this is exactly
-    reproducible/testable), under an exponential decay envelope shaping it
-    into a physical-impact-style transient rather than a sustained note.
-    Returns a list of int16 sample values (-32768..32767), length
-    round(duration_s * sample_rate). This is the one shared primitive
-    behind all three sound 'voices' (cue strike / ball hit / pot) -- they
-    differ only in the parameters passed in, listed in SOUND_VOICES below,
-    same pattern as ball_shades/GRADE_DEFS elsewhere in this file."""
-    n = max(1, int(round(duration_s * sample_rate)))
-    rng = random.Random(seed)
-    out = []
-    for i in range(n):
-        t = i / sample_rate
-        tone = math.sin(2.0 * math.pi * freq_hz * t)
-        noise = rng.uniform(-1.0, 1.0)
-        s = tone * (1.0 - noise_mix) + noise * noise_mix
-        env = math.exp(-decay * t)
-        v = int(max(-1.0, min(1.0, s * env)) * 32767)
-        out.append(v)
-    return out
-
-
-SOUND_VOICES = {
-    # (freq_hz, duration_s, decay, noise_mix) -- first-pass placeholder
-    # values, tunable by EAR once actually heard (unlike the visual passes,
-    # nothing here can be eyeballed/verified by me -- these numbers are a
-    # reasonable starting guess, not a considered final mix).
-    # NOTE: "ball_hit" is no longer synthesised from this table -- it has its
-    # own three-layer impact model below (synth_impact_samples). Left here
-    # because cue_strike/pot still use synth_tone_samples, and as a record of
-    # the old single-sine voice that sounded like clinking glass.
-    "cue_strike": (1400.0, 0.05, 40.0, 0.35),
-    "ball_hit":   (900.0, 0.06, 35.0, 0.25),
-    "pot":        (220.0, 0.18, 9.0, 0.10),
-}
-
-
-HIT_IMPULSE_REF = 0.35  # kg*m/s -- the impulse mapped to full (1.0) ball-hit
-                        # playback volume. Placeholder, tunable by ear.
-                        # Defined here (above the r8 impact model) because it
-                        # now drives BOTH loudness and timbre.
-
-
-# ---- Ball-hit impact model (r8) -------------------------------------------
-# Replaces the old single 900Hz sine voice, which read as clinking glass for
-# two reasons, both visible in its parameters: the carrier sat less than half
-# way to a phenolic ball's actual resonance, and with decay=35 over a 0.06s
-# buffer the envelope was still at ~12% amplitude when the buffer ENDED --
-# hard-truncated mid-ring. A tonal carrier plus an audible cut-off is a
-# bottle. The model here is instead the physical one for a rigid, high-density
-# phenolic impact: a sharp broadband transient (the chaotic instant of
-# contact), a short high-frequency resonance (the ball's internal vibration),
-# and a brief low-frequency thud (perceived mass), all under an AD envelope --
-# attack then exponential decay, NO sustain phase. Sustain is exactly what
-# made the old voice ring like glass, so there deliberately isn't one.
-
-IMPACT_ATTACK_S     = 0.0005   # s -- attack ramp. Halved from r8 (was 1.2ms):
-                               # still non-zero, because a buffer that starts at
-                               # full amplitude on sample 0 is a step
-                               # discontinuity and clicks -- but a real contact
-                               # lasts only ~200us, so a 1.2ms attack was
-                               # actually SLOWER than the physical event.
-
-# r8.2 -- "sounds like glass, not solid polymer". The r8 model was still wrong
-# in three ways, all of which push a sound TOWARDS glass:
-#   1. TOO TONAL AND TOO LONG. A single sine at 1900-2600Hz under a decay of
-#      55-95 rings for 40-60ms. A struck wine glass rings; a struck phenolic
-#      ball does not. Real ball contact lasts ~200 MICROseconds and the body
-#      rings down in a few ms.
-#   2. TOO HIGH. Glass is characterised by a high, clean, sustained tone. The
-#      2000-2500Hz band (my own earlier suggestion) sits right in it.
-#   3. HISSY NOISE. The noise layer ran at FULL bandwidth to 22kHz. Broadband
-#      hiss reads as ceramic/glass; a real polymer knock has its energy rolling
-#      off hard above a few kHz.
-# The fix inverts the whole model: NOISE is now the body of the sound and the
-# tonal part merely colours it, the modal band drops well below the glass
-# region, decay rates go up ~5x so it dies in millisconds, and everything is
-# lowpassed so nothing hisses.
-
-IMPACT_PARTIAL_RATIOS = (1.0, 1.58, 2.24)   # INHARMONIC. A struck sphere excites
-                                            # several modes at once, and it's the
-                                            # inharmonicity that makes it read as
-                                            # a "knock" rather than a "note" --
-                                            # a single sine is always a pitch.
-IMPACT_PARTIAL_HZ_SOFT = 620.0  # fundamental modal freq at a gentle kiss
-IMPACT_PARTIAL_HZ_HARD = 980.0  # ...and at a full-power hit (brighter, still
-                                # far below the old glassy 1900-2600Hz band)
-IMPACT_DECAY_SOFT   = 190.0    # exp decay, soft: body gone in ~15ms
-IMPACT_DECAY_HARD   = 420.0    # exp decay, hard: body gone in ~7ms (a harder hit
-                               # is SHORTER and sharper, not longer)
-IMPACT_NOISE_SOFT   = 0.74     # r8.2: noise is now the BODY of the sound, not a
-IMPACT_NOISE_HARD   = 0.90     # garnish on the front of a tone. This inversion
-                               # is the single biggest change here.
-IMPACT_NOISE_DECAY  = 1500.0   # the contact crack itself: ~2ms
-IMPACT_LP_HZ_SOFT   = 2100.0   # one-pole lowpass cutoff, soft hit (duller)
-IMPACT_LP_HZ_HARD   = 4300.0   # ...and hard hit (brighter). Rolling off the top
-                               # end is what stops the noise layer sounding like
-                               # a hiss -- i.e. what stops it sounding like glass.
-IMPACT_THUD_HZ      = 150.0    # low-frequency body -- perceived MASS. Raised from
-                               # 90Hz, which was so low it was felt more than
-                               # heard on small speakers.
-IMPACT_THUD_DECAY   = 110.0    # thud gone in ~25ms
-IMPACT_THUD_MIX     = 0.55     # more weight than r8's 0.35 -- "solid, dense"
-IMPACT_DURATION_S   = 0.035    # halved (was 0.07). With decay >= 190 the sound is
-                               # long dead by here; a longer buffer was just
-                               # silence, and silence costs memory and latency.
-IMPACT_TIERS        = 6        # pre-rendered timbre tiers (Maker's call: tiers
-                               # cached at init, not per-impact synthesis -- a
-                               # pure-Python buffer per collision would run in
-                               # the main thread, and a break puts a dozen
-                               # near-simultaneous contacts in a single frame)
-
-
-def impact_params(hardness):
-    """Ball-hit impact model: map a 0..1 impact 'hardness' to the timbre
-    parameters of the sound. Pure, no pygame -- this is the testable core of
-    the velocity->timbre mapping.
-
-    hardness is the collision impulse normalised by HIT_IMPULSE_REF and
-    clamped (see impact_hardness) -- impulse, not raw velocity, because
-    arbiter.total_impulse already folds in the masses, which is what actually
-    determines how hard two bodies hit each other.
-
-    Harder impacts get a BRIGHTER, SHORTER, noisier knock; softer ones a
-    duller, slightly longer, cleaner one. Every parameter interpolates linearly
-    between its SOFT and HARD constant, so the mapping is monotonic by
-    construction. Returns a dict (r8.2: was a 3-tuple -- there are now five
-    parameters, and positional unpacking of five things is a bug waiting to
-    happen)."""
-    h = max(0.0, min(1.0, hardness))
-    lerp = lambda a, b: a + (b - a) * h
-    return {
-        "partial_hz": lerp(IMPACT_PARTIAL_HZ_SOFT, IMPACT_PARTIAL_HZ_HARD),
-        "decay":      lerp(IMPACT_DECAY_SOFT, IMPACT_DECAY_HARD),
-        "noise_mix":  lerp(IMPACT_NOISE_SOFT, IMPACT_NOISE_HARD),
-        "lp_hz":      lerp(IMPACT_LP_HZ_SOFT, IMPACT_LP_HZ_HARD),
-    }
-
-
-def one_pole_lowpass(samples, cutoff_hz, sample_rate):
-    """Single-pole IIR lowpass: y[n] = y[n-1] + a*(x[n] - y[n-1]).
-
-    r8.2: this is what stops the sound being GLASS. The noise layer is the body
-    of a polymer knock, but noise at full bandwidth (up to Nyquist, 22kHz here)
-    is a HISS, and hiss is the signature of glass/ceramic. Real phenolic impact
-    energy rolls off hard above a few kHz. Rolling the top end off turns a
-    'tss' into a 'knock'. Pure, stdlib-only, trivially testable."""
-    if cutoff_hz <= 0.0 or not samples:
-        return list(samples)
-    dt = 1.0 / sample_rate
-    rc = 1.0 / (2.0 * math.pi * cutoff_hz)
-    a = dt / (rc + dt)
-    out = []
-    y = 0.0
-    for x in samples:
-        y += a * (x - y)
-        out.append(y)
-    return out
-
-
-def synth_impact_samples(hardness, sample_rate, seed=0):
-    """Ball-hit impact model (r8.2): a solid, dense polymer knock.
-
-    Pure, dependency-free (stdlib math/random only, no numpy), deterministic
-    given the same seed -- so it's exactly reproducible, unit-testable, and safe
-    to cache and replay.
-
-    The r8 model was inverted from reality: a sustained ~2kHz sine with noise
-    sprinkled on the front. That is a struck wine glass. Here the NOISE is the
-    body of the sound and the tonal content merely colours it:
-
-      1. contact crack -- seeded broadband noise, decaying in ~2ms. This is now
-         the loudest layer (noise_mix 0.74-0.90), not a garnish.
-      2. modal body   -- THREE INHARMONIC partials (620-980Hz fundamental, times
-         IMPACT_PARTIAL_RATIOS). Inharmonic on purpose: a struck sphere excites
-         several modes at once, and it's the inharmonicity that makes the ear
-         hear a "knock" rather than a "note". A single sine is always a pitch.
-      3. thud        -- 150Hz, dead in ~25ms: perceived mass/density.
-
-    Envelope is attack (linear, 0.5ms) then exp(-decay*t) with decay 190-420, so
-    the whole thing is over in 7-15ms. No sustain: a rigid-body impact has none.
-
-    The summed mix is then LOWPASSED (2.1-4.3kHz depending on hardness), which
-    is what removes the glassy hiss from the noise layer.
-
-    Returns a list of int16 samples (-32768..32767)."""
-    p = impact_params(hardness)
-    n = max(1, int(round(IMPACT_DURATION_S * sample_rate)))
-    rng = random.Random(seed)
-    raw = []
-    for i in range(n):
-        t = i / sample_rate
-        # 1. contact crack -- the BODY of the sound now.
-        crack = rng.uniform(-1.0, 1.0) * math.exp(-IMPACT_NOISE_DECAY * t)
-        # 2. inharmonic modal body -- colours the crack, doesn't dominate it.
-        modal = 0.0
-        for k, ratio in enumerate(IMPACT_PARTIAL_RATIOS):
-            # higher modes decay faster, as they do in a real solid
-            modal += (math.sin(2.0 * math.pi * p["partial_hz"] * ratio * t)
-                      * math.exp(-p["decay"] * (1.0 + 0.6 * k) * t)
-                      / (k + 1.0))
-        modal /= sum(1.0 / (k + 1.0) for k in range(len(IMPACT_PARTIAL_RATIOS)))
-        # 3. thud -- weight.
-        thud = (math.sin(2.0 * math.pi * IMPACT_THUD_HZ * t)
-                * math.exp(-IMPACT_THUD_DECAY * t) * IMPACT_THUD_MIX)
-        nm = p["noise_mix"]
-        body = crack * nm + modal * (1.0 - nm) + thud
-        # AD envelope: linear attack, then exponential decay. No sustain.
-        if t < IMPACT_ATTACK_S:
-            env = t / IMPACT_ATTACK_S
-        else:
-            env = math.exp(-p["decay"] * (t - IMPACT_ATTACK_S))
-        raw.append(body * env)
-    # Lowpass the whole mix -- the step that turns hiss into knock.
-    filt = one_pole_lowpass(raw, p["lp_hz"], sample_rate)
-    peak = max((abs(v) for v in filt), default=0.0)
-    if peak < 1e-9:
-        return [0] * n
-    # Normalise: the lowpass costs a lot of amplitude, and the level must not
-    # depend on the filter cutoff (which varies with hardness) -- loudness is
-    # scale_ball_hit_volume's job, and its alone.
-    g = 0.92 / peak
-    return [int(max(-1.0, min(1.0, v * g)) * 32767) for v in filt]
-
-
-def impact_hardness(impulse, ref=HIT_IMPULSE_REF):
-    """Ball-hit impact model: collision impulse (kg*m/s, real WEPF units) ->
-    0..1 hardness driving impact_params. Same normalisation and clamp as
-    scale_ball_hit_volume, deliberately: one number drives BOTH how loud the
-    hit is and how bright it is, so they can never disagree."""
-    if impulse <= 0.0:
-        return 0.0
-    return min(1.0, impulse / ref)
-
-
-def impact_tier(hardness, tiers=IMPACT_TIERS):
-    """Ball-hit impact model: quantise 0..1 hardness to a pre-rendered tier
-    index in [0, tiers-1]. Timbre steps in `tiers` increments; volume stays
-    continuous (scale_ball_hit_volume), so the quantisation isn't audible as
-    steps -- it just stops us synthesising a fresh buffer per collision."""
-    h = max(0.0, min(1.0, hardness))
-    return min(tiers - 1, int(h * tiers))
-
-
-def scale_ball_hit_volume(impulse, ref=HIT_IMPULSE_REF):
-    """Sound effects: maps a collision's arbiter.total_impulse magnitude
-    (real WEPF units, kg*m/s) to a 0..1 playback volume. Linear up to
-    'ref' (a gentle kiss should be near-silent, not clamped up to a
-    noticeable floor), then clamped at 1.0 for anything harder -- a
-    break-shot pile-up shouldn't try to play louder than 'full volume'
-    just because the impulse number is large. impulse<=0 is always 0."""
-    if impulse <= 0.0:
-        return 0.0
-    return min(1.0, impulse / ref)
-
-
-def write_wav(path, samples, sample_rate):
-    """Sound effects: write int16 mono samples to a WAV file. Stdlib `wave` +
-    `array` only -- no new dependency, same discipline as the synthesis itself.
-
-    This exists because of the r8.1 mixer bug: for a long time the sounds we
-    THOUGHT we were generating and the sounds actually reaching the speakers
-    were different (a mono buffer being read as stereo, so double-pitched),
-    and no amount of parameter tuning could fix that -- we were tuning the
-    wrong end. Exporting the buffer straight to disk lets it be auditioned
-    for real, independent of pygame's mixer config entirely. Returns the
-    number of samples written."""
-    import wave
-    import array as _array
-    with wave.open(path, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)                       # int16
-        w.setframerate(sample_rate)
-        w.writeframes(_array.array("h", samples).tobytes())
-    return len(samples)
-
-
-def sound_probe(out_dir=".", sample_rate=44100):
-    """Sound effects: dump every voice to WAV so it can be heard directly,
-    with no mixer, no game and no guessing. Writes each ball-hit tier (soft ->
-    hard) plus the cue_strike/pot voices. Prints what it wrote."""
-    written = []
-    for i in range(IMPACT_TIERS):
-        h = (i + 0.5) / IMPACT_TIERS
-        p = impact_params(h)
-        samples = synth_impact_samples(h, sample_rate, seed=1000 + i)
-        path = os.path.join(out_dir, f"probe_ball_hit_tier{i}.wav")
-        write_wav(path, samples, sample_rate)
-        written.append(f"{path}  (hardness {h:.2f}: {p['partial_hz']:.0f}Hz, "
-                       f"decay {p['decay']:.0f}, noise {p['noise_mix']:.2f}, "
-                       f"lowpass {p['lp_hz']:.0f}Hz)")
-    for kind in ("cue_strike", "pot"):
-        freq, dur, decay, noise_mix = SOUND_VOICES[kind]
-        samples = synth_tone_samples(freq, dur, sample_rate, decay, noise_mix,
-                                     seed=hash(kind) & 0xFFFF)
-        path = os.path.join(out_dir, f"probe_{kind}.wav")
-        write_wav(path, samples, sample_rate)
-        written.append(f"{path}  ({freq:.0f}Hz, {dur:.3f}s)")
-    print(f"sound probe — {len(written)} WAV files at {sample_rate}Hz mono:")
-    for line in written:
-        print("  " + line)
-    return written
-
-
 def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     if smoke:
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     import pygame
 
     pygame.init()
-    if not smoke:
-        # Sound effects: mono, matching synth_tone_samples/synth_impact_samples
-        # and array('h', ...) below. Gated `not smoke` -- no point opening an
-        # audio device for a headless batch/dummy-driver run, same doctrine as
-        # every visual Increment-4 overlay never touching --snap/--smoke.
-        #
-        # r8.1 -- THE BUG THAT MADE EVERY SOUND SOUND "PLINKY":
-        # pygame.init() ALREADY initialises the mixer, with ITS defaults
-        # (44100, -16, STEREO). A later pygame.mixer.init(...) is a silent
-        # NO-OP -- it returns cleanly and changes nothing. So every previous
-        # `mixer.init(frequency=22050, ..., channels=1)` here did nothing at
-        # all, and the mixer was running in STEREO the whole time.
-        #
-        # That is fatal for us: we hand Sound() a MONO int16 buffer, and a
-        # stereo mixer reads that same raw buffer as interleaved L/R pairs --
-        # consuming TWO of our samples per output frame. Everything therefore
-        # played back at DOUBLE speed and DOUBLE PITCH, in half the duration.
-        # The old 900Hz "ball hit" was really sounding at ~1800Hz; the r8
-        # 1900-2600Hz resonance was coming out at ~3800-5200Hz. A short, thin,
-        # high blip -- i.e. "plinky", and immune to any amount of parameter
-        # tuning, because the mangling dominated the timbre.
-        #
-        # The fix is mixer.quit() FIRST, then init with what we actually want.
-        SOUND_SAMPLE_RATE = 44100
-        pygame.mixer.quit()
-        pygame.mixer.init(frequency=SOUND_SAMPLE_RATE, size=-16, channels=1,
-                          buffer=512)
-        # Never trust it silently again: assert what we actually got, and say
-        # so if the device refused (some drivers force stereo/resample).
-        _mix = pygame.mixer.get_init()
-        if _mix is None or _mix[0] != SOUND_SAMPLE_RATE or _mix[2] != 1:
-            print(f"WARNING: mixer is {_mix}, wanted "
-                  f"({SOUND_SAMPLE_RATE}, -16, 1) -- sounds may be pitched "
-                  f"wrong. Pass --sound-probe to audition the raw buffers.")
-        sound_cache = {}
-
-        def get_sound(kind):
-            snd = sound_cache.get(kind)
-            if snd is None:
-                import array
-                freq, dur, decay, noise_mix = SOUND_VOICES[kind]
-                samples = synth_tone_samples(freq, dur, SOUND_SAMPLE_RATE,
-                                              decay, noise_mix, seed=hash(kind) & 0xFFFF)
-                snd = pygame.mixer.Sound(buffer=array.array('h', samples))
-                sound_cache[kind] = snd
-            return snd
-
-        # r8: ball_hit no longer comes from SOUND_VOICES/get_sound -- it has
-        # IMPACT_TIERS pre-rendered variants, brighter/shorter with hardness.
-        # Built once here at init (Maker's call over per-impact synthesis: a
-        # break lands a dozen contacts in one frame, and synthesising a
-        # pure-Python buffer per contact would do that work in the main
-        # thread). Each tier gets its own seed so the noise transient differs
-        # between them -- reusing one noise sequence across all six would make
-        # every hit sound like the same click at different brightness.
-        import array as _array
-        _impact_tiers = []
-        for _i in range(IMPACT_TIERS):
-            _h = (_i + 0.5) / IMPACT_TIERS   # tier's representative hardness
-            _samples = synth_impact_samples(_h, SOUND_SAMPLE_RATE, seed=1000 + _i)
-            _impact_tiers.append(pygame.mixer.Sound(buffer=_array.array('h', _samples)))
-
-        def play_sound(kind, volume):
-            snd = get_sound(kind)
-            snd.set_volume(max(0.0, min(1.0, volume)))
-            snd.play()
-
-        def play_impact(impulse):
-            """r8 ball-hit: one impulse drives BOTH brightness (which tier)
-            and loudness (volume), so a gentle kiss is quiet AND dull while a
-            break-crack is loud AND bright -- they can never disagree."""
-            h = impact_hardness(impulse)
-            snd = _impact_tiers[impact_tier(h)]
-            snd.set_volume(max(0.0, min(1.0, scale_ball_hit_volume(impulse))))
-            snd.play()
-    else:
-        def play_sound(kind, volume):
-            pass
-
-        def play_impact(impulse):
-            pass
-
     # Desktop resolution for F11, captured BEFORE any window exists. Info()
     # only reliably reports the true desktop mode pre-set_mode; querying it
     # again later would return the current WINDOW's size on some backends,
@@ -3039,23 +1383,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         win_w, win_h = BASE_W1, BASE_H1
         display = pygame.display.set_mode((win_w, win_h))
     else:
-        # r22: start BORDERLESS AT DESKTOP SIZE. The old default was a small
-        # RESIZABLE window (BASE_W1 + PANEL_W), which on a real monitor is too
-        # small to actually play on. Borderless (NOFRAME at the desktop's own
-        # resolution) rather than pygame.FULLSCREEN by choice: it does not
-        # change the display mode, so it can't fight the compositor or leave the
-        # monitor in a bad state on alt-tab -- the same class of display trouble
-        # that cost us the GL backend at R6.10. The F11 toggle and windowed_size
-        # are untouched, so you can still drop back to a window.
-        #
-        # BASE_* stays the RENDER reference size; rebuild_render_targets()
-        # already fits the scene to whatever the window actually is (FS), so
-        # a bigger window just means a bigger table, not a broken layout.
-        win_w, win_h = DESKTOP_W, DESKTOP_H
-        display = pygame.display.set_mode((win_w, win_h), pygame.NOFRAME)
-    # What F11 restores when leaving fullscreen: the modest windowed size, NOT
-    # the borderless desktop size we now start at.
-    windowed_size = (BASE_W1 + PANEL_W, BASE_H1)
+        win_w, win_h = BASE_W1 + PANEL_W, BASE_H1
+        display = pygame.display.set_mode((win_w, win_h), pygame.RESIZABLE)
+    windowed_size = (win_w, win_h)
     pygame.display.set_caption("HUSTLER — UK pool physics sandbox (R6)")
 
     FS = fit_W1 = fit_H1 = W = H = S = M = RSF = None
@@ -3330,12 +1660,6 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                               (self.rect.x, self.rect.bottom), (self.rect.right, self.rect.bottom), 1)
 
     sim = Sim()
-    # r23 (BUG 3 follow-up): "people play solo on pool tables" -- sandbox has no
-    # Game object and so had no ball-in-hand concept at all. `sandbox_bih`
-    # mirrors game.ball_in_hand for mode 0: true at the start and whenever the
-    # white is potted, spent by taking a shot.
-    sim.auto_respot = False
-    sandbox_bih = True
     game = None
     ais = None
     ai_plan = None
@@ -3346,16 +1670,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     spin_side, spin_follow = 0.0, 0.0
     show_overlay = True
     aim_angle = 0.0          # degrees [0,360), absolute, HUD-only (no mouse aim)
-    panel_tab = 0            # 0=Shot, 1=Table, 2=Game, 3=Custom (r10)
-    # r10 custom mode (trick-shot / practice editor). Active only when the
-    # Custom tab is selected -- see custom_active(). Ball placement uses MOUSE
-    # CLICKS ON THE TABLE, which deliberately reverses R6.6's "HUD-only, no
-    # mouse-table interaction" rule FOR THIS MODE ONLY (Maker signed this off
-    # explicitly). Table clicks still do nothing in Shot/Table/Game.
-    place_kind = 1           # index into PLACE_KINDS -- default "red"
-    drag_bid = None          # id of the ball currently being dragged, or None
-    layout_slot = 0          # which save slot the Save/Load buttons act on
-    layout_msg = ""          # last save/load result, shown in the Custom tab
+    panel_tab = 0            # 0=Shot, 1=Table, 2=Game (Increment 3b)
     trail_history = {}       # bid -> deque of recent (x, y), Increment 4a
     pot_anims = []            # list of dicts, Increment 4b (pot swallow anim)
     vignette_surface_cache = {}  # (W, H) -> Surface, Increment 4d -- static
@@ -3392,33 +1707,23 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 and game.controllers[game.current] == "human"))
 
     def do_shoot():
-        nonlocal pending, spin_side, spin_follow, sandbox_bih
+        nonlocal pending
         cue = sim.cue()
         if not shoot_enabled(cue is not None, sim.all_at_rest(), my_turn()):
             return
         dx, dy = rotate_vector(1.0, 0.0, aim_angle)
-        # r23 (BUG 2): apply the chosen spin, then immediately clear the HUD's
-        # copy of it. Without the clear, the same spin was silently re-applied
-        # to every subsequent shot and the SpinPad would not de-select.
-        use_side, use_follow, spin_side, spin_follow = \
-            shot_spin_and_reset(spin_side, spin_follow)
-        sim.strike((dx, dy), power, side=use_side, follow=use_follow)
-        sandbox_bih = False   # r23: placement is spent by playing the shot
-        if not smoke:
-            play_sound("cue_strike", power / CFG["POWER_MAX"])
+        sim.strike((dx, dy), power, side=spin_side, follow=spin_follow)
         if game is not None:
             pending = True
 
     def do_cycle_mode():
-        nonlocal mode, sim, game, ais, ai_plan, ai_wait, pending, sandbox_bih
+        nonlocal mode, sim, game, ais, ai_plan, ai_wait, pending
         mode = (mode + 1) % len(MODES)
         ai_plan, ai_wait, pending = None, 0, False
         trail_history.clear()
         pot_anims.clear()
         if mode == 0:
             sim, game, ais = Sim(), None, None
-            sim.auto_respot = False       # r23: sandbox places its own cue
-            sandbox_bih = True
         else:
             sim, game, ais = start_game(mode)
             if game.controllers[0] == "ai":
@@ -3428,13 +1733,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 game.last_event = "your break — aim at the pack"
 
     def do_rack():
-        nonlocal sim, game, ais, ai_plan, ai_wait, pending, sandbox_bih
+        nonlocal sim, game, ais, ai_plan, ai_wait, pending
         trail_history.clear()
         pot_anims.clear()
         finale = None
         if mode == 0:
             sim.rack()
-            sandbox_bih = True   # r23: a fresh rack means a fresh placement
         else:
             sim, game, ais = start_game(mode)
             ai_plan, ai_wait, pending = None, 0, False
@@ -3468,143 +1772,6 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         nonlocal spin_follow, spin_side
         spin_follow, spin_side = follow, side
 
-    def nudge_spin_by(d_follow, d_side):
-        """r10: fine spin adjustment. Delegates the clamp to nudge_spin so the
-        buttons obey exactly the same unit-circle spin budget as a pad drag."""
-        nonlocal spin_follow, spin_side
-        spin_follow, spin_side = nudge_spin(spin_follow, spin_side,
-                                            d_follow, d_side)
-
-    # ---- r10 custom mode ---------------------------------------------------
-    def custom_active():
-        """Mouse-table interaction is enabled ONLY here -- the Custom tab, in
-        SANDBOX mode, with the table at rest. Everywhere else R6.6 still holds:
-        the table is not clickable."""
-        return (panel_tab == 3 and mode == 0 and sim.all_at_rest())
-
-    def set_place_kind(i):
-        nonlocal place_kind
-        place_kind = i
-
-    def set_layout_slot(i):
-        nonlocal layout_slot
-        layout_slot = i
-
-    def do_clear_table():
-        """Clear every object ball, leaving the cue. The cue is respotted rather
-        than removed -- a table with no cue ball is not a practice setup, it's a
-        broken state you'd have to click your way out of."""
-        nonlocal layout_msg
-        trail_history.clear()
-        pot_anims.clear()
-        sim.clear_objects()
-        if sim.cue() is None:
-            sim._respot_cue()
-        layout_msg = "table cleared"
-
-    def custom_balls():
-        """Current table as a (kind, (x, y)) list, metres. 'kind' is the ball's
-        colour, which is exactly what a layout needs to restore."""
-        out = []
-        for bid, (body, _) in sim.balls.items():
-            kind = "cue" if bid == Sim.CUE_ID else sim.colours.get(bid, "red")
-            out.append((kind, (body.position.x, body.position.y)))
-        return out
-
-    def place_ball_at(world_pos):
-        """Drop the currently-selected ball kind at world_pos, if legal."""
-        nonlocal layout_msg
-        kind = PLACE_KINDS[place_kind]
-        r_new = CFG["CUE_R_M"] if kind == "cue" else ball_r()
-        existing = [((b.position.x, b.position.y), s.radius)
-                    for bid, (b, s) in sim.balls.items()
-                    if not (kind == "cue" and bid == Sim.CUE_ID)]
-        if not can_place_ball(world_pos, existing, r_new,
-                              [r for (_, r) in existing]):
-            layout_msg = "can't place there"
-            return
-        if kind == "cue":
-            # Only ever ONE cue ball: move the existing one rather than adding.
-            cue = sim.cue()
-            if cue is not None:
-                cue.position = world_pos
-                cue.velocity = (0.0, 0.0)
-            else:
-                sim._add_ball(Sim.CUE_ID, world_pos, "cue")
-            layout_msg = "cue placed"
-            return
-        bid = sim.alloc_id()
-        sim._add_ball(bid, world_pos, kind)
-        if kind == "black":
-            sim.black_id = bid
-        layout_msg = f"{kind} placed"
-
-    def ball_at(world_pos):
-        """Which ball (if any) is under world_pos -- for drag and remove."""
-        for bid, (body, shape) in sim.balls.items():
-            if math.dist((body.position.x, body.position.y), world_pos) <= shape.radius:
-                return bid
-        return None
-
-    def remove_ball_at(world_pos):
-        nonlocal layout_msg
-        bid = ball_at(world_pos)
-        if bid is None:
-            return
-        if bid == Sim.CUE_ID:
-            layout_msg = "can't remove the cue"
-            return
-        body, shape = sim.balls.pop(bid)
-        sim.space.remove(body, shape)
-        trail_history.pop(bid, None)
-        layout_msg = "ball removed"
-
-    def layout_path(slot):
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            f"hustler_layout_{slot}.json")
-
-    def do_save_layout():
-        nonlocal layout_msg
-        try:
-            with open(layout_path(layout_slot), "w", encoding="utf-8") as f:
-                json.dump(serialise_layout(custom_balls()), f, indent=2)
-            layout_msg = f"saved slot {layout_slot + 1}"
-        except OSError as e:
-            layout_msg = f"save failed: {e.strerror}"
-
-    def do_load_layout():
-        nonlocal layout_msg
-        path = layout_path(layout_slot)
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                balls = deserialise_layout(json.load(f))
-        except FileNotFoundError:
-            layout_msg = f"slot {layout_slot + 1} is empty"
-            return
-        except (OSError, ValueError) as e:
-            layout_msg = "load failed: bad file"
-            return
-        if not balls:
-            layout_msg = "nothing in that layout"
-            return
-        trail_history.clear()
-        pot_anims.clear()
-        sim.clear_objects()
-        for (kind, pos) in balls:
-            if kind == "cue":
-                cue = sim.cue()
-                if cue is not None:
-                    cue.position = pos
-                    cue.velocity = (0.0, 0.0)
-                else:
-                    sim._add_ball(Sim.CUE_ID, pos, "cue")
-            else:
-                bid = sim.alloc_id()
-                sim._add_ball(bid, pos, kind)
-                if kind == "black":
-                    sim.black_id = bid
-        layout_msg = f"loaded slot {layout_slot + 1}"
-
     def set_tab(i):
         nonlocal panel_tab
         panel_tab = i
@@ -3621,103 +1788,51 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
 
     # Panel widget instances, rebuilt whenever the window (and hence the
     # panel's rect) changes size -- see build_panel_widgets() below.
-    # r12.1: "Cust", not "Custom" -- four tabs do not fit the 260px tabstrip at
-    # this font size, and the full word was clipped mid-glyph at the panel edge.
-    # NB this is the LABEL only: panel_widgets is keyed by these strings, so the
-    # Custom tab's widget list is registered under "Cust" too.
-    TAB_LABELS = ["Shot", "Table", "Game", "Cust"]
-    # r11: reserved height for the persistent status strip above the tabs. This
-    # is where the old bottom-of-table HUD now lives (Maker's call), and unlike
-    # the tab contents it is drawn on EVERY tab -- the readout has to be visible
-    # while you're adjusting spin on Shot AND cushion e on Table, which a tabbed
-    # panel fundamentally cannot do from inside a tab.
-    # 113px = 7 lines at the panel font's 15px, plus padding. Sized to what the
-    # readout ACTUALLY needs (measured: 6 physics fields pack to 3 lines, plus
-    # spin, plus up to 3 lines of game status) -- NOT to whatever headroom
-    # happened to be spare. A first pass sized it to spare headroom (62px) and
-    # silently clipped the entire game-status line, which is the single most
-    # important thing on screen during a game. The dial and spin pad were
-    # shrunk slightly to pay for this; the aim/spin separation gap was NOT
-    # touched, because that gap is the r10 fix.
-    STATUS_STRIP_H = 113
+    TAB_LABELS = ["Shot", "Table", "Game"]
     panel_widgets = {"tabstrip": None, "Shot": [], "Table": [], "Game": []}
 
     def build_panel_widgets():
         px = win_w - PANEL_W + 14           # inner-panel left margin
         pw = PANEL_W - 28                   # inner-panel usable width
-        # r11: the persistent status strip lives ABOVE the tabs and is drawn on
-        # EVERY tab -- that's the whole point of moving the bottom HUD here. A
-        # tabbed panel can't show an always-visible readout, so the strip is
-        # deliberately outside the tab system. STATUS_STRIP_H is reserved space:
-        # the tabs and every tab's widgets start below it.
-        y = STATUS_STRIP_H
+        y = 12
         panel_widgets["tabstrip"] = TabStrip((win_w - PANEL_W, y, PANEL_W, 26),
                                               TAB_LABELS, lambda: panel_tab, set_tab)
-        y += 32
+        y += 34
 
         shot = []
         shot.append(Slider((px, y, pw, 34), CFG["POWER_MIN"], CFG["POWER_MAX"],
                             lambda: power, set_power, "power", "{:.2f} m/s"))
         y += 42
 
-        # r11: dial/pad shrunk (48->38, 46->36) to pay for the taller status
-        # strip. The aim/spin SEPARATION GAP below is deliberately NOT shrunk --
-        # that gap is the r10 fix for aim buttons stealing clicks from the pad.
-        dial_r = min(38, pw // 2 - 8)
-        dial_cx, dial_cy = px + pw // 2, y + dial_r + 14
+        dial_r = min(55, pw // 2 - 8)
+        dial_cx, dial_cy = px + pw // 2, y + dial_r + 18
         shot.append(Dial((dial_cx, dial_cy), dial_r, lambda: aim_angle, set_aim_angle))
-        y = dial_cy + dial_r + 8
+        y = dial_cy + dial_r + 10
         nudge_w = (pw - 8) // 2
-        shot.append(Button((px, y, nudge_w, 22), "-1 deg",
+        shot.append(Button((px, y, nudge_w, 26), "-1 deg",
                             lambda: nudge_aim_angle(-1.0)))
-        shot.append(Button((px + nudge_w + 8, y, nudge_w, 22), "+1 deg",
+        shot.append(Button((px + nudge_w + 8, y, nudge_w, 26), "+1 deg",
                             lambda: nudge_aim_angle(1.0)))
-        y += 25
-        shot.append(Button((px, y, nudge_w, 22), "-0.1 deg",
+        y += 30
+        shot.append(Button((px, y, nudge_w, 26), "-0.1 deg",
                             lambda: nudge_aim_angle(-0.1)))
-        shot.append(Button((px + nudge_w + 8, y, nudge_w, 22), "+0.1 deg",
+        shot.append(Button((px + nudge_w + 8, y, nudge_w, 26), "+0.1 deg",
                             lambda: nudge_aim_angle(0.1)))
-        y += 25
-        # r10: 0.01 deg -- Maker's finding that 0.1 deg still isn't fine enough
-        # to land a dead-true angle on long/thin cuts.
-        shot.append(Button((px, y, nudge_w, 22), "-0.01 deg",
-                            lambda: nudge_aim_angle(-0.01)))
-        shot.append(Button((px + nudge_w + 8, y, nudge_w, 22), "+0.01 deg",
-                            lambda: nudge_aim_angle(0.01)))
-        # r10: HARD SEPARATION between the aim group and the spin group. The
-        # 0.1 deg row used to sit flush against the SpinPad's hit circle (which
-        # extends radius+6 px), so aim clicks landed on the pad and vice versa.
-        # This gap is the fix -- it is not decorative, don't close it up.
         y += 34
 
-        pad_r = min(36, pw // 2 - 4)
-        pad_cx, pad_cy = px + pw // 2, y + pad_r + 12
+        pad_r = min(60, pw // 2 - 4)
+        pad_cx, pad_cy = px + pw // 2, y + pad_r + 18
         shot.append(SpinPad((pad_cx, pad_cy), pad_r,
                              lambda: (spin_follow, spin_side), set_spin))
-        y = pad_cy + pad_r + 8
-        # r10: spin fine adjustment. The pad is drag-only, and a drag can't
-        # resolve better than one pixel -- at this pad size that's ~0.02 of spin
-        # per pixel, so a precise contact point was simply unreachable. These
-        # nudge in 0.01 steps, re-clamped to the unit circle by nudge_spin so
-        # they can never walk outside the pad's own physical spin budget.
-        q = (pw - 12) // 4
-        shot.append(Button((px, y, q, 22), "draw",
-                            lambda: nudge_spin_by(-0.01, 0.0)))
-        shot.append(Button((px + q + 4, y, q, 22), "foll",
-                            lambda: nudge_spin_by(0.01, 0.0)))
-        shot.append(Button((px + 2 * (q + 4), y, q, 22), "left",
-                            lambda: nudge_spin_by(0.0, -0.01)))
-        shot.append(Button((px + 3 * (q + 4), y, q, 22), "right",
-                            lambda: nudge_spin_by(0.0, 0.01)))
-        y += 28
-        shot.append(Button((px, y, pw // 2 - 4, 26), "Reset spin", do_reset_spin))
-        shot.append(Button((px + pw // 2 + 4, y, pw // 2 - 4, 26), "Shoot", do_shoot,
+        y = pad_cy + pad_r + 26
+        shot.append(Button((px, y, pw // 2 - 4, 28), "Reset spin", do_reset_spin))
+        shot.append(Button((px + pw // 2 + 4, y, pw // 2 - 4, 28), "Shoot", do_shoot,
                             enabled=lambda: shoot_enabled(
                                 sim.cue() is not None, sim.all_at_rest(), my_turn())))
         panel_widgets["Shot"] = shot
 
         table = []
-        y2 = STATUS_STRIP_H + 34   # r11: below the persistent status strip
+        y2 = 46
         table.append(Slider((px, y2, pw, 34), 0.05, 1.0,
                              lambda: CFG["CUSHION_ELASTICITY"],
                              lambda v: sim.set_cushion_elasticity(v),
@@ -3742,7 +1857,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         panel_widgets["Table"] = table
 
         game_w = []
-        y3 = STATUS_STRIP_H + 34   # r11: below the persistent status strip
+        y3 = 46
         game_w.append(Button((px, y3, pw, 28),
                               lambda: f"Mode: {MODES[mode]} (M)", do_cycle_mode))
         y3 += 36
@@ -3750,27 +1865,6 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         y3 += 36
         game_w.append(Button((px, y3, pw, 28), "Toggle overlay (G)", do_toggle_overlay))
         panel_widgets["Game"] = game_w
-
-        # r10 Custom tab -- trick-shot / practice editor. All of this is inert
-        # unless mode == SANDBOX (custom_active()), and the buttons say so.
-        custom = []
-        y4 = STATUS_STRIP_H + 34   # r11: below the persistent status strip
-        custom.append(TabStrip((px, y4, pw, 26),
-                                [k.capitalize() for k in PLACE_KINDS],
-                                lambda: place_kind, set_place_kind))
-        y4 += 34
-        custom.append(Button((px, y4, pw, 26), "Clear table", do_clear_table,
-                              enabled=lambda: mode == 0))
-        y4 += 34
-        custom.append(TabStrip((px, y4, pw, 26), ["1", "2", "3", "4"],
-                                lambda: layout_slot, set_layout_slot))
-        y4 += 34
-        half = pw // 2 - 4
-        custom.append(Button((px, y4, half, 26), "Save", do_save_layout,
-                              enabled=lambda: mode == 0))
-        custom.append(Button((px + pw // 2 + 4, y4, half, 26), "Load",
-                              do_load_layout, enabled=lambda: mode == 0))
-        panel_widgets["Cust"] = custom   # key MUST match TAB_LABELS (r12.1)
 
     if smoke:
         mode = 2
@@ -3847,87 +1941,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 for w in panel_widgets[TAB_LABELS[panel_tab]]:
                     w.handle_event(ev)
 
-                # r10 custom mode -- MOUSE ON THE TABLE. This is the deliberate,
-                # signed-off reversal of R6.6's "HUD-only, no mouse-table
-                # interaction" rule, and it is scoped as narrowly as possible:
-                # custom_active() requires the Custom tab AND sandbox mode AND a
-                # table at rest, so in Shot/Table/Game the table remains exactly
-                # as unclickable as R6.6 made it. Nothing here touches aiming --
-                # aim is still HUD-only, always.
-                if custom_active():
-                    on_panel = (ev.__dict__.get("pos", (0, 0))[0]
-                                >= win_w - PANEL_W)
-                    if (ev.type == pygame.MOUSEBUTTONDOWN and not on_panel):
-                        wp = s2w(ev.pos)
-                        if ev.button == 1:
-                            hit = ball_at(wp)
-                            if hit is not None:
-                                drag_bid = hit      # grab and drag an existing ball
-                            else:
-                                place_ball_at(wp)   # empty baize: drop a new one
-                        elif ev.button == 3:
-                            remove_ball_at(wp)
-                    elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
-                        drag_bid = None
-                    elif (ev.type == pygame.MOUSEMOTION and drag_bid is not None
-                          and not on_panel):
-                        wp = s2w(ev.pos)
-                        entry = sim.balls.get(drag_bid)
-                        if entry is not None:
-                            body, shape = entry
-                            others = [((b.position.x, b.position.y), s.radius)
-                                      for bid, (b, s) in sim.balls.items()
-                                      if bid != drag_bid]
-                            if can_place_ball(wp, others, shape.radius,
-                                              [r for (_, r) in others]):
-                                body.position = wp
-                                body.velocity = (0.0, 0.0)
-                # r13 ball in hand -- the HUMAN may reposition the cue ball in
-                # baulk on the break and after a foul. This extends the R6.6
-                # mouse-table reversal to a second narrow case (custom mode was
-                # the first): it is gated to a human striker who actually HAS
-                # ball in hand, on a table at rest, and the cue ball ONLY -- no
-                # other ball is touchable, and aiming remains HUD-only always.
-                elif (((game is not None and game.ball_in_hand)
-                       or (mode == 0 and sandbox_bih))
-                      and my_turn() and sim.all_at_rest()):
-                    on_panel = (ev.__dict__.get("pos", (0, 0))[0]
-                                >= win_w - PANEL_W)
-                    if not on_panel and ev.type in (pygame.MOUSEBUTTONDOWN,
-                                                    pygame.MOUSEMOTION):
-                        pressed = (ev.type == pygame.MOUSEBUTTONDOWN
-                                   and ev.button == 1) or \
-                                  (ev.type == pygame.MOUSEMOTION
-                                   and ev.buttons[0])
-                        if pressed:
-                            wp = s2w(ev.pos)
-                            cue = sim.cue()
-                            others = [((b.position.x, b.position.y), s.radius)
-                                      for bid, (b, s) in sim.balls.items()
-                                      if bid != Sim.CUE_ID]
-                            # r23 (BUG 3, part iii): with auto-respot off the
-                            # cue is genuinely GONE after a scratch, so this
-                            # has to be able to put a ball back, not just move
-                            # one that is already there. The old `cue is not
-                            # None` guard silently swallowed every attempt.
-                            if can_place_cue(wp, others, CFG["CUE_R_M"]):
-                                if cue is None:
-                                    sim._add_ball(Sim.CUE_ID, wp, "cue")
-                                else:
-                                    cue.position = wp
-                                    cue.velocity = (0.0, 0.0)
-                else:
-                    drag_bid = None
-
         sim.step(1.0 / CFG["FPS"])
-
-        # r23 (BUG 3 follow-up): sandbox has no rules layer to spot a scratch,
-        # so the scratch is read straight off the sim's own pot events. This is
-        # deliberately NOT `not smoke` gated -- it is game state, not an
-        # overlay, and gating state behind the render flag is exactly how the
-        # smoke path and the real path drift apart.
-        if mode == 0 and cue_was_potted(sim.last_pot_events, Sim.CUE_ID):
-            sandbox_bih = True
 
         # ---- game logic (modes 1 and 2) ----
         if game is not None and sim.all_at_rest():
@@ -3950,17 +1964,13 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             if (not game.over and not pending
                     and game.controllers[game.current] == "ai"):
                 if ai_plan is None:
-                    if game.ball_in_hand:
-                        ais[game.current].place_cue(sim, game.legal_colours(sim))
                     ai_plan = ais[game.current].choose(sim, game.legal_colours(sim))
                     ai_wait = 45 if not smoke else 2
                 elif ai_wait > 0:
                     ai_wait -= 1
                 else:
                     if ai_plan is not None:
-                        sim.strike(ai_plan["aim"], ai_plan["power"],
-                                   side=ai_plan.get("side", 0.0),
-                                   follow=ai_plan.get("follow", 0.0))
+                        sim.strike(ai_plan["aim"], ai_plan["power"])
                         pending = True
                     ai_plan = None
 
@@ -4021,94 +2031,23 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 gb = ghost_ball(tuple(cue.position), aim, sim.object_positions(), rc, r)
                 if gb:
                     gx, gy = gb["ghost"]
-                    pa = pot_assessment(gb)
-                    prob = pa["prob"] if pa else 0.0
-                    tint = pot_chance_colour(prob)
-
-                    # r14: everything below is drawn onto ONE SRCALPHA overlay
-                    # surface, then blitted. pygame.draw with an RGBA colour
-                    # writes flat, NON-composited pixels straight onto an opaque
-                    # surface -- it does not alpha-blend -- so real translucency
-                    # needs a separate surface. Same discipline as the vignette
-                    # and colour-grade passes.
-                    ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
-
-                    def glow_line(a, b, col, core_w, glow_w, alpha):
-                        """Layered line: a wide, faint glow beneath a crisp core.
-                        This layering IS the difference between a 1980s vector
-                        hairline and something that reads as modern."""
-                        for w, al in ((glow_w, alpha // 5),
-                                      (max(1, glow_w // 2), alpha // 3),
-                                      (core_w, alpha)):
-                            pygame.draw.line(ov, (*col, al), a, b, max(1, int(w)))
-
-                    cs = w2s(cue.position)
-                    gs = w2s((gx, gy))
-                    # Cue -> ghost, tapered: segment alpha falls with distance,
-                    # because certainty does.
-                    SEGS = 14
-                    for i in range(SEGS):
-                        a = (cs[0] + (gs[0] - cs[0]) * i / SEGS,
-                             cs[1] + (gs[1] - cs[1]) * i / SEGS)
-                        b = (cs[0] + (gs[0] - cs[0]) * (i + 1) / SEGS,
-                             cs[1] + (gs[1] - cs[1]) * (i + 1) / SEGS)
-                        glow_line(a, b, tint, max(1, int(2 * RSF)),
-                                  max(2, int(7 * RSF)), aim_taper_alpha(i, SEGS))
-
-                    # Target pocket glow -- only when the pot is actually on, so
-                    # it means something rather than always being lit.
-                    if pa and prob > 0.12:
-                        pp = w2s(pa["pocket"])
-                        for k, rad in enumerate((int(20 * RSF), int(13 * RSF),
-                                                 int(7 * RSF))):
-                            pygame.draw.circle(ov, (*tint, int(26 + 34 * k * prob)),
-                                               pp, max(1, rad))
-
-                    # Object-ball line to the pocket, in the same pot-chance tint.
+                    pygame.draw.aaline(screen, COL["line"], w2s(cue.position), w2s((gx, gy)))
+                    pygame.draw.circle(screen, COL["ghost"], w2s((gx, gy)), int(rc * S), 1)
                     tx, ty = gb["target"]
                     path = one_bounce_path((tx, ty), gb["obj_dir"], r)
                     for a, b in zip(path, path[1:]):
-                        glow_line(w2s(a), w2s(b), tint, max(1, int(2 * RSF)),
-                                  max(2, int(6 * RSF)), 150)
-
-                    # Tangent / cue departure line -- cool white, so it reads as
-                    # a different quantity from the pot line.
+                        pygame.draw.aaline(screen, COL["objline"], w2s(a), w2s(b))
                     if gb["cue_dir"] != (0.0, 0.0):
                         cpath = one_bounce_path((gx, gy), gb["cue_dir"], rc, tail=0.25)
                         for a, b in zip(cpath, cpath[1:]):
-                            glow_line(w2s(a), w2s(b), (150, 200, 255),
-                                      max(1, int(1 * RSF)), max(2, int(4 * RSF)), 90)
-
-                    # Ghost ball: a translucent SHADED ball, not a wire circle.
-                    # Reusing ball_sprite means it's lit exactly like a real ball.
-                    gr = max(2, int(rc * S))
-                    spr = ball_sprite("cue", gr).copy()
-                    spr.set_alpha(105)
-                    ov.blit(spr, (gs[0] - spr.get_width() // 2,
-                                  gs[1] - spr.get_height() // 2))
-                    pygame.draw.circle(ov, (*tint, 220), gs, gr, max(1, int(2 * RSF)))
-
-                    # r14: predicted CUE REST -- spin-aware, so this moves live as
-                    # you change follow/draw/side on the SpinPad. estimate_leave
-                    # already models it; it was simply never shown.
+                            pygame.draw.aaline(screen, COL["tanline"], w2s(a), w2s(b))
+                    pa = pot_assessment(gb)
+                    aim_txt = f"contact {gb['fullness']*100:3.0f}% full"
                     if pa:
-                        est = pot_estimate(tuple(cue.position), (tx, ty),
-                                           pa["pocket"], 0.05, rc, r, 0.0)
-                        if est:
-                            lv = estimate_leave(est, power, follow=spin_follow,
-                                                side=spin_side)
-                            rs = w2s(lv["rest"])
-                            rest_spr = ball_sprite("cue", gr).copy()
-                            rest_spr.set_alpha(52)
-                            ov.blit(rest_spr, (rs[0] - rest_spr.get_width() // 2,
-                                               rs[1] - rest_spr.get_height() // 2))
-                            pygame.draw.circle(ov, (150, 200, 255, 120), rs, gr,
-                                               max(1, int(RSF)))
-
-                    screen.blit(ov, (0, 0))
-                    aim_txt = (f"pot {prob*100:3.0f}%  cut {pa['angle_deg']:4.1f}deg"
-                               if pa else
-                               f"contact {gb['fullness']*100:3.0f}% full")
+                        pygame.draw.aaline(screen, (120, 140, 120),
+                                           w2s((tx, ty)), w2s(pa["pocket"]))
+                        aim_txt += (f"  |  pot est {pa['prob']*100:3.0f}%"
+                                    f"  (off {pa['angle_deg']:4.1f} deg)")
                 else:
                     cpath = one_bounce_path(tuple(cue.position), dxy, ball_r())
                     for a, b in zip(cpath, cpath[1:]):
@@ -4160,16 +2099,6 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # sim.last_pot_events (a pure event report, never read by
         # physics/rules/AI).
         if not smoke:
-            for kind, strength in sim.last_hit_events:
-                # arbiter.total_impulse is a physics impulse (kg*m/s in
-                # these real WEPF units), not a 0..1 fraction. r8: the raw
-                # impulse now drives BOTH loudness and timbre -- play_impact
-                # picks a brighter/shorter pre-rendered tier for harder hits
-                # (impact_hardness -> impact_tier) and sets the volume from
-                # the same number (scale_ball_hit_volume).
-                play_impact(strength)
-            for bid, kind, pos, radius in sim.last_pot_events:
-                play_sound("pot", 1.0)
             pockets_m = [((p["centre"][0] / 1000.0, p["centre"][1] / 1000.0),
                           p["r"] / 1000.0) for p in cushion_geo.pocket_geometry()]
             for bid, kind, pos, radius in sim.last_pot_events:
@@ -4282,105 +2211,52 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 vignette_surface_cache[(W, H)] = vig
             screen.blit(vig, (0, 0))
 
-        # r11: the physics/game readout that used to sit at the BOTTOM OF THE
-        # TABLE now lives in the persistent panel strip (see draw of
-        # STATUS_STRIP_H below). It is NOT drawn over the baize any more --
-        # which is why the --snap baseline changed with this pass, deliberately
-        # and with sign-off. Only the aim icon remains on the frame.
         cue_lbl = "1-7/8\" 94g" if CFG["CUE_R_M"] < 0.025 else "2\" 116g"
-        status_fields = [
-            f"power {power:4.2f} m/s",
-            f"cushion e {CFG['CUSHION_ELASTICITY']:.2f}",
-            f"roll {CFG['ROLL_DECEL']:.3f} m/s2",
-            f"ball {CFG['BALL_R_M']*2000:.1f}mm",
-            f"cue {cue_lbl}",
-            f"spin s{spin_side:+.2f} f{spin_follow:+.2f}",
-        ]
+        hud1 = (f"power {power:4.2f} m/s  cushion e {CFG['CUSHION_ELASTICITY']:.2f}  "
+                f"roll decel {CFG['ROLL_DECEL']:.3f} m/s2  "
+                f"ball {CFG['BALL_R_M']*2000:.1f}mm  cue {cue_lbl}")
         if game is not None:
             def ptxt(i):
                 col = game.colours.get(i)
                 left = f" {sim.remaining(col)} left" if col else ""
                 mark = ">" if (game.current == i and not game.over) else " "
                 return f"{mark}{game.names[i]}[{(col or 'open').upper()}{left}]"
-            status_lines2 = [MODES[mode], f"{ptxt(0)} vs {ptxt(1)}",
-                             game.last_event]
-            if game.ball_in_hand:
-                status_lines2.append("BALL IN HAND — drag cue in baulk")
-            if game.over:
-                status_lines2.append("T = new game")
+            hud2 = (f"{MODES[mode]}  {ptxt(0)} vs {ptxt(1)}  |  {game.last_event}"
+                    + ("  |  T=new game" if game.over else ""))
         else:
-            status_lines2 = [
-                f"balls {len(sim.balls)}  potted {len(sim.potted_log)}"
-                f" [{','.join(sim.potted_colours()) or '-'}]"
-            ]
-            if mode == 0 and sandbox_bih:
-                status_lines2.append("BALL IN HAND — drag cue in baulk")
-            if aim_txt:
-                status_lines2.append(aim_txt)
-        # r12: the spin-position icon is GONE from the frame (Maker's call --
-        # spin already has the SpinPad and the numeric readout in the panel, so
-        # a third copy of it painted on the woodwork was pure duplication).
-        # hud_icon_x() and its selftest are kept: the helper is pure and correct,
-        # it simply has no caller now.
-        #
-        # The freed strip becomes the POTTED-BALL CHAMBER: on a real table the
-        # potted balls run down into a glass-fronted chamber, and you can read
-        # off exactly what went down and in what ORDER. That's what this shows.
-        # No animation, by request -- it's a static readout of potted_log, which
-        # is already ordered.
-        #
-        # Render-only, gated `not smoke`: this follows the standing overlay
-        # doctrine and keeps --snap byte-identical to the r11 baseline. It also
-        # avoids a subtler trap -- what's in the chamber depends on how the AI's
-        # break happened to run, so drawing it in --snap could make the baseline
-        # itself non-deterministic.
-        if not smoke:
-            # r13: transient baulk highlight, shown ONLY while a human actually
-            # has ball in hand -- it is not a permanent table marking (Maker
-            # asked for the baize to be left as it is), and being `not smoke`
-            # gated it never touches the --snap baseline. Without it the player
-            # has no way to see where placement is legal.
-            # r23: `== "you"` compared a controller slot to a player NAME and
-            # so never matched -- the highlight never drew for a human at all.
-            # The controller values are "human" and "ai".
-            if (((game is not None and game.ball_in_hand
-                  and game.controllers[game.current] == "human")
-                 or (mode == 0 and sandbox_bih))
-                    and sim.all_at_rest()):
-                bx0, by0, bx1, by1 = baulk_rect()
-                tl = w2s((bx0, by0))
-                br = w2s((bx1, by1))
-                zone = pygame.Surface((abs(br[0] - tl[0]), abs(br[1] - tl[1])),
-                                      pygame.SRCALPHA)
-                zone.fill((255, 255, 255, 26))
-                screen.blit(zone, (min(tl[0], br[0]), min(tl[1], br[1])))
-
-            # r22: potted_colours_ALL (game-scoped), not potted_colours
-            # (shot-scoped, wiped by strike()). Reading the shot-scoped list was
-            # the "chamber only shows one ball then it disappears" bug -- it was
-            # never accumulating.
-            potted = [c for c in sim.potted_colours_all() if c != "cue"]
-            # The cue is deliberately excluded: a scratched cue ball is returned
-            # to play, it does not stay in the chamber. Same as a real table.
-            ch_h = int(30 * RSF)
-            ch_y = int(H - 40 * RSF)
-            ch_x = M
-            ch_w = (W - M) - M
-            # the glass front: a dark recess with a faint highlight along the top
-            glass = pygame.Surface((ch_w, ch_h), pygame.SRCALPHA)
-            glass.fill((14, 14, 16, 165))
-            pygame.draw.line(glass, (150, 158, 170, 60), (0, 0), (ch_w - 1, 0), 1)
-            screen.blit(glass, (ch_x, ch_y))
-            if potted:
-                pad = int(6 * RSF)
-                d, xs = chamber_slots(len(potted), ch_w - 2 * pad,
-                                      ch_h - 2 * pad, max(2, int(3 * RSF)))
-                r_px = max(1, int(d / 2))
-                cy = ch_y + ch_h // 2
-                for colour, cx in zip(potted, xs):
-                    spr = ball_sprite(colour, r_px)   # same sprite as on the table
-                    screen.blit(spr, (int(ch_x + pad + cx) - spr.get_width() // 2,
-                                      cy - spr.get_height() // 2))
+            hud2 = (f"balls {len(sim.balls)}  potted {len(sim.potted_log)}"
+                    f" [{','.join(sim.potted_colours()) or '-'}]  "
+                    f"spin side {spin_side:+.2f} follow {spin_follow:+.2f}"
+                    + (f"  |  {aim_txt}" if aim_txt else ""))
+        hud2_surf = font.render(hud2, True, COL["hud"])
+        screen.blit(font.render(hud1, True, COL["hud"]), (M, int(H - 44 * RSF)))
+        screen.blit(hud2_surf, (M, int(H - 24 * RSF)))
+        # Aim icon. Headless guard: smoke/snap reproduce the ORIGINAL R6.1-
+        # framing formula verbatim (byte-identical invariant, untouched).
+        # Interactive-only: Increment 3b's HUD-crowding fix gets its own
+        # minimum-size floor, independent of the font's floor, and an x
+        # position pushed clear of hud2's ACTUAL rendered width (hud_icon_x)
+        # rather than a fixed fraction of the window -- so text and icon
+        # can't collide by construction, at any window size.
+        if smoke:
+            icon_r = max(1, int(18 * RSF))
+            icx = int(W - M - 22 * RSF)
+            spin_mul = 12 * RSF
+        else:
+            icon_r = max(10, int(18 * RSF))
+            default_icon_x = int(W - M - 22 * RSF)
+            text_right = M + hud2_surf.get_width()
+            icon_gap = max(8, int(8 * RSF))
+            icx = int(hud_icon_x(default_icon_x, text_right, icon_gap, icon_r, W - M))
+            spin_mul = icon_r * 0.67
+        icy = int(H - 30 * RSF)
+        icw = max(1, round(RSF))
+        pygame.draw.circle(screen, (200, 200, 200), (icx, icy), icon_r, icw)
+        pygame.draw.line(screen, (110, 110, 110), (icx - icon_r, icy), (icx + icon_r, icy), icw)
+        pygame.draw.line(screen, (110, 110, 110), (icx, icy - icon_r), (icx, icy + icon_r), icw)
+        pygame.draw.circle(screen, (255, 90, 90),
+                           (int(icx + spin_side * spin_mul), int(icy - spin_follow * spin_mul)),
+                           max(1, int(4 * RSF)))
 
         shown = present(screen)          # always the same surface now GL is gone
         if smoke:
@@ -4400,27 +2276,6 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             pygame.draw.line(display, (68, 72, 80),
                               (win_w - PANEL_W, 0), (win_w - PANEL_W, win_h), 1)
             panel_widgets["tabstrip"].draw(display, panel_font)
-            # r11: the persistent status strip -- drawn on EVERY tab, above the
-            # tabstrip. wrap_fields packs it by ACTUAL pixel width (font.size),
-            # not character count, so it can't silently overflow the 260px
-            # column when a value gets wider (a long game_event, say). Lines
-            # beyond the reserved budget are clipped rather than spilling over
-            # the tabs below.
-            sx = win_w - PANEL_W + 10
-            sw = PANEL_W - 20
-            measure = lambda s: panel_font.size(s)[0]
-            strip_lines = (wrap_fields(status_fields, sw, measure)
-                           + wrap_fields(status_lines2, sw, measure))
-            line_h = panel_font.get_height() + 1
-            sy = 6
-            for ln in strip_lines:
-                if sy + line_h > STATUS_STRIP_H:
-                    break                      # clip; never spill onto the tabs
-                display.blit(panel_font.render(ln, True, COL["hud"]), (sx, sy))
-                sy += line_h
-            pygame.draw.line(display, (68, 72, 80),
-                              (win_w - PANEL_W, STATUS_STRIP_H - 3),
-                              (win_w - 1, STATUS_STRIP_H - 3), 1)
             for w in panel_widgets[TAB_LABELS[panel_tab]]:
                 w.draw(display, panel_font)
         pygame.display.flip()
@@ -4891,18 +2746,13 @@ def selftest():
     # 22. AI leave term (R5, A3): greed flips a near-equal choice toward the
     # pot with the better estimated leave; greed=0 reproduces pot-chance-only.
     # Frozen position: P2 is the marginally surer pot, P1 leaves far better.
-    # r16: re-frozen closer to the cue with a realistic (SHARK-level) jitter --
-    # the original positions/jitter=0.02 were implicitly tuned against the
-    # pre-r16 pot_estimate and both read as ~0% under the corrected lever-arm
-    # model, leaving greed nothing to trade off. Same intent, new numbers.
     s = Sim(layout="empty")
     s._add_ball(s.CUE_ID, (0.91, 0.455), "cue")
-    P1, P2 = (0.56, 0.29), (0.84, 0.67)
-    TEST_JITTER = 0.008
+    P1, P2 = (0.45, 0.25), (0.33, 0.72)
     s._add_ball(s.alloc_id(), P1, "red")
     s._add_ball(s.alloc_id(), P2, "red")
     def picks(greed):
-        ai = PoolAI("T", aim_jitter=TEST_JITTER, threshold=0.05, greed=greed,
+        ai = PoolAI("T", aim_jitter=0.02, threshold=0.05, greed=greed,
                     rng=random.Random(1))
         sh = ai.choose(s, ["red"])
         near = P1 if math.dist(sh["target"], P1) < math.dist(sh["target"], P2) else P2
@@ -4911,7 +2761,7 @@ def selftest():
     n9, sh9 = picks(0.9)
     est_probe = pot_estimate((0.91, 0.455), P1, capture_points()[0][0],
                              capture_points()[0][1], CFG["CUE_R_M"], ball_r(),
-                             TEST_JITTER)
+                             0.02)
     lv_probe = estimate_leave(est_probe, 2.5) if est_probe else None
     in_bounds = (lv_probe is not None
                  and x0 <= lv_probe["rest"][0] <= x1
@@ -5146,1037 +2996,6 @@ def selftest():
     check("grade_params — Warm/Cool/Contrast in TabStrip order, "
           "out-of-range index clamps rather than raising", ok31f)
 
-    # 31g. synth_tone_samples (sound effects): correct length, every sample
-    #      stays within int16 range, deterministic given the same seed
-    #      (rebuild it and get byte-identical output -- essential since
-    #      it's cached and reused across many play() calls per Sound), and
-    #      the decay envelope genuinely decays (a later window's peak
-    #      amplitude is smaller than an earlier window's, not flat or
-    #      growing).
-    _sa = synth_tone_samples(900.0, 0.06, 22050, 35.0, 0.25, seed=7)
-    _sb = synth_tone_samples(900.0, 0.06, 22050, 35.0, 0.25, seed=7)
-    _early_peak = max(abs(v) for v in _sa[:200])
-    _late_peak = max(abs(v) for v in _sa[-200:])
-    ok31g = (len(_sa) == round(0.06 * 22050) and _sa == _sb
-             and all(-32768 <= v <= 32767 for v in _sa)
-             and _late_peak < _early_peak)
-    check("synth_tone_samples — correct length, in-range, deterministic "
-          "given the same seed, decay envelope genuinely decays", ok31g)
-
-    # 31h. scale_ball_hit_volume: 0 at/below zero impulse, linear up to the
-    #      reference impulse, clamped at 1.0 beyond it (a break-shot
-    #      pile-up shouldn't try to exceed "full volume").
-    ok31h = (scale_ball_hit_volume(0.0) == 0.0
-             and scale_ball_hit_volume(-1.0) == 0.0
-             and abs(scale_ball_hit_volume(HIT_IMPULSE_REF) - 1.0) < 1e-9
-             and abs(scale_ball_hit_volume(HIT_IMPULSE_REF / 2.0) - 0.5) < 1e-9
-             and scale_ball_hit_volume(HIT_IMPULSE_REF * 5.0) == 1.0)
-    check("scale_ball_hit_volume — 0 at zero, linear to the reference "
-          "impulse, clamped at 1.0 beyond it", ok31h)
-
-    # 31i. r8 ball-hit impact model (pure core): the impulse -> timbre mapping
-    #      must be monotonic in the physically right direction (harder hits
-    #      BRIGHTER, SHORTER, noisier -- that's the whole point of the rework),
-    #      hardness/tier must clamp at both ends, and the synthesised buffer
-    #      must be int16-safe, deterministic, genuinely decaying, AND ramp UP
-    #      from ~0 across the attack rather than starting at full amplitude
-    #      (a step at sample 0 is itself an audible click).
-    _soft = impact_params(0.0)
-    _hard = impact_params(1.0)
-    _mid = impact_params(0.5)
-    ok31i_map = (_hard["partial_hz"] > _soft["partial_hz"]        # brighter
-                 and _hard["decay"] > _soft["decay"]              # shorter
-                 and _hard["noise_mix"] > _soft["noise_mix"]      # sharper crack
-                 and _hard["lp_hz"] > _soft["lp_hz"]              # opens up
-                 and _soft["partial_hz"] < _mid["partial_hz"] < _hard["partial_hz"]
-                 and impact_params(-5.0) == impact_params(0.0)    # clamps low
-                 and impact_params(9.9) == impact_params(1.0))    # clamps high
-    # r8.2: the properties that separate a POLYMER KNOCK from a GLASS PLINK.
-    # These are the actual bug this rework fixes, so they get asserted, not
-    # just described in a comment.
-    ok31i_polymer = (
-        # noise is the BODY of the sound, not a garnish on a tone
-        _soft["noise_mix"] > 0.6 and _hard["noise_mix"] > 0.6
-        # modal content sits well below the glassy 2-2.5kHz region
-        and _hard["partial_hz"] < 1500.0
-        # decay is fast enough that the sound is DEAD within ~20ms
-        and _soft["decay"] > 150.0
-        and math.exp(-_soft["decay"] * 0.020) < 0.05
-        # and there are several INHARMONIC partials -- not one pitch
-        and len(IMPACT_PARTIAL_RATIOS) >= 3
-        and not any(abs(r - round(r)) < 1e-6 for r in IMPACT_PARTIAL_RATIOS[1:]))
-    # the lowpass must actually attenuate high frequencies (it's what kills hiss)
-    _hf = [(1 if i % 2 == 0 else -1) for i in range(400)]   # Nyquist-rate square
-    _lp = one_pole_lowpass(_hf, 2000.0, 44100)
-    ok31i_lp = (max(abs(v) for v in _lp[50:]) < 0.5
-                and one_pole_lowpass([], 2000.0, 44100) == [])
-    ok31i_hard = (impact_hardness(0.0) == 0.0 and impact_hardness(-1.0) == 0.0
-                  and abs(impact_hardness(HIT_IMPULSE_REF) - 1.0) < 1e-9
-                  and impact_hardness(HIT_IMPULSE_REF * 4.0) == 1.0)
-    ok31i_tier = (impact_tier(0.0) == 0
-                  and impact_tier(1.0) == IMPACT_TIERS - 1
-                  and impact_tier(2.0) == IMPACT_TIERS - 1   # clamps, no IndexError
-                  and 0 <= impact_tier(0.5) < IMPACT_TIERS)
-    _ia = synth_impact_samples(0.8, 44100, seed=3)
-    _ib = synth_impact_samples(0.8, 44100, seed=3)
-    _attack_n = max(1, int(IMPACT_ATTACK_S * 44100))
-    _peak_body = max(abs(v) for v in _ia[_attack_n:_attack_n + 400])
-    _peak_tail = max(abs(v) for v in _ia[-400:])
-    ok31i_synth = (len(_ia) == round(IMPACT_DURATION_S * 44100)
-                   and _ia == _ib                                  # deterministic
-                   and all(-32768 <= v <= 32767 for v in _ia)      # int16-safe
-                   and abs(_ia[0]) < 500                           # ramps up, no click
-                   and _peak_tail < _peak_body)                    # genuinely decays
-    check("impact model (r8 ball-hit) — harder hits map brighter/shorter/"
-          "noisier, hardness+tier clamp at both ends, AD buffer is "
-          "deterministic, int16-safe, click-free at onset, and decays",
-          ok31i_map and ok31i_hard and ok31i_tier and ok31i_synth)
-
-    # 31j. write_wav (r8.1): the samples we synthesise must be exactly the
-    #      samples that land on disk -- mono, 16-bit, at the rate we asked
-    #      for, byte-for-byte identical on read-back. This is the probe path
-    #      that exists specifically so a sound can be checked independently
-    #      of pygame's mixer, so it can't be the thing that lies to us.
-    import tempfile, wave as _wave, array as _arr
-    _wsamples = synth_impact_samples(0.5, 44100, seed=11)
-    with tempfile.TemporaryDirectory() as _td:
-        _wpath = os.path.join(_td, "t.wav")
-        _n = write_wav(_wpath, _wsamples, 44100)
-        with _wave.open(_wpath, "rb") as _w:
-            _rt = _arr.array("h")
-            _rt.frombytes(_w.readframes(_w.getnframes()))
-            ok31j = (_w.getnchannels() == 1 and _w.getsampwidth() == 2
-                     and _w.getframerate() == 44100
-                     and _n == len(_wsamples)
-                     and list(_rt) == list(_wsamples))
-    check("write_wav — mono/16-bit/correct rate, and samples round-trip "
-          "byte-identical (the probe path can't lie about what we synthesised)",
-          ok31j)
-
-    # 32. r9 phase 1 — FOULS. assess_foul() is the pure core of the rules
-    #     rework, so it gets tested directly rather than through a live table.
-    #     A fake sim carries only the two facts the rules actually read.
-    class _FakeSim:
-        def __init__(self, first_contact, cushion):
-            self.first_contact = first_contact
-            self.cushion_after_contact = cushion
-
-    class _FakeSimFull(_FakeSim):
-        """Test double for on_rest(): carries the full surface the rules read,
-        so the turn/penalty state machine can be exercised without a table."""
-        def __init__(self, first_contact, cushion, potted, remaining=3):
-            super().__init__(first_contact, cushion)
-            self._potted = list(potted)
-            self._remaining = remaining
-
-        def potted_colours(self):
-            return list(self._potted)
-
-        def remaining(self, colour):
-            return self._remaining
-
-    g32 = Game()
-    g32.colours = {0: "red", 1: "yellow"}
-    g32.current = 0
-    legal32 = ["red"]
-    ok32 = (
-        # legal: hit own colour first, potted something
-        g32.assess_foul(_FakeSim("red", False), legal32, ["red"], False) is None
-        # legal: hit own colour first, nothing potted BUT a cushion was reached
-        and g32.assess_foul(_FakeSim("red", True), legal32, [], False) is None
-        # foul: cue potted
-        and g32.assess_foul(_FakeSim("red", True), legal32, ["cue"], True) == "scratch"
-        # foul: cue ball hit nothing at all
-        and g32.assess_foul(_FakeSim(None, False), legal32, [], False) == "no contact"
-        # foul: WRONG BALL FIRST -- the whole point of phase 1, and completely
-        # undetectable before, since nothing was potted here at all
-        and g32.assess_foul(_FakeSim("yellow", True), legal32, [], False
-                            ).startswith("wrong ball first")
-        # foul: legal contact, but nothing potted and no cushion reached
-        and g32.assess_foul(_FakeSim("red", False), legal32, [], False
-                            ) == "no cushion, no pot"
-    )
-    check("r9 fouls — scratch / no-contact / wrong-ball-first / no-cushion-no-pot "
-          "all detected, and a legal contact reaching a cushion is NOT a foul",
-          ok32)
-
-    # 33. r9 phase 3 — FREE SHOT + TWO VISITS. The penalty state machine:
-    #     fouling hands the table over WITH a free shot and two visits; a free
-    #     shot suppresses wrong-ball-first (and only that); a miss on two
-    #     visits keeps you at the table exactly once.
-    g33 = Game()
-    g33.colours = {0: "red", 1: "yellow"}
-    g33.current = 0
-    ok33_free_suppresses = (
-        g33.assess_foul(_FakeSim("yellow", True), ["red"], [], False) is not None)
-    g33.free_shot = True
-    ok33_free_suppresses = ok33_free_suppresses and (
-        # same shot, but on a free shot: no longer a foul
-        g33.assess_foul(_FakeSim("yellow", True), ["red"], [], False) is None
-        # ...but a free shot does NOT excuse a scratch
-        and g33.assess_foul(_FakeSim("yellow", True), ["red"], ["cue"], True)
-            == "scratch")
-    # foul hands over free shot + two visits
-    g33b = Game()
-    g33b.colours = {0: "red", 1: "yellow"}
-    g33b.current = 0
-    g33b.on_rest(_FakeSimFull(first_contact="yellow", cushion=True, potted=[]))
-    ok33_handover = (g33b.current == 1 and g33b.free_shot is True
-                     and g33b.visits_left == 2 and g33b.fouls == 1)
-    # the incoming player misses legally -> keeps the table for visit 2
-    g33b.on_rest(_FakeSimFull(first_contact="yellow", cushion=True, potted=[]))
-    ok33_second = (g33b.current == 1 and g33b.visits_left == 1
-                   and g33b.free_shot is False)
-    # misses again -> now the table finally passes back
-    g33b.on_rest(_FakeSimFull(first_contact="yellow", cushion=True, potted=[]))
-    ok33_pass = (g33b.current == 0 and g33b.visits_left == 1)
-    check("r9 free shot + two visits — a foul hands over a free shot and two "
-          "visits; the free shot suppresses wrong-ball-first but never a "
-          "scratch; a legal miss uses the second visit, the next one passes",
-          ok33_free_suppresses and ok33_handover and ok33_second and ok33_pass)
-
-    # 34. r9 phase 2 — AI SPIN + SAFETY + FOUL RISK. The pure scoring cores:
-    #     spin must actually change the predicted leave (otherwise the 3x3 grid
-    #     is decorative), scratch_risk must be high at a pocket and ~0 in open
-    #     space, and safety_quality must reward leaving the opponent nothing.
-    s34 = Sim(layout="empty")
-    s34._respot_cue()
-    ai34 = PoolAI("T", aim_jitter=0.0, threshold=0.05, greed=0.5, caution=0.5,
-                  rng=random.Random(3))
-    # Find a genuinely potable (cue, target, pocket) triple rather than assuming
-    # one -- pot_estimate legitimately rejects impossible geometry, and a test
-    # that hardcodes the wrong pocket tests nothing.
-    est34 = None
-    for (_pc34, _cr34) in capture_points():
-        est34 = pot_estimate((0.6, 0.6), (1.0, 0.9), _pc34, _cr34,
-                             CFG["CUE_R_M"], ball_r(), 0.0)
-        if est34 is not None:
-            break
-    lv_none = estimate_leave(est34, 2.0, follow=0.0)
-    lv_foll = estimate_leave(est34, 2.0, follow=0.9)
-    lv_draw = estimate_leave(est34, 2.0, follow=-0.9)
-    ok34_spin = (math.dist(lv_none["rest"], lv_foll["rest"]) > 1e-4
-                 and math.dist(lv_none["rest"], lv_draw["rest"]) > 1e-4
-                 and math.dist(lv_foll["rest"], lv_draw["rest"]) > 1e-4)
-    pocket34 = capture_points()[0][0]
-    # NB the table centre sits level with the middle pockets, so a SMALL
-    # non-zero risk there is correct, not a bug -- assert the property that
-    # actually matters (a pocket is drastically riskier than open play), not an
-    # arbitrarily tight magic number.
-    risk_pocket = scratch_risk(pocket34, 0.0)
-    risk_open = scratch_risk((0.9, 0.45), 0.0)     # genuinely open baize
-    ok34_risk = (risk_pocket > 0.7
-                 and risk_open < 0.05
-                 and risk_pocket > 10.0 * max(risk_open, 1e-6)
-                 and 0.0 <= scratch_risk(pocket34, 5.0) <= 1.0
-                 # a fast cue is less likely to drop than one dying in the jaws
-                 and scratch_risk(pocket34, 5.0) < risk_pocket)
-    # safety_quality: leaving the opponent nothing on beats leaving them a sitter
-    rc34, ro34 = CFG["CUE_R_M"], ball_r()
-    q_nothing = safety_quality((0.1, 0.1), [], [], rc34, ro34, 0.0)
-    ok34_safety = (abs(q_nothing - 1.0) < 1e-9      # no opponent balls = perfect
-                   and 0.0 <= safety_quality((1.0, 0.9), [(1.2, 0.9)], [],
-                                             rc34, ro34, 0.01) <= 1.0)
-    check("r9 AI spin/safety/foul-risk — follow, draw and no-spin give three "
-          "different predicted leaves; scratch_risk is high in a pocket and "
-          "~0 in open play; safety_quality is bounded and rewards a dead leave",
-          ok34_spin and ok34_risk and ok34_safety)
-
-    # 35. r10 HUD fine adjustment -- nudge_spin must obey the SAME unit-circle
-    #     spin budget as a pad drag, or the 0.01 buttons could walk the contact
-    #     point outside the circle one step at a time and reach a spin the pad
-    #     itself cannot express.
-    f35, s35 = nudge_spin(0.0, 0.0, 0.01, 0.0)
-    ok35_step = abs(f35 - 0.01) < 1e-9 and abs(s35) < 1e-9
-    # walk hard against the rim: must clamp TO the circle, never past it
-    f, s = 0.0, 0.0
-    for _ in range(400):
-        f, s = nudge_spin(f, s, 0.01, 0.01)
-    ok35_clamp = math.hypot(f, s) <= 1.0 + 1e-9
-    # and starting outside, it must pull back onto the circle, not stay out
-    f36, s36 = nudge_spin(0.9, 0.9, 0.0, 0.0)
-    ok35_pull = math.hypot(f36, s36) <= 1.0 + 1e-9
-    check("r10 spin nudge — 0.01 steps apply exactly, and repeated nudges clamp "
-          "to the unit circle rather than escaping the pad's physical budget",
-          ok35_step and ok35_clamp and ok35_pull)
-
-    # 36. r10 custom mode -- placement legality. A ball may not be dropped in a
-    #     rail, inside a pocket's capture radius (it would just vanish the
-    #     instant physics resumed), or overlapping another ball.
-    rr = ball_r()
-    x0r, y0r, x1r, y1r = play_rect()
-    centre36 = ((x0r + x1r) / 2.0, (y0r + y1r) / 2.0)
-    ok36_open = can_place_ball(centre36, [], rr, [])
-    ok36_overlap = not can_place_ball(centre36, [(centre36, rr)], rr, [rr])
-    ok36_pocket = not can_place_ball(capture_points()[0][0], [], rr, [])
-    ok36_rail = not can_place_ball((x0r - 0.05, centre36[1]), [], rr, [])
-    # just clear of an existing ball IS legal -- the rule must not be so strict
-    # that a legitimate tight cluster becomes unplaceable
-    near36 = (centre36[0] + 2 * rr + 0.002, centre36[1])
-    ok36_near = can_place_ball(near36, [(centre36, rr)], rr, [rr])
-    check("r10 ball placement — open baize OK; rail, pocket and overlap all "
-          "rejected; a legitimately tight (but clear) neighbour still allowed",
-          ok36_open and ok36_overlap and ok36_pocket and ok36_rail and ok36_near)
-
-    # 37. r10 layout save/load -- must round-trip exactly, in METRES (a layout
-    #     saved at one window size has to load identically at another), and must
-    #     survive a corrupt/hand-edited file by dropping bad entries, not raising.
-    balls37 = [("cue", (0.5, 0.4)), ("red", (1.0, 0.9)), ("black", (1.4, 0.5))]
-    round37 = deserialise_layout(serialise_layout(balls37))
-    ok37_round = (len(round37) == 3
-                  and round37[0][0] == "cue"
-                  and abs(round37[1][1][0] - 1.0) < 1e-9
-                  and round37 == balls37)
-    ok37_json = deserialise_layout(json.loads(json.dumps(
-        serialise_layout(balls37)))) == balls37          # survives a real JSON trip
-    ok37_bad = (deserialise_layout({"balls": [
-                    {"kind": "purple", "x": 1.0, "y": 1.0},   # unknown kind
-                    {"kind": "red", "x": "nope", "y": 1.0},   # unparseable
-                    {"kind": "red"},                          # missing keys
-                    {"kind": "red", "x": 1.0, "y": 0.5},      # the one good one
-                ]}) == [("red", (1.0, 0.5))]
-                and deserialise_layout({}) == []
-                and deserialise_layout(None) == [])
-    check("r10 layout persistence — round-trips exactly through JSON in metres, "
-          "and a corrupt file drops bad entries instead of raising",
-          ok37_round and ok37_json and ok37_bad)
-
-    # 38. r11 persistent status strip -- wrap_fields is what makes a 6-field
-    #     readout fit a 260px column at all, so it gets tested directly: it must
-    #     pack greedily, never exceed the width, never DROP a field, and never
-    #     hang on a field too wide to fit (which must still get its own line --
-    #     a clipped readout beats a silently missing one).
-    f38 = ["aaa", "bbb", "ccc", "ddd"]
-    packed = wrap_fields(f38, 8)                     # "aaa  bbb" == 8 chars
-    ok38_pack = packed == ["aaa  bbb", "ccc  ddd"]
-    ok38_nodrop = all(any(f in ln for ln in wrap_fields(f38, 8)) for f in f38)
-    ok38_width = all(len(ln) <= 8 for ln in wrap_fields(f38, 8))
-    # a single over-wide field: kept, on its own line, no infinite loop
-    ok38_toobig = wrap_fields(["short", "averyverylongfield"], 8) \
-                  == ["short", "averyverylongfield"]
-    ok38_empty = (wrap_fields([], 10) == [] and wrap_fields(["", "a"], 10) == ["a"])
-    # and it must pack by the MEASURE given, not by len -- the renderer passes
-    # pixel widths, and a proportional font makes those two very different
-    ok38_measure = wrap_fields(["ab", "cd"], 10, measure=lambda s: len(s) * 4) \
-                   == ["ab", "cd"]          # "ab  cd" would measure 24 > 10
-    check("r11 status strip — wrap_fields packs greedily within the width, drops "
-          "nothing, honours a custom measure (pixels, not characters), and keeps "
-          "an over-wide field on its own line instead of hanging",
-          ok38_pack and ok38_nodrop and ok38_width and ok38_toobig
-          and ok38_empty and ok38_measure)
-
-    # 39. r12 potted-ball chamber -- chamber_slots must fit a FULL rack (15
-    #     object balls) inside the strip by shrinking the balls, never by
-    #     overflowing, and must keep them in potted ORDER (which is the entire
-    #     point of a real table's glass chamber).
-    d39, xs39 = chamber_slots(3, 300, 20, 4)
-    ok39_small = (abs(d39 - 20) < 1e-9 and len(xs39) == 3
-                  and xs39 == sorted(xs39))          # order preserved, L->R
-    # a full blackball rack must still fit -- balls shrink rather than spill
-    d39f, xs39f = chamber_slots(15, 300, 20, 4)
-    span = (xs39f[-1] + d39f / 2) - (xs39f[0] - d39f / 2)
-    ok39_full = (d39f < 20 and len(xs39f) == 15 and span <= 300 + 1e-9
-                 and xs39f == sorted(xs39f))
-    # never bigger than d_max even with acres of room; degenerate inputs safe
-    d39w, _ = chamber_slots(1, 5000, 20, 4)
-    ok39_cap = abs(d39w - 20) < 1e-9
-    ok39_edge = (chamber_slots(0, 300, 20, 4) == (0, [])
-                 and chamber_slots(5, 0, 20, 4) == (0, []))
-    check("r12 potted chamber — balls sit in potted order, a full 15-ball rack "
-          "fits by shrinking rather than overflowing, size is capped at d_max, "
-          "and empty/zero-width cases are safe",
-          ok39_small and ok39_full and ok39_cap and ok39_edge)
-
-    # 40. r13 ball in hand -- the legal region is the BAULK RECTANGLE (not the
-    #     'D': modern UK pool dropped the D, and blackball gives ball-in-hand
-    #     anywhere in baulk, which is what r9's ruleset implements).
-    bx0, by0, bx1, by1 = baulk_rect()
-    px0, py0, px1, py1 = play_rect()
-    rc40 = CFG["CUE_R_M"]
-    ok40_geom = (abs(bx0 - px0) < 1e-9 and abs(by0 - py0) < 1e-9
-                 and abs(by1 - py1) < 1e-9
-                 and abs(bx1 - (px0 + (px1 - px0) * CFG["BAULK_FRAC"])) < 1e-9
-                 and bx1 < px1)                      # baulk is a strip, not the table
-    deep = ((bx0 + bx1) / 2.0, (by0 + by1) / 2.0)    # middle of baulk
-    beyond = ((bx1 + px1) / 2.0, (by0 + by1) / 2.0)  # past the baulk line
-    ok40_in = in_baulk(deep, rc40) and not in_baulk(beyond, rc40)
-    # a ball STRADDLING the baulk line is not in baulk -- it must be fully behind
-    ok40_straddle = not in_baulk((bx1, (by0 + by1) / 2.0), rc40)
-    ok40_place = (can_place_cue(deep, [], rc40)
-                  and not can_place_cue(beyond, [], rc40)           # outside baulk
-                  and not can_place_cue(deep, [(deep, ball_r())], rc40))  # occupied
-    # every AI candidate must actually lie in baulk -- a grid that generates
-    # illegal candidates would silently shrink the AI's real choice
-    ok40_cands = (len(baulk_candidates()) > 0
-                  and all(in_baulk(c, rc40) for c in baulk_candidates()))
-    check("r13 ball in hand — baulk is the rectangle behind the baulk line (not "
-          "a D), a cue straddling the line isn't in it, placement rejects "
-          "outside-baulk and occupied spots, and every AI candidate is legal",
-          ok40_geom and ok40_in and ok40_straddle and ok40_place and ok40_cands)
-
-    # 41. r14 aim overlay -- the pure cores. pot_chance_colour must run RED at a
-    #     dead shot through AMBER at a coin-flip to GREEN at a certainty (that
-    #     ramp IS the overlay's main signal, so it gets asserted, not eyeballed),
-    #     and aim_taper_alpha must fade with distance rather than sit flat -- a
-    #     uniform hairline is precisely what reads as a 1980s vector overlay.
-    c_dead, c_half, c_on = (pot_chance_colour(0.0), pot_chance_colour(0.5),
-                            pot_chance_colour(1.0))
-    ok41_ends = (c_dead[0] > c_dead[1] and c_dead[0] > c_dead[2]      # red-dominant
-                 and c_on[1] > c_on[0] and c_on[1] > c_on[2])         # green-dominant
-    # green channel must rise monotonically with pot chance, red must fall
-    ramp41 = [pot_chance_colour(i / 10.0) for i in range(11)]
-    ok41_mono = ([c[1] for c in ramp41] == sorted(c[1] for c in ramp41)
-                 and [c[0] for c in ramp41] == sorted((c[0] for c in ramp41),
-                                                      reverse=True))
-    ok41_clamp = (pot_chance_colour(-3.0) == c_dead
-                  and pot_chance_colour(9.0) == c_on)
-    ok41_amber = c_half[0] > 200 and c_half[1] > 120 and c_half[2] < 100
-    # taper: brightest at the cue ball, dimmest at the far end, monotonic
-    taps = [aim_taper_alpha(i, 12) for i in range(12)]
-    ok41_taper = (taps[0] > taps[-1]
-                  and taps == sorted(taps, reverse=True)
-                  and aim_taper_alpha(0, 1) == 210
-                  and all(0 <= a <= 255 for a in taps))
-    check("r14 aim overlay — pot chance ramps red->amber->green monotonically "
-          "and clamps; the aim line tapers with distance instead of sitting flat",
-          ok41_ends and ok41_mono and ok41_clamp and ok41_amber and ok41_taper)
-
-    # 42. r15 study output -- the per-shot record must round-trip through real
-    #     JSON (a record carrying a numpy float or a tuple would serialise fine
-    #     and then blow up a study run 400 games in), and must preserve the two
-    #     fields the whole analysis hangs on: p_pred and potted.
-    plan42 = {"type": "pot", "p": 0.812345, "u": 0.5, "risk": 0.1,
-              "power": 2.5, "follow": 0.7, "side": -0.7}
-    rec42 = make_shot_record(3, 0, "SHARK", "red", plan42, ["red"], "red",
-                             True, None, "potted — continue", False, False,
-                             (0.2, 0.45))
-    back42 = json.loads(json.dumps(rec42))       # must survive a REAL json trip
-    ok42_round = (back42 == rec42
-                  and abs(back42["p_pred"] - 0.8123) < 1e-9
-                  and back42["potted"] == ["red"]
-                  and back42["cue_placed"] == [0.2, 0.45]
-                  and back42["type"] == "pot")
-    ok42_null = (make_shot_record(1, 1, "STEADY", None, {"type": "safety"},
-                                  [], None, False, "no contact", "foul", True,
-                                  True, None)["cue_placed"] is None)
-    check("r15 study record — a shot serialises to real JSON and back "
-          "unchanged, keeping p_pred and potted (the two fields calibration "
-          "depends on), and copes with an open table / no cue placement",
-          ok42_round and ok42_null)
-
-    # 43. r15 study stats -- the Wilson interval is what stops a 12-game result
-    #     being reported as if it meant something, and the calibration binner is
-    #     what tells us whether pot_estimate is honest.
-    lo_s, hi_s = wilson_interval(5, 12)          # the actual r9 study result
-    ok43_noise = lo_s < 0.5 < hi_s               # MUST be inconclusive
-    lo_b, hi_b = wilson_interval(300, 500)       # a real 60% edge at n=500
-    ok43_sig = lo_b > 0.5                        # MUST be significant
-    ok43_bounds = (wilson_interval(0, 10)[0] >= 0.0      # sane at the extremes
-                   and wilson_interval(10, 10)[1] <= 1.0
-                   and wilson_interval(0, 0) == (0.0, 1.0))
-    ok43_narrows = ((wilson_interval(50, 100)[1] - wilson_interval(50, 100)[0])
-                    > (wilson_interval(500, 1000)[1]
-                       - wilson_interval(500, 1000)[0]))   # more n -> tighter
-    # calibration: a perfectly honest model must read back as honest
-    cal_shots = ([{"type": "pot", "p_pred": 0.9, "colour": "red",
-                   "potted": ["red"]}] * 9
-                 + [{"type": "pot", "p_pred": 0.9, "colour": "red",
-                     "potted": []}]
-                 + [{"type": "safety", "p_pred": 0.0, "colour": "red",
-                     "potted": []}] * 5)        # safeties must be EXCLUDED
-    cal = pot_calibration(cal_shots)
-    ok43_cal = (len(cal) == 1 and cal[0][2] == 10          # 10 pots, no safeties
-                and abs(cal[0][3] - 0.9) < 1e-9            # predicted 90%
-                and abs(cal[0][4] - 0.9) < 1e-9)           # actual 90% -> honest
-    # potting the OPPONENT's colour is a foul, not a made pot -- it must not count
-    ok43_opp = (pot_calibration([{"type": "pot", "p_pred": 0.9, "colour": "red",
-                                  "potted": ["yellow"]}])[0][4] == 0.0)
-    check("r15 study stats — Wilson calls 5/12 inconclusive but 300/500 "
-          "significant and tightens with n; calibration bins pots only "
-          "(not safeties) and won't count an opponent's ball as a made pot",
-          ok43_noise and ok43_sig and ok43_bounds and ok43_narrows
-          and ok43_cal and ok43_opp)
-
-    # 44. r16 pot_estimate calibration fix -- the lever-arm term must shrink
-    # the pot chance as cue-throw distance grows, for an OTHERWISE IDENTICAL
-    # straight-on shot (same object ball, same pocket, same fullness=1, same
-    # jitter). Pre-r16 the formula was blind to t_cue entirely (bar a weak,
-    # unrelated decay term), which is the root cause of the 91.5%-predicted/
-    # 18.3%-actual calibration gap the r15 study surfaced.
-    t44, pc44, cap44 = (0.45, 0.455), (1.6, 0.455), 0.032512
-    od44 = vnorm(pc44[0] - t44[0], pc44[1] - t44[1])
-    G44 = (t44[0] - od44[0] * (CFG["CUE_R_M"] + ball_r()),
-           t44[1] - od44[1] * (CFG["CUE_R_M"] + ball_r()))
-    def cp_at(dist):     # place the cue dist behind the ghost ball, dead straight
-        return (G44[0] - od44[0] * dist, G44[1] - od44[1] * dist)
-    est_near = pot_estimate(cp_at(0.05), t44, pc44, cap44,
-                             CFG["CUE_R_M"], ball_r(), 0.011)
-    est_far = pot_estimate(cp_at(1.50), t44, pc44, cap44,
-                            CFG["CUE_R_M"], ball_r(), 0.011)
-    ok44 = (est_near is not None and est_far is not None
-            and abs(est_near["fullness"] - 1.0) < 1e-6
-            and abs(est_far["fullness"] - 1.0) < 1e-6
-            and est_far["p"] < est_near["p"] - 0.3)   # far shot meaningfully harder
-    check("r16 pot_estimate — cue-throw distance narrows the pot chance for "
-          "an otherwise-identical straight shot (the missing lever arm behind "
-          "the r15 calibration gap)",
-          ok44, f"near(t_cue=0.05+contact) p={est_near['p']:.3f}, "
-                f"far(t_cue=1.50+contact) p={est_far['p']:.3f}"
-                if est_near and est_far else "estimate returned None")
-
-    # 45. r17 pocket sensors (perf item 3) -- pocket capture moved from a Python
-    # per-substep distance poll into pymunk sensor shapes. The whole point is
-    # that it is an EXACT substitute, not a lenient one: a plain cap_r sensor
-    # would fire on CIRCLE overlap (distance < cap_r + ball_radius), silently
-    # widening the pocket. Shrinking each sensor by the ball's own radius means
-    # the drop threshold stays exactly "centre within cap_r" -- so a ball just
-    # INSIDE cap_r must drop and one just OUTSIDE must not. This is the pot/
-    # no-pot decision itself, so it gets pinned down rather than assumed.
-    pc45, cap45 = capture_points()[0]
-    def _drops45(frac):
-        s45 = Sim(layout="empty")
-        d45 = cap45 * frac
-        a45 = math.atan2(pc45[1], pc45[0])      # out along the pocket axis
-        s45._add_ball(s45.alloc_id(),
-                      (pc45[0] + math.cos(a45) * d45,
-                       pc45[1] + math.sin(a45) * d45), "red")
-        bid45 = max(s45.balls) if s45.balls else None
-        s45.step(1.0 / 60.0)
-        return bid45 not in s45.balls
-    ok45_in = _drops45(0.50) and _drops45(0.99)     # inside cap_r -> must drop
-    ok45_out = not _drops45(1.01) and not _drops45(2.0)  # outside -> must NOT
-    # the sensor radius maths itself: sensor + ball == the old cap_r threshold
-    ok45_r = all(abs(((cap - CFG["CUE_R_M"]) + CFG["CUE_R_M"]) - cap) < 1e-12
-                 and abs(((cap - ball_r()) + ball_r()) - cap) < 1e-12
-                 for _, cap in capture_points())
-    check("r17 pocket sensors — capture still fires at exactly 'centre within "
-          "cap_r' (a ball just inside drops, just outside does not), so moving "
-          "the test into pymunk's C broad-phase didn't widen the pockets",
-          ok45_in and ok45_out and ok45_r,
-          f"0.99*cap_r drops={_drops45(0.99)}, 1.01*cap_r drops={_drops45(1.01)}")
-
-    # 46. r18 personalities -- the study's two players must differ ONLY on
-    # STRATEGY (threshold/greed/caution), never on SKILL (aim_jitter). A jitter
-    # gap silently turns every AI-vs-AI study into a measure of who aims
-    # straighter rather than whose strategy is better: measured, swapping the
-    # jitter alone (leaving SHARK's whole aggressive playbook intact) moved it
-    # from 90% to 45%. This assertion is what stops that confound creeping back
-    # in the next time someone "makes SHARK a bit sharper".
-    ais46 = default_ais(random.Random(3))
-    jit46 = {a.aim_jitter for a in ais46}
-    ok46_skill = len(jit46) == 1                      # SAME skill, always
-    ok46_strat = (len({a.threshold for a in ais46}) == 2   # different strategy
-                  and len({a.greed for a in ais46}) == 2
-                  and len({a.caution for a in ais46}) == 2)
-    # and the shared value is the one named constant, not a copy-pasted literal
-    ok46_const = jit46 == {STUDY_JITTER}
-    check("r18 personalities — SHARK and STEADY are skill-MATCHED (identical "
-          "aim_jitter) and differ only on strategy, so a study measures "
-          "strategy rather than who aims straighter",
-          ok46_skill and ok46_strat and ok46_const,
-          f"jitter {sorted(jit46)}, thresholds "
-          f"{sorted(a.threshold for a in ais46)}, "
-          f"greeds {sorted(a.greed for a in ais46)}")
-
-    # 47. r19 study geometry -- the shot record must carry the POT GEOMETRY
-    # (cut_deg / t_cue / d_tp), not just p_pred. Without these the calibration
-    # residual is undiagnosable: "are thin cuts over-rated, or long pots?"
-    # cannot be answered, and total distance has to be reverse-engineered out
-    # of the power formula. They must also be None (not 0.0, not a crash) on a
-    # safety, which has no ghost-ball est at all -- 0.0 would silently read as
-    # "a dead-straight shot" in any analysis.
-    est47 = pot_estimate((0.60, 0.60), (0.40, 0.30), capture_points()[0][0],
-                         capture_points()[0][1], CFG["CUE_R_M"], ball_r(),
-                         STUDY_JITTER)
-    plan47 = {"type": "pot", "p": est47["p"], "power": 2.0, "est": est47}
-    rec47 = make_shot_record(1, 0, "SHARK", "red", plan47, [], "red", True,
-                             None, "", False, False, None)
-    # round-trips as real JSON, and the geometry agrees with the estimate
-    r47 = json.loads(json.dumps(rec47))
-    ok47_geo = (abs(r47["t_cue"] - est47["t_cue"]) < 1e-3
-                and abs(r47["d_tp"] - est47["d_tp"]) < 1e-3
-                and abs(r47["cut_deg"]
-                        - math.degrees(math.acos(est47["fullness"]))) < 0.05)
-    safety47 = make_shot_record(2, 1, "STEADY", None, {"type": "safety"}, [],
-                                None, True, None, "", False, False, None)
-    ok47_safe = (safety47["cut_deg"] is None and safety47["t_cue"] is None
-                 and safety47["d_tp"] is None)
-    check("r19 study geometry — the shot record logs cut_deg/t_cue/d_tp so the "
-          "calibration residual can be diagnosed directly instead of inferred, "
-          "and leaves them None on a safety rather than a misleading 0.0",
-          ok47_geo and ok47_safe and STUDY_SCHEMA >= 2,
-          f"cut {rec47['cut_deg']}deg, t_cue {rec47['t_cue']}m, "
-          f"d_tp {rec47['d_tp']}m, schema {STUDY_SCHEMA}")
-
-    # 48. r20 corridor clearance -- the AI was running into balls it had itself
-    # cleared: ~10% of ALL pot attempts struck the wrong ball first (flat across
-    # every confidence bin, so not bad luck on thin cuts), and those attempts
-    # potted at 1.4% while being rated 56%. Two compounding bugs, both pinned
-    # here: (a) the clearance passed was SMALLER than the distance at which two
-    # balls actually graze (a 2mm shave on the cue path, 6mm on the object
-    # path), so a ball inside a real collision was reported clear; and (b) the
-    # check ran on the IDEAL line, which _execute() then perturbs by aim_jitter,
-    # so the AI validated a line it was never going to shoot.
-    rc48, ro48 = CFG["CUE_R_M"], ball_r()
-    graze_cue, graze_obj = rc48 + ro48, 2.0 * ro48
-    # (a) never narrower than a real graze, even with zero jitter / zero throw
-    ok48_graze = (cue_corridor(rc48, ro48, 0.0, 0.0) >= graze_cue - 1e-12
-                  and object_corridor(ro48, 0.0, 0.0) >= graze_obj - 1e-12)
-    # (b) widens with BOTH jitter and throw distance -- the drift is jitter*t_cue
-    ok48_jit = (cue_corridor(rc48, ro48, 0.02, 0.5)
-                > cue_corridor(rc48, ro48, 0.005, 0.5))
-    ok48_len = (cue_corridor(rc48, ro48, 0.011, 1.2)
-                > cue_corridor(rc48, ro48, 0.011, 0.2))
-    # and the allowance is really CORRIDOR_SIGMA_K sigma of the lateral drift
-    ok48_k = abs((cue_corridor(rc48, ro48, 0.011, 0.9) - graze_cue)
-                 - CORRIDOR_SIGMA_K * 0.011 * 0.9) < 1e-12
-    # a ball sitting exactly at the graze distance must NOT be called clear
-    ok48_rej = not corridor_clear((0.0, 0.455), (0.9, 0.455),
-                                  cue_corridor(rc48, ro48, 0.011, 0.9),
-                                  [(0.45, 0.455 + graze_cue)])
-    check("r20 corridor clearance — the corridor is never narrower than a real "
-          "ball-to-ball graze, and widens with aim jitter and throw distance, "
-          "so the AI stops clearing lines it isn't going to shoot",
-          ok48_graze and ok48_jit and ok48_len and ok48_k and ok48_rej,
-          f"cue graze {graze_cue*1000:.1f}mm -> corridor at 0.9m/0.011rad "
-          f"{cue_corridor(rc48, ro48, 0.011, 0.9)*1000:.1f}mm")
-
-    # 49. r21 calibration population -- a calibration table is only meaningful
-    # over COMPARABLE attempts. On a free shot (r9) any ball may legally be
-    # struck first, so the AI will happily cannon into an opponent's ball if
-    # that's the best line -- it is using the rule, not misplaying. Scoring
-    # pot_estimate against those shots silently drags 'actual' down and makes
-    # the model look worse than it is. This pins the exclusion so a later
-    # refactor can't quietly readmit them.
-    free49 = [{"type": "pot", "p_pred": 0.9, "colour": "red", "potted": [],
-               "free_shot": True} for _ in range(20)]      # all MISSED
-    norm49 = [{"type": "pot", "p_pred": 0.9, "colour": "red", "potted": ["red"],
-               "free_shot": False} for _ in range(10)]     # all POTTED
-    cal49 = pot_calibration(free49 + norm49)
-    top49 = [row for row in cal49 if row[0] >= 0.8]
-    # with free shots excluded the top bin sees ONLY the 10 normal shots -> 100%
-    ok49 = (len(top49) == 1 and top49[0][2] == 10
-            and abs(top49[0][4] - 1.0) < 1e-9)
-    # and the free shots really would have wrecked it if left in
-    contaminated = sum(1 for s in free49 + norm49 if s["type"] == "pot")
-    check("r21 calibration population — free shots are excluded from the "
-          "calibration table (any ball may legally be struck first on one), so "
-          "pot_estimate is scored only over comparable pot attempts",
-          ok49 and contaminated == 30,
-          f"top bin n={top49[0][2] if top49 else 0} of {contaminated} records, "
-          f"actual={top49[0][4]*100 if top49 else 0:.0f}%")
-
-    # 50. r22 chamber history -- the potted-ball chamber must show the WHOLE
-    # game in pot order. It read potted_log, which strike() deliberately wipes
-    # every shot (r9, so the rules can judge THIS shot's fouls), so it only ever
-    # showed the last shot's pots -- "one ball, then it disappears". potted_all
-    # is game-scoped and survives strike(); potted_log KEEPS its old meaning,
-    # because the rules engine depends on it being shot-scoped.
-    s50 = Sim(layout="empty")
-    s50._add_ball(s50.CUE_ID, (0.30, 0.455), "cue")
-    pot50 = capture_points()[0][0]
-    order50 = ["red", "yellow", "red"]
-    for i, col in enumerate(order50):
-        bid = s50.alloc_id()
-        s50._add_ball(bid, (0.60 + 0.10 * i, 0.30), col)
-        s50.strike((1.0, 0.0), 1.0)        # wipes potted_log every time
-        s50.balls[bid][0].position = pot50  # drop it straight in the pocket
-        s50.step(1.0 / 60.0)
-    ok50_all = s50.potted_colours_all() == order50      # full history, in order
-    ok50_shot = len(s50.potted_colours()) <= 1          # still shot-scoped
-    check("r22 chamber history — the chamber's list is GAME-scoped and keeps "
-          "every potted ball in order, while the rules' shot-scoped potted_log "
-          "still resets on each strike",
-          ok50_all and ok50_shot,
-          f"game {s50.potted_colours_all()}, shot {s50.potted_colours()}")
-
-    # 51. r22 placement invariants -- a REGRESSION GUARD, written after an
-    # attempted "let balls sit on the jaws" fix (a circular pocket-mouth
-    # exemption from the rail rule) turned out to leak ALONG the cushions: the
-    # middle pockets' mouth circles reach out over the bottom/top rails, so a
-    # ball centre 15mm from a rail -- which must be impossible for a 25.4mm
-    # ball -- became legal. That fix was reverted. These two invariants are what
-    # any future attempt must not break:
-    #   (a) a ball can never be placed where the pocket would instantly eat it
-    #   (b) a ball can never be embedded in a rail
-    # NOTE: the jaws limitation this guard was written alongside is RESOLVED at
-    # r24 -- can_place_ball now tests the real cushion-nose polyline, so a ball
-    # CAN be set on a pocket lip. These two invariants still hold and still
-    # matter, which is why the guard stays:
-    #   (a) a ball can never be placed where the pocket would instantly eat it
-    #   (b) a ball can never be embedded in a rail (a TRUE rail, not a mouth)
-    # The old "embedded" probe point (0.91, 0.015) sat in the top-middle
-    # POCKET MOUTH, which r24 now legitimately makes placeable -- so it is moved
-    # to a genuine straight-rail spot, well clear of any pocket, where a centre
-    # closer than a ball radius to the nose is still an embed and must be
-    # rejected. Do not reach for another margin fudge (see r22's reverted try).
-    r51 = ball_r()
-    pc51, cap51 = capture_points()[0]
-    ang51 = math.atan2(0.455 - pc51[1], 0.91 - pc51[0])
-    in_pocket51 = can_place_ball(
-        (pc51[0] + math.cos(ang51) * cap51 * 0.5,
-         pc51[1] + math.sin(ang51) * cap51 * 0.5), [], r51, [])
-    # a genuine straight-rail spot (well clear of any pocket mouth): a centre
-    # 10mm from the top rail is INSIDE the cushion and must stay rejected.
-    embedded51 = can_place_ball((0.30 * CFG["PLAY_W_M"], 0.010), [], r51, [])
-    clear51 = can_place_ball((0.91, 0.455), [], r51, [])      # open table: fine
-    check("r22 placement invariants — a ball can never be placed inside a "
-          "pocket's capture zone, nor embedded in a rail (the mouth-exemption "
-          "attempt broke the latter and was reverted)",
-          (not in_pocket51) and (not embedded51) and clear51,
-          f"in-pocket={in_pocket51}, embedded-in-rail={embedded51}, "
-          f"open-table={clear51}")
-
-    # 52. r23 BUG 1 -- turn handover. legal_colours() is asked, from on_rest(),
-    #     what was legal WHEN THE SHOT WAS PLAYED, but the shot's pots are
-    #     already off the table by then. Potting your LAST colour therefore made
-    #     remaining(own) read 0, legal_colours returned ["black"], and the
-    #     striker's own colour became an illegal first contact retrospectively
-    #     -- a phantom "wrong ball first" foul that handed the visit back
-    #     instead of letting them shoot the black.
-    class _RemSim:
-        """Minimal stand-in: only remaining() matters to legal_colours."""
-        def __init__(self, rem):
-            self._rem = rem
-        def remaining(self, colour):
-            return self._rem
-
-    g52 = Game()
-    g52.colours = {0: "red", 1: "yellow"}
-    g52.current = 0
-    # THE BUG: table shows 0 reds because the last one just went down this shot.
-    last_colour52 = g52.legal_colours(_RemSim(0), potted_this_shot=["red"])
-    # Live callers pass nothing and must be untouched -- a genuinely cleared
-    # table really is on the black.
-    cleared52 = g52.legal_colours(_RemSim(0))
-    # Mid-game pot: still reds left, still on reds.
-    midgame52 = g52.legal_colours(_RemSim(2), potted_this_shot=["red"])
-    # Potting the OPPONENT'S colour must not keep you on your own once cleared.
-    wrong52 = g52.legal_colours(_RemSim(0), potted_this_shot=["yellow"])
-    # Double pot of the last two reds is still "was on reds".
-    double52 = g52.legal_colours(_RemSim(0), potted_this_shot=["red", "red"])
-    # A scratch alongside the last red does not change what was legal.
-    scratch52 = g52.legal_colours(_RemSim(0), potted_this_shot=["red", "cue"])
-    check("r23 turn handover — potting your LAST colour leaves your own colour "
-          "legal for the shot just played, so the visit continues to the black "
-          "instead of being handed back on a phantom foul",
-          last_colour52 == ["red"] and cleared52 == ["black"]
-          and midgame52 == ["red"] and wrong52 == ["black"]
-          and double52 == ["red"] and scratch52 == ["red"],
-          f"last-red={last_colour52}, cleared={cleared52}, mid={midgame52}, "
-          f"opp-colour={wrong52}, double={double52}, scratch={scratch52}")
-
-    # 53. r23 BUG 2 -- spin not resetting between shots. do_shoot() read the
-    #     HUD's spin and never cleared it, so the same value was re-sent on
-    #     every subsequent shot and the SpinPad would not de-select. The pure
-    #     core is tested directly; the closure that uses it is not testable
-    #     headless.
-    a53, b53, r53a, r53b = shot_spin_and_reset(-0.6, 0.4)
-    # Simulate two shots through the helper the way do_shoot does.
-    side53, follow53 = 0.0, -0.8
-    used53 = []
-    for _ in range(2):
-        u_s, u_f, side53, follow53 = shot_spin_and_reset(side53, follow53)
-        used53.append((u_s, u_f))
-    check("r23 spin reset — the spin chosen is applied to THIS shot and then "
-          "cleared, so it cannot silently carry into the next one",
-          (a53, b53) == (-0.6, 0.4) and (r53a, r53b) == (0.0, 0.0)
-          and used53[0] == (0.0, -0.8) and used53[1] == (0.0, 0.0),
-          f"applied={(a53, b53)}, reset={(r53a, r53b)}, "
-          f"shot1={used53[0]}, shot2={used53[1]}")
-
-    # 54. r23 BUG 3 -- cue ball could not be repositioned. Three coupled
-    #     pieces: the sim auto-respotted the white before the rules could grant
-    #     ball-in-hand; on_rest never set ball_in_hand back True on a foul; and
-    #     both placement paths could only MOVE an existing cue, not re-add a
-    #     missing one.
-    sandbox54 = Sim(layout="empty")           # regression guard: unchanged
-    game_sim54, g54 = new_game(controllers=("human", "ai"))
-    # A plain wrong-ball foul (no scratch) must still grant ball in hand.
-    g54.colours = {0: "red", 1: "yellow"}
-    g54.current = 0
-    g54.ball_in_hand = False
-    g54.on_rest(_FakeSimFull("yellow", True, [], remaining=3))
-    foul_bih54 = g54.ball_in_hand
-    # And so must a scratch.
-    g54b = Game(controllers=("human", "ai"))
-    g54b.colours = {0: "red", 1: "yellow"}
-    g54b.current = 0
-    g54b.ball_in_hand = False
-    g54b.on_rest(_FakeSimFull("red", True, ["cue"], remaining=3))
-    scratch_bih54 = g54b.ball_in_hand
-    # The AI must be able to place a cue ball that is genuinely absent.
-    ai54 = PoolAI("T", aim_jitter=0.0)
-    body54, shape54 = game_sim54.balls.pop(Sim.CUE_ID)
-    game_sim54.space.remove(body54, shape54)
-    placed54 = ai54.place_cue(game_sim54, ["red", "yellow"])
-    readded54 = game_sim54.cue() is not None
-    check("r23 cue repositioning — a rules-driven sim leaves a potted cue OFF "
-          "the table (a bare sandbox Sim still respots), any foul grants ball "
-          "in hand, and the AI can re-add a cue that is genuinely absent",
-          sandbox54.auto_respot is True and game_sim54.auto_respot is False
-          and foul_bih54 and scratch_bih54
-          and placed54 is not None and readded54,
-          f"sandbox-respots={sandbox54.auto_respot}, "
-          f"game-respots={game_sim54.auto_respot}, foul-bih={foul_bih54}, "
-          f"scratch-bih={scratch_bih54}, ai-replaced={readded54}")
-
-    # 55. r23 follow-up -- sandbox ball in hand. "People play solo on pool
-    #     tables": sandbox has no Game object, so it had no ball-in-hand concept
-    #     at all and the white was simply respotted for you. The pure predicate
-    #     that drives it is tested here; the closure state it feeds is not
-    #     testable headless.
-    pot_cue55 = [(Sim.CUE_ID, "cue", (0.1, 0.1), 0.024)]
-    pot_red55 = [(3, "red", (0.1, 0.1), 0.0254)]
-    check("r23 sandbox ball in hand — a scratch is read straight off the sim's "
-          "own pot events, so solo play gets the white back in hand instead of "
-          "having it respotted for them",
-          cue_was_potted(pot_cue55, Sim.CUE_ID) is True
-          and cue_was_potted(pot_red55, Sim.CUE_ID) is False
-          and cue_was_potted([], Sim.CUE_ID) is False
-          and cue_was_potted(pot_red55 + pot_cue55, Sim.CUE_ID) is True,
-          f"cue-potted={cue_was_potted(pot_cue55, Sim.CUE_ID)}, "
-          f"red-only={cue_was_potted(pot_red55, Sim.CUE_ID)}, "
-          f"empty={cue_was_potted([], Sim.CUE_ID)}")
-
-    # 56. r24 jaws placement -- the point of the feature: a ball CAN now be set
-    #     on a pocket lip, because containment is tested against the real
-    #     cushion-nose polyline (nose_loop_m) instead of a play_rect rectangle
-    #     that walled off the mouths. The two r22 invariants (no in-throat drop,
-    #     no rail embedding) are re-checked right here so the feature can't quietly
-    #     reopen either hole. Coordinates are the ones the geometry probe found.
-    r56 = ball_r()
-    W56, H56 = CFG["PLAY_W_M"], CFG["PLAY_H_M"]
-    tm_lip56 = (W56 / 2.0, 0.012)          # a hanger on the top-middle lip
-    bm_lip56 = (W56 / 2.0, H56 - 0.012)    # ... and the bottom-middle lip
-    # the rectangle rule these replace would have rejected both, the centre
-    # being nearer the rail line than a ball radius:
-    old_walled56 = (0.012 < r56) and (H56 - 0.012 > H56 - r56)
-    lip_ok56 = (can_place_ball(tm_lip56, [], r56, [])
-                and can_place_ball(bm_lip56, [], r56, []))
-    throat_rej56 = not can_place_ball((W56 / 2.0, -0.030), [], r56, [])  # in throat
-    rail_rej56 = not can_place_ball((0.30 * W56, 0.010), [], r56, [])    # true rail
-    check("r24 jaws placement — a hanger can now be set on a pocket lip "
-          "(containment tested against the real cushion-nose polyline, not a "
-          "rectangle), while a ball in the throat or embedded in a rail stays "
-          "rejected",
-          lip_ok56 and old_walled56 and throat_rej56 and rail_rej56,
-          f"lips-now-legal={lip_ok56}, rectangle-would-wall={old_walled56}, "
-          f"throat-rejected={throat_rej56}, rail-rejected={rail_rej56}")
-
-    # 57. r25 pot_estimate distance floor (KNOWN_ISSUES #2) -- the AI was
-    #     rating a real ~19%-to-drop long/thin shot at under 2%, and declining
-    #     it outright. Same dead-straight rig as check 44 (fixed fullness=1.0
-    #     so only t_cue varies): at t_cue=1.50+contact the aim-error term alone
-    #     is already near zero (this is the exact regression check 44 measures
-    #     as "far shot meaningfully harder" -- it must STAY meaningfully harder,
-    #     just not harder than the floor), so the result must be pulled up to
-    #     exactly POT_FLOOR. At t_cue=0.05+contact the aim-error term is well
-    #     above the floor, so max() must leave it alone -- the fix must not
-    #     inflate short shots the model already had right.
-    t57, pc57, cap57 = (0.45, 0.455), (1.6, 0.455), 0.032512
-    od57 = vnorm(pc57[0] - t57[0], pc57[1] - t57[1])
-    G57 = (t57[0] - od57[0] * (CFG["CUE_R_M"] + ball_r()),
-           t57[1] - od57[1] * (CFG["CUE_R_M"] + ball_r()))
-    def cp_at57(dist):
-        return (G57[0] - od57[0] * dist, G57[1] - od57[1] * dist)
-    est_near57 = pot_estimate(cp_at57(0.05), t57, pc57, cap57,
-                              CFG["CUE_R_M"], ball_r(), 0.011)
-    est_far57 = pot_estimate(cp_at57(1.50), t57, pc57, cap57,
-                             CFG["CUE_R_M"], ball_r(), 0.011)
-    ok57 = (est_near57 is not None and est_far57 is not None
-            and abs(est_far57["p"] - POT_FLOOR) < 1e-9
-            and est_near57["p"] > POT_FLOOR + 0.3)   # nowhere near the floor
-    check("r25 pot_estimate distance floor — a long/thin shot the aim-error "
-          "term alone rates near-zero is pulled up to the measured POT_FLOOR "
-          "rather than left to decay to nothing, while a short shot the model "
-          "already had right is untouched",
-          ok57, f"near(t_cue=0.05+contact) p={est_near57['p']:.3f}, "
-                f"far(t_cue=1.50+contact) p={est_far57['p']:.3f}, "
-                f"POT_FLOOR={POT_FLOOR}"
-                if est_near57 and est_far57 else "estimate returned None")
-
-    # 58. r27 chamber reset -- the sandbox chamber accumulated across frames,
-    #     because nothing ever cleared the game-scoped potted_all despite its
-    #     own comment promising "only a rebuild/new rack resets it". Both
-    #     halves are pinned, and the second is the one that matters: a rebuild
-    #     that CARRIES POSITIONS (the live B/E/F sliders) must NOT clear the
-    #     chamber, or the over-broad version of this fix wipes the frame you
-    #     are in the middle of playing.
-    sim58 = Sim(layout="empty")
-    sim58.potted_all = [3, 4]
-    sim58.potted_log = [4]
-    sim58.rack()                                  # T -- new frame
-    after_rack58 = (list(sim58.potted_all), list(sim58.potted_log))
-    sim58.potted_all = [5]
-    sim58.clear_objects()                         # C / custom-mode clear
-    after_clear58 = list(sim58.potted_all)
-    sim58.potted_all = [6]
-    sim58.rebuild()                               # R -- fresh table
-    after_reset58 = list(sim58.potted_all)
-    sim58.potted_all = [7]
-    keep58 = {bid: tuple(b.position) for bid, (b, _) in sim58.balls.items()}
-    sim58.rebuild(keep_positions=keep58)          # B/E/F slider -- frame survives
-    after_slider58 = list(sim58.potted_all)
-    check("r27 chamber reset — emptying the table empties the potted-ball "
-          "chamber (a re-rack, reset or clear starts a new frame), while a "
-          "live-slider rebuild that keeps every ball in place keeps the "
-          "chamber too",
-          after_rack58 == ([], []) and after_clear58 == []
-          and after_reset58 == [] and after_slider58 == [7],
-          f"after rack={after_rack58[0]}/log={after_rack58[1]}, "
-          f"after clear={after_clear58}, after reset={after_reset58}, "
-          f"after slider rebuild={after_slider58}")
-
-    # 59. r26 guard -- STEADY's attempt threshold must sit ABOVE POT_FLOOR.
-    #     This pins the r26 bug as an invariant rather than checking a value:
-    #     when both thresholds sat below the floor, every geometrically valid
-    #     long/thin shot read as exactly POT_FLOOR and cleared BOTH of them
-    #     identically (measured at 30.6% of all AI shots), so `threshold` could
-    #     no longer reject anything and the two personalities played the same
-    #     for a third of the game. POT_FLOOR is explicitly flagged for
-    #     re-derivation (see its comment: per-d_tp, per-pocket), so the number
-    #     most likely to move is the FLOOR, not the threshold -- and if it ever
-    #     rises past STEADY's, the bug returns silently. SHARK is deliberately
-    #     NOT guarded: attempting a genuine ~19% shot is in character for it.
-    ais59 = {a.name: a.threshold for a in default_ais()}
-    check("r26 guard — STEADY's attempt threshold stays clear of POT_FLOOR, so "
-          "it can still refuse a bare-floor pot and play the safety instead "
-          "(the r26 bug was both personalities' thresholds sitting under the "
-          "floor, leaving threshold unable to reject anything)",
-          ais59["STEADY"] > POT_FLOOR,
-          f"STEADY threshold={ais59['STEADY']}, POT_FLOOR={POT_FLOOR}, "
-          f"margin={ais59['STEADY'] - POT_FLOOR:.3f} "
-          f"(SHARK={ais59['SHARK']}, deliberately below)")
-
-    # 60. r28 SCRIPTED PLAY-THROUGH -- a whole frame driven through the rules
-    #     engine, asserting the turn, visit, spin and placement state after
-    #     every shot.
-    #
-    #     Why this exists: the last five bugs to reach the Maker (turn
-    #     handover, spin reset, cue repositioning, sandbox ball-in-hand, the
-    #     potted-ball chamber) ALL passed the entire validation chain and were
-    #     found by playing. Every assertion above tests one function in
-    #     isolation; a frame is a state machine, and its bugs live in the
-    #     ORDERING -- what the previous shot left behind. Nothing here tested
-    #     shot N+1 against the state shot N produced, so nothing could catch
-    #     them.
-    #
-    #     Three deliberate design choices:
-    #
-    #     (a) Shot OUTCOMES are synthesised against a REAL Sim rather than
-    #         played out in physics. The rules layer reads exactly four things
-    #         from the sim -- first_contact, cushion_after_contact,
-    #         potted_colours() and remaining() -- so a frame can be driven by
-    #         setting three fields and removing balls. That keeps this
-    #         deterministic and cross-platform (a physics-driven frame would be
-    #         float-sensitive, the same property that makes a seeded --aigame
-    #         score a per-machine check rather than an absolute) and fast
-    #         enough to stay in the chain. The cost, stated honestly: this
-    #         tests the rules against the events the engine is BELIEVED to
-    #         emit. It cannot catch the physics emitting something else.
-    #     (b) It asserts NAMED INVARIANTS, not a frozen golden trace. A golden
-    #         would catch more, but rewrites a large literal on every
-    #         deliberate change and freezes in whatever was wrong at capture --
-    #         the trap selftest #22 fell into at r16, when positions tuned
-    #         against a broken pot model had to be re-frozen once it was fixed.
-    #     (c) The full per-shot trace prints ONLY on failure, so a break
-    #         diagnoses itself instead of needing a debugger reproduction.
-    #
-    #     The shot-by-shot script is a real frame: dry break, open-table pot
-    #     that assigns colours, a continuation, a miss that hands over, a
-    #     wrong-ball foul, the free shot and second visit that foul buys, the
-    #     LAST colour of a suit, and the black.
-    sim60 = Sim(layout="empty")
-    _x0, _y0, _x1, _y1 = play_rect()
-    _w, _h = _x1 - _x0, _y1 - _y0
-    sim60._add_ball(sim60.CUE_ID, (_x0 + _w * 0.22, _y0 + _h * 0.5), "cue")
-    for _n, (_bid, _col) in enumerate([(1, "red"), (2, "red"), (3, "red"),
-                                       (4, "yellow"), (5, "yellow"),
-                                       (6, "yellow"), (7, "black")]):
-        sim60._add_ball(_bid, (_x0 + _w * (0.45 + 0.05 * _n), _y0 + _h * 0.5), _col)
-    g60 = Game(controllers=("human", "ai"))
-    trace60 = []
-
-    def _shot60(label, first_contact, cushion, pots=(), side=0.0, follow=0.0):
-        """One shot: reset the shot-scoped facts exactly as strike() does,
-        apply the outcome, then let the rules judge it."""
-        sim60.potted_log = []
-        sim60.first_contact = None
-        sim60.cushion_after_contact = False
-        applied = shot_spin_and_reset(side, follow)
-        for _b in pots:                      # mirrors _capture_pockets' removal
-            _body, _shape = sim60.balls.pop(_b)
-            sim60.space.remove(_body, _shape)
-            sim60.potted_log.append(_b)
-            sim60.potted_all.append(_b)
-        sim60.first_contact = first_contact
-        sim60.cushion_after_contact = cushion
-        g60.on_rest(sim60)
-        st = {"current": g60.current, "visits_left": g60.visits_left,
-              "free_shot": g60.free_shot, "bih": g60.ball_in_hand,
-              "over": g60.over, "winner": g60.winner,
-              "colours": dict(g60.colours), "chamber": sim60.potted_colours_all(),
-              "spin_applied": applied[:2], "spin_reset": applied[2:],
-              "event": g60.last_event}
-        trace60.append((label, st))
-        return st
-
-    a60 = _shot60("1 break, dry", "red", True, side=0.3, follow=0.5)
-    b60 = _shot60("2 P1 pots red (open table)", "red", True, pots=[1])
-    c60 = _shot60("3 P1 pots red again", "red", True, pots=[2])
-    d60 = _shot60("4 P1 misses", "red", True)
-    e60 = _shot60("5 P0 wrong ball first", "red", True)
-    f60 = _shot60("6 P1 free shot, misses", "yellow", True)
-    g_60 = _shot60("7 P1 pots LAST red", "red", True, pots=[3])
-    h60 = _shot60("8 P1 pots black cleanly", "black", True, pots=[7])
-
-    inv60 = [
-        ("a dry break is a legal miss — turn passes and the break's "
-         "ball-in-hand is consumed",
-         a60["current"] == 1 and a60["visits_left"] == 1 and a60["bih"] is False),
-        ("the first potted colour assigns suits to the potter",
-         b60["colours"] == {1: "red", 0: "yellow"}),
-        ("potting your own colour keeps you at the table",
-         b60["current"] == 1 and c60["current"] == 1),
-        ("a legal miss on a single visit hands the table over",
-         d60["current"] == 0),
-        ("a foul passes the table AND pays the penalty: free shot, two "
-         "visits, ball in hand",
-         e60["current"] == 1 and e60["free_shot"] is True
-         and e60["visits_left"] == 2 and e60["bih"] is True),
-        ("the free shot and ball-in-hand are consumed by the shot itself",
-         f60["free_shot"] is False and f60["bih"] is False),
-        ("missing on the second visit spends it but the striker STAYS",
-         f60["current"] == 1 and f60["visits_left"] == 1),
-        ("r23: potting the LAST ball of your colour is not a phantom "
-         "wrong-ball foul — the striker continues, on the black",
-         g_60["current"] == 1 and g_60["over"] is False),
-        ("the black after clearing your colour wins the frame",
-         h60["over"] is True and h60["winner"] == 1),
-        ("r27: the chamber carries the whole frame, in pot order",
-         h60["chamber"] == ["red", "red", "red", "black"]),
-        ("r23: spin applies as aimed, then resets to zero rather than "
-         "re-sending itself on the next shot",
-         a60["spin_applied"] == (0.3, 0.5) and a60["spin_reset"] == (0.0, 0.0)),
-    ]
-    bad60 = [nm for nm, ok in inv60 if not ok]
-    if bad60:                       # (c) the trace is a debugger, not an assertion
-        print("    play-through trace:")
-        for _lab, _st in trace60:
-            print(f"      {_lab:<28} cur={_st['current']} vis={_st['visits_left']} "
-                  f"free={str(_st['free_shot']):<5} bih={str(_st['bih']):<5} "
-                  f"over={str(_st['over']):<5} win={_st['winner']} "
-                  f"chamber={_st['chamber']} | {_st['event']}")
-    check("r28 scripted play-through — a whole frame driven shot by shot "
-          "through the rules engine, asserting turn, visit, spin and "
-          "placement state after every shot (the layer where all five "
-          "play-found bugs lived, and the one no isolated assertion reached)",
-          not bad60,
-          f"{len(inv60) - len(bad60)}/{len(inv60)} invariants over "
-          f"{len(trace60)} shots"
-          + (f"; FAILED: {bad60}" if bad60 else ""))
-
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
 
@@ -6219,31 +3038,18 @@ def main():
     ap.add_argument("--batch", type=int, metavar="N", help="run N random strikes headless")
     ap.add_argument("--breaks", type=int, metavar="N", help="break analyser, N trials per config")
     ap.add_argument("--aigame", type=int, metavar="N", help="run N headless AI vs AI games")
-    ap.add_argument("--jsonl", metavar="FILE",
-                    help="with --aigame: write a per-shot study log, one game "
-                         "per line, for external analysis")
-    ap.add_argument("--seed", type=int, default=1000, metavar="S",
-                    help="base RNG seed for --aigame (game i uses S+i), so a "
-                         "study is reproducible")
     ap.add_argument("--smoke", action="store_true", help="GUI smoke on dummy video driver")
     ap.add_argument("--snap", metavar="FILE", help="headless smoke run, save screenshot PNG")
-    ap.add_argument("--sound-probe", nargs="?", const=".", metavar="DIR",
-                    help="write every sound voice to WAV (no mixer, no game) "
-                         "so they can be auditioned directly")
     args = ap.parse_args()
 
     if args.selftest:
         sys.exit(0 if selftest() else 1)
-    if args.sound_probe:
-        sound_probe(args.sound_probe)
-        sys.exit(0)
     if args.batch:
         sys.exit(0 if batch(args.batch) else 1)
     if args.breaks:
         sys.exit(0 if break_analysis(args.breaks) else 1)
     if args.aigame:
-        sys.exit(0 if aigame_batch(args.aigame, jsonl=args.jsonl,
-                                   seed=args.seed) else 1)
+        sys.exit(0 if aigame_batch(args.aigame) else 1)
     if args.snap:
         frames = run_gui(smoke=True, smoke_frames=90, snap_path=args.snap)
         print(f"smoke: rendered {frames} frames OK")
