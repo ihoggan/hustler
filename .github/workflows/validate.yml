@@ -1,5 +1,12 @@
 name: Validate
 
+# The --snap baseline. Byte-identical since R6.1 and verified on every push:
+# it is the only automated guard on the rendered scene. If you are DELIBERATELY
+# re-capturing the baseline, change this hash in the same commit and say so in
+# the commit message -- that is the whole point of it living here.
+env:
+  SNAP_MD5: 62c87ddb6d1f0ee36f36a71a5000cd5f
+
 on:
   push:
     branches: [ main, develop ]
@@ -43,10 +50,12 @@ jobs:
       run: |
         python3 hustler.py --smoke
 
-    - name: Snapshot render (headless)
-      continue-on-error: true
+    - name: Snapshot render + byte-identical check (headless)
       run: |
         python3 hustler.py --snap /tmp/baseline.png
+        echo "expected: $SNAP_MD5"
+        echo "actual  : $(md5sum /tmp/baseline.png | cut -d' ' -f1)"
+        echo "$SNAP_MD5  /tmp/baseline.png" | md5sum -c -
 
     - name: Check cushion_path.py standalone
       run: |
