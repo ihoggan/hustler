@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r28 — playable, validated, no known blocking bugs.
+**Status:** r29 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~6,260 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~6,360 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r28
+## Validation snapshot at r29
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 68 assertions |
+| `--selftest` | ALL PASS — 69 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -59,12 +59,12 @@ them remains accurate as history and the engine facts in §3 are still current
 and still worth reading — but roughly sixteen revisions of work happened
 afterwards. That later work is documented in:
 
-- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r28
+- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r29
 - [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — the three open threads, each with its diagnosis
 - [ROADMAP.md](ROADMAP.md) — what's under discussion and what it depends on
 - [CONTRIBUTING.md](CONTRIBUTING.md) — workflow, standards, and the traps that have cost real time
 
-**The short version of r15–r28:** a JSONL per-shot study log and seeded
+**The short version of r15–r29:** a JSONL per-shot study log and seeded
 reproducible games; a major fix to the AI's shot-quality estimate (it had been
 wildly over-confident); a ~3.8× performance pass, every step proved
 behaviour-preserving by diffing study output; the two AI personalities re-tuned
@@ -91,6 +91,15 @@ a sandbox bug (the potted-ball chamber never cleared when the table was
 emptied) and added the assertion r26 should have shipped with, guarding the
 threshold-above-floor invariant.
 
+**r28–r29** turn outward. r28 closed the tooling gap the r23 lesson below has
+been pointing at since it was written: selftest 60 drives a whole frame through
+the rules engine rather than testing one function at a time. r29 is the first
+change in a while aimed squarely at the single-player game — fine adjustment
+for shot power, which had none, on a slider whose pixel resolution was three
+times coarser than its own two-decimal readout. Both are described in the
+CHANGELOG; the second blind spot r29 exposed, that the HUD panel cannot be
+rendered headlessly at all, is written up after the r23 lesson.
+
 **The most important lesson of the whole period** is from r23: all four of those
 gameplay bugs — turn handover, spin reset, cue placement, sandbox ball-in-hand —
 passed the *entire* validation chain and were found by sitting down and playing.
@@ -103,6 +112,18 @@ shot. It is the first test in the suite that checks shot N+1 against the state
 shot N left behind, which is where all five of those bugs lived. Add the
 assertion, run the chain, **and then play the game** — r28 narrows the gap, it
 does not close it.
+
+There is a second blind spot the chain cannot cover, and r29 ran straight into
+it. `--snap` and `--smoke` render the bare scene; `build_panel_widgets()` is
+only called in the non-smoke branch, so **the HUD panel is never built or drawn
+headlessly** and no automated capture can show it. Panel layout can still be
+checked without eyes, but numerically rather than visually: copy the tree
+aside, inject a `print` and a `raise SystemExit(0)` immediately after
+`panel_widgets["Shot"] = shot`, run `run_gui(smoke=False)` under
+`SDL_VIDEODRIVER=dummy`, and read `max(w.rect.bottom for w in shot)` against
+`win_h`. That is how r29's four-button row was confirmed to fit — 19 widgets
+ending at 540 px against a 548 px minimum window. Anything about how the panel
+*looks*, as opposed to where it ends, still needs a human at the keyboard.
 
 ---
 
@@ -118,7 +139,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 68 assertions, all
+  out) rather than the pygame wrapper around it. Currently 69 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -801,8 +822,17 @@ Current open work now lives in two places, kept up to date:
   open here once and are now fixed (r24 and r25/r26) — their diagnoses are kept
   under "Recently fixed".
 - **[ROADMAP.md](ROADMAP.md)** — candidates under discussion, with dependencies:
-  scripted play-through tests, the coach-mode aiming overlay, league mode, the
-  "Grannie" whitewash rule, and a possible snooker project.
+  league mode, the "Grannie" whitewash rule, a possible snooker project, and
+  **the visual training overlay / coach mode**, which is the agreed next
+  substantial feature and is scoped there in detail. Read that entry before
+  proposing anything in its area: it records what has already been settled
+  (reflect off the real cushion-nose polyline rather than a rectangle; never
+  draw a curve, because spin is an impulse at contact only; use
+  `pot_assessment()` and not the AI's `pot_estimate()`; cap the prediction at
+  the cue plus the first object ball plus cushions, because a break's secondary
+  scatter is chaotic and drawing it would be fiction) as well as what is
+  genuinely still open. Scripted play-through tests were on this list and
+  shipped at r28.
 
 Two constraints worth restating here, because both have been nearly broken by
 accident:
@@ -833,7 +863,7 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 > parameters and utility weights, never scripted shots.
 >
 > **Confirm the chain passes on the attached files before proposing anything:**
-> selftest ALL PASS (68 assertions), `--batch 30` with 0 containment escapes,
+> selftest ALL PASS (69 assertions), `--batch 30` with 0 containment escapes,
 > `--smoke` 90 frames, `--snap` md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`
 > byte-identical, `cushion_path.py` standalone green. If a marker is missing or
 > a number is off, say so before editing anything — an earlier session was very
@@ -873,5 +903,5 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 
 ---
 
-*(Written at r23, refreshed at r28. The file is safe to play. Good hunting,
+*(Written at r23, refreshed at r29. The file is safe to play. Good hunting,
 next instance.)*

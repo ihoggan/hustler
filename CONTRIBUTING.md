@@ -11,7 +11,7 @@ workflow and expectations.
 4. **Verify your baseline** before changing anything:
 
 ```bash
-python3 hustler.py --selftest      # expect: ALL PASS (68 assertions at r28)
+python3 hustler.py --selftest      # expect: ALL PASS (69 assertions at r29)
 ```
 
 If that doesn't pass on a clean checkout, stop and work out why before writing
@@ -70,7 +70,7 @@ Two notes on reading the results:
   If a count looks different, run it a few times on both versions before
   concluding anything.
 - `--snap` must stay **byte-identical** (md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`,
-  unchanged from R6.1 through r28) unless you are deliberately changing the
+  unchanged from R6.1 through r29) unless you are deliberately changing the
   rendered scene, in which case say so explicitly in the commit message.
 - A seeded `--aigame` result is a regression check against **one build on one
   machine**, not an absolute. Note which machine a number came from when you
@@ -80,6 +80,46 @@ Two notes on reading the results:
   cross-platform determinism is untested, and CI does not run `--aigame`. If
   you move to different hardware and the number shifts, re-baseline and say so
   rather than assuming a regression.
+
+### Check the file before you commit it, not just the chain
+
+The chain proves a file is internally consistent. It cannot prove it is the
+**right** file.
+
+r29 was pushed twice. The first push carried a hustler.py from around r7 —
+3065 lines instead of 6358, 3374 deletions, everything from r8 onward gone. It
+was copied by mistake from a stale download that had been sitting in the same
+folder for a fortnight, shadowing every newer one the browser saved beside it
+under a suffixed name.
+
+Every step of the chain passed on that file. `py_compile` was fine. The
+selftest read `ALL PASS` — with 35 assertions instead of 69, which the command
+as written never checked. `--batch`, `--smoke` and `cushion_path.py` were all
+clean. The commit block was chained with `&&` and sailed straight through to
+the push.
+
+**Only the `--snap` md5 caught it**, rendering `d571882a…` against the
+`62c87ddb…` baseline, and CI went red on exactly that step. That is the whole
+argument for enforcing the snap hash in CI rather than letting it warn: it is
+the one check that is sensitive to what the file *is* rather than to whether it
+hangs together.
+
+So: verify identity up front. Put the hash in front of the copy, not the
+validation after it, and the wrong file stops the block dead —
+
+```bash
+md5sum ~/Downloads/hustler.py | grep -q <expected> && cp ~/Downloads/hustler.py hustler.py && ...
+```
+
+and assert the assertion **count**, not just that it says ALL PASS:
+
+```bash
+python3 hustler.py --selftest | grep -c "\[PASS\]"     # expect 69, not "passes"
+```
+
+Nothing was lost — the previous revision was a commit away in history — but it
+cost a session, and it was the second time a stale copy in a downloads folder
+has done that to this project.
 
 Two measurement tools live alongside the game and are **not** part of the gate
 — they are slow, they only measure, and they change nothing:

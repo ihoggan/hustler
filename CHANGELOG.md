@@ -5,7 +5,50 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r28 — a whole frame, driven through the rules engine (current)
+## r29 — power you can name (current)
+
+Aim had fine adjustment from r10. Power did not, and the difference was not
+cosmetic: the slider spans 6.5 m/s across about 232 px of panel, which is
+0.028 m/s per pixel, while the readout is formatted to two decimals. The
+control displayed hundredths it could not physically reach — one pixel of drag
+jumps roughly three of them. Setting a specific power was guesswork.
+
+Measured on an empty table, using total cue-ball path length (net displacement
+is meaningless once the ball starts rebounding off cushions, which it does):
+0.01 m/s is worth 48 mm of travel at power 1.0, 24 mm at 1.5, 13 mm at 2.0. A
+ball is 50.8 mm. At break speed it falls to 5 mm, which is why a coarse step
+earns its place alongside the fine one.
+
+A row of four buttons now sits under the slider: -0.1, -0.01, +0.01, +0.1. Four
+across in a single row rather than the aim group's two stacked rows, because at
+the minimum window height the Shot tab had 33 px of headroom and a second row
+would have had to be paid for by shrinking the aim dial and the spin pad. The
+layout was verified by instrumenting the real panel builder and reading the
+widget rectangles: 15 widgets ending at 515 px became 19 ending at 540, against
+a 548 px window. Eight pixels clear.
+
+Each press snaps the result to the 0.01 grid, and the order is deliberate. The
+delta is applied first and the result snapped second. Snapping first would mean
+the opening press off a dragged value merely moved it onto the grid — 1.8472
+would become 1.85, displaying "1.85" both before and after, and the button
+would look broken. Applying first guarantees the readout always moves by
+exactly one step.
+
+Snapping is the part that answers the actual complaint. Without it a nudged
+power is precise but never round, so it can be adjusted finely and still never
+be repeated. With it, the displayed number is the true number, and since the
+human shot path adds no noise — `do_shoot()` passes power straight to
+`strike()`, unlike the AI which perturbs it — a power you can write down is a
+power you can play again.
+
+Selftest 61 covers the pure core: that a step lands on the grid, that repeated
+steps do not drift off it, and that the buttons clamp to the same range the
+slider spans. It failed on its first run against a wrong expectation of 1.85.
+The code was right and the test was wrong; both the expectation and a docstring
+describing the inferior snap-first order were corrected, and the episode is
+recorded in the assertion's own comment.
+
+## r28 — a whole frame, driven through the rules engine
 
 The validation chain gained the test it was missing. Every assertion before
 this one checks a single function in isolation: given these inputs, does it

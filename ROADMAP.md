@@ -1,14 +1,14 @@
 # Roadmap
 
-## Current status: r28 — playable, validated
+## Current status: r29 — playable, validated
 
-**Validation snapshot (r28, measured on nix5 and reproduced in a Linux
+**Validation snapshot (r29, measured on nix5 and reproduced in a Linux
 container):**
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 68 assertions |
+| `--selftest` | ALL PASS — 69 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -32,7 +32,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~6,260 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~6,360 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -91,17 +91,79 @@ against — it is the most likely route to a sixth bug.
 
 ### Larger features under discussion
 
-**Visual training overlay / coach mode.** A richer aiming display inspired by
-real coaching tools: multi-segment paths including cushion rebounds, a cut-angle
-readout at the ghost ball, and a per-ball indication of which pocket each ball
-naturally belongs to. Several open design questions remain (which geometry to
-reflect against, how many bounces to trust, whether the table read should
-account for cue-ball position). Note that the physics applies spin as an impulse
-at contact and models no in-flight curve, so a projected path must not draw one.
-The r24 jaws-placement work built the primitives this would reflect against —
-`dist_point_segment` and the cached `nose_loop_m()` cushion-nose polyline — so
-the "which geometry" question is already half-answered: reflect off the real
-nose loop, not a rectangle.
+**Visual training overlay / coach mode.** Scoped, not built. This is the next
+substantial feature, and it is aimed squarely at how the game is actually used
+— single player, setting the balls up and potting them. What exists today is
+the r14 aim overlay (toggle `G`, or the button on the Game tab): one shot, one
+contact, no cushions. It draws a tapered cue-to-ghost line tinted by pot
+chance, a translucent shaded ghost ball, the object-ball line to the pocket, a
+target-pocket glow that lights only when the pot is on, the tangent departure
+line, and a spin-aware predicted cue rest. Coach mode is a **second tier on
+that existing toggle**, not a parallel system, and its control belongs beside
+the existing one on the Game tab.
+
+*Wanted, in four parts:*
+
+1. **Multi-segment paths** — object-ball trajectory and cue-ball cushion
+   rebounds, colour-coded so cue path, impact point, target line and subsequent
+   bounces are distinguishable.
+2. **Ghost ball with a cut-angle readout in degrees**, updating live with aim,
+   and split trajectory vectors drawn on the cloth.
+3. **Cushion-first aiming** — mirroring the target through the cushion to find
+   the aim point on the rail, as taught for pots that cannot be played
+   directly. This is a *different mode* from rebound-after-contact, though it
+   reuses the same reflection helper.
+4. **A table read** — a per-ball indication of which pocket each ball naturally
+   belongs to, across the whole table rather than only the ball being aimed at.
+
+*What is already settled:*
+
+- **Reflect off the real cushion, not a rectangle.** `estimate_leave()`
+  currently reflects off a rectangle via `reflect_off_rect` and stops after one
+  bounce. A rectangle would be wrong precisely at the pockets, where the 22 mm
+  knuckle arcs and C1 jaws are the entire story. The r24 jaws-placement work
+  already built what this needs: the cached `nose_loop_m()` cushion-nose
+  polyline and `dist_point_segment`.
+- **Never draw a curve.** Spin is an impulse at contact only — a follow kick at
+  ball contact, a side kick along the tangent at cushion contact — and the cue
+  ball travels dead straight between contacts. Confirmed by reading the source.
+  Coaching diagrams that show side spin "curving" a shot are describing
+  squirt and swerve, which this physics does not model.
+- **Use `pot_assessment()`, never `pot_estimate()`.** The first is the human
+  model and takes the actual aim error; the second is the AI model and is known
+  to be over-harsh at distance (see Open questions).
+- **Cap the prediction at cue plus first object ball plus cushions.** A break is
+  multi-body and chaotic; drawing a secondary scatter fan would be fiction
+  dressed as a projection. Coaching diagrams draw it illustratively — we cannot.
+- **Respect the performance ceiling.** Rendering is pure software and full-screen
+  can already land on an unaccelerated blit path (Known issues #1). A table read
+  is roughly 15 balls × 6 pockets plus corridor checks; compute it on rest or on
+  change and cache it, never per frame.
+- **Design grammar** drawn from real coaching diagrams: dashed lines read as
+  *projection* rather than as objects; high chroma against the cloth; a glowing
+  marker at every contact point; a perpendicular tick to show the 90°
+  cue/object relationship after contact.
+
+*Open questions, genuinely undecided:*
+
+- How many bounces to trust before the prediction stops being honest.
+- Whether the table read is **cue-independent** (fixed by table geometry — the
+  ball-to-pocket line and whether the knuckles shadow it) or **cue-dependent**
+  (cut angle and pot chance from where the white actually is). "Nearest" and
+  "easiest" are not the same thing, and easiest is the coaching-correct one: a
+  ball six inches from a pocket but the wrong side of the jaw is near-impossible,
+  while a dead-straight ball four feet out is easy.
+- How to avoid visual spaghetti — fifteen balls each drawing a line to a pocket
+  is unreadable. Likely a full line only for the aimed or hovered ball, and a
+  small marker for the rest.
+- Whether reference imagery lives anywhere in the repo. The no-asset-files rule
+  governs what the *game* loads at runtime; documentation images are arguably a
+  different question, but it is a decision to take rather than assume.
+
+*Build order suggestion:* the cushion reflection against the real nose loop is
+increment 1, because parts 1 and 3 both depend on it and the primitives already
+exist. The panel has no automated visual check (see the note in the handoff),
+so every increment needs an eyeball at the keyboard as well as the chain.
 
 **League mode.** Single player against a series of AI opponents across a fixture
 list, with results feeding a standings table and a final ranking. Fits the
