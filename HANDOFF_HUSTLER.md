@@ -27,6 +27,18 @@ source of truth.
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY, all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
+| GitHub Actions `Validate` | passing (Python 3.12 and 3.13) |
+
+**The chain also runs in CI** on every push to `main`, at
+`.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
+enforces the `--snap` md5 as well: the hash lives in one place, as a
+workflow-level `env: SNAP_MD5`, and the step fails if the render moves. If you
+are *deliberately* re-capturing the baseline, change that hash in the same
+commit and say so — being forced to do it visibly is the point. Worth knowing
+that the baseline has now been confirmed identical on three independent
+platforms, so a mismatch means a real render change, not a machine difference.
+The `lint` job (black, isort) is advisory: both steps are `continue-on-error`
+and it can never fail the build.
 
 Three notes on reading those. `--batch` uses an **unseeded** RNG, so pot and
 scratch counts vary run to run — the invariant is `containment escapes: 0`, not
@@ -791,8 +803,9 @@ accident:
 
 ## 10. Re-entry / continuation prompt
 
-Paste into a fresh session along with this file, `hustler.py` and
-`cushion_path.py`:
+The repository at `github.com/ihoggan/hustler` is the source of truth and is
+current — cloning it is the cleanest start. Otherwise paste the prompt below
+into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 
 > We are resuming **HUSTLER**, my UK blackball pool sandbox (pygame + pymunk,
 > two files — `hustler.py` + `cushion_path.py` — attached). Read
@@ -813,7 +826,17 @@ Paste into a fresh session along with this file, `hustler.py` and
 > `--smoke` 90 frames, `--snap` md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`
 > byte-identical, `cushion_path.py` standalone green. If a marker is missing or
 > a number is off, say so before editing anything — an earlier session was very
-> nearly built on a stale copy of the file.
+> nearly built on a stale copy of the file, and a later one found the repo
+> documenting two measurement scripts that had never actually been committed.
+> Check what is in front of you rather than what the docs claim is there.
+>
+> **Two measurement tools** sit alongside the game and are not part of the
+> chain: `distance_calibration_sweep.py` (fires real simulated shots on a grid
+> and compares measured pot rate against the AI's prediction) and
+> `floor_threshold_audit.py` (watches real AI games to ask whether a tuning
+> constant actually changes a decision). Reach for them when a number in the AI
+> is in question — twice now, guessing cost several sessions and measuring
+> solved it in one.
 >
 > **Things not to do without asking:** don't reintroduce the GL renderer
 > (removed at R6.10); don't add a dependency (pygame and pymunk only, no numpy);
@@ -828,6 +851,10 @@ Paste into a fresh session along with this file, `hustler.py` and
 > **Don't trust a seeded `--aigame` score across machines.** It is a
 > behaviour-preservation check against one machine, not an absolute; two
 > previously recorded figures did not reproduce elsewhere on identical code.
+>
+> **Where I work.** I develop on nix5 but also edit through the GitHub web
+> interface, so `git pull` before starting is not optional. Keep any git
+> instructions to a single paste-able block — no heredocs unless I ask.
 >
 > Finally: the last five bugs all passed the whole validation chain and were
 > found by playing. If we change rules or turn logic, propose a scripted
