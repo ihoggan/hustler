@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r27 — playable, validated, no known blocking bugs.
+**Status:** r28 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~6,130 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~6,260 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,16 +16,16 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r27
+## Validation snapshot at r28
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 67 assertions |
+| `--selftest` | ALL PASS — 68 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
-| `--aigame 12 --seed 4200` | SHARK 9–3 STEADY, all games completed cleanly |
+| `--aigame 12 --seed 4200` | SHARK 9–3 STEADY (nix5), all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 | GitHub Actions `Validate` | passing (Python 3.12 and 3.13) |
 
@@ -59,12 +59,12 @@ them remains accurate as history and the engine facts in §3 are still current
 and still worth reading — but roughly sixteen revisions of work happened
 afterwards. That later work is documented in:
 
-- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r27
+- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r28
 - [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — the three open threads, each with its diagnosis
 - [ROADMAP.md](ROADMAP.md) — what's under discussion and what it depends on
 - [CONTRIBUTING.md](CONTRIBUTING.md) — workflow, standards, and the traps that have cost real time
 
-**The short version of r15–r27:** a JSONL per-shot study log and seeded
+**The short version of r15–r28:** a JSONL per-shot study log and seeded
 reproducible games; a major fix to the AI's shot-quality estimate (it had been
 wildly over-confident); a ~3.8× performance pass, every step proved
 behaviour-preserving by diffing study output; the two AI personalities re-tuned
@@ -96,8 +96,13 @@ gameplay bugs — turn handover, spin reset, cue placement, sandbox ball-in-hand
 passed the *entire* validation chain and were found by sitting down and playing.
 So did r27's chamber bug. That is five.
 The suite is strong on pure functions and physics invariants and blind to
-whether a turn passes to the right player. Add the assertion, run the chain,
-**and then play the game.**
+whether a turn passes to the right player. **r28 answers that tally**: selftest
+60 drives a whole eight-shot frame through the rules engine and asserts eleven
+named invariants covering turn, visit, spin and placement state after every
+shot. It is the first test in the suite that checks shot N+1 against the state
+shot N left behind, which is where all five of those bugs lived. Add the
+assertion, run the chain, **and then play the game** — r28 narrows the gap, it
+does not close it.
 
 ---
 
@@ -113,7 +118,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 67 assertions, all
+  out) rather than the pygame wrapper around it. Currently 68 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -177,11 +182,17 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   ever touches `pot_estimate`.
 - **`cushion_path.flatten(path, max_seg_deg=5.0)`** returns the tangent-true
   cushion as a vertex list. That's the starting point for anything needing real
-  cushion geometry instead of the rectangle — including the custom-mode
-  placement fix in KNOWN_ISSUES #1.
-- **Line endings are mixed in this repo:** `hustler.py` is LF, `cushion_path.py`
-  is CRLF. Harmless until a tool normalises one of them and produces a
-  several-hundred-line phantom diff. Worth pinning with `.gitattributes`.
+  cushion geometry instead of the rectangle — it is what the custom-mode jaws
+  placement fix was built on at r24, and what a cushion-accurate aim or coach
+  overlay would need.
+- **Line endings:** `.gitattributes` now pins the repo to LF, but
+  `cushion_path.py` is still stored CRLF in the index, so a fresh clone reports
+  it as modified immediately — a 514-line phantom diff with zero content
+  change. Harmless to run. Fixing it (`git add --renormalize cushion_path.py`)
+  is one command, but it moves that file's md5 off the value the docs quote as
+  an identity marker, so do it deliberately and re-baseline in the same commit.
+  Until then, **do not commit with `git add -A`** unless you mean to include
+  it.
 
 ## 4. Physics calibration (real spec, sourced)
 
@@ -822,7 +833,7 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 > parameters and utility weights, never scripted shots.
 >
 > **Confirm the chain passes on the attached files before proposing anything:**
-> selftest ALL PASS (67 assertions), `--batch 30` with 0 containment escapes,
+> selftest ALL PASS (68 assertions), `--batch 30` with 0 containment escapes,
 > `--smoke` 90 frames, `--snap` md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`
 > byte-identical, `cushion_path.py` standalone green. If a marker is missing or
 > a number is off, say so before editing anything — an earlier session was very
@@ -862,5 +873,5 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 
 ---
 
-*(Written at r23, refreshed at r27. The file is safe to play. Good hunting,
+*(Written at r23, refreshed at r28. The file is safe to play. Good hunting,
 next instance.)*

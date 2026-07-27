@@ -5,7 +5,47 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r27 — the potted-ball chamber clears when the table does (current)
+## r28 — a whole frame, driven through the rules engine (current)
+
+The validation chain gained the test it was missing. Every assertion before
+this one checks a single function in isolation: given these inputs, does it
+return the right answer. A frame is not a function, it is a state machine, and
+its bugs live in the ordering — in what the previous shot left behind. Nothing
+tested shot N+1 against the state shot N produced, which is precisely why all
+five bugs that reached the table got through: turn handover, spin reset, cue
+repositioning, sandbox ball-in-hand, and the potted-ball chamber.
+
+Selftest 60 plays a real frame, eight shots long — a dry break, an open-table
+pot that assigns the suits, a continuation, a miss that hands the table over, a
+wrong-ball foul, the free shot and second visit that foul buys, the last ball
+of a suit, and the black — and asserts eleven named invariants after every
+shot.
+
+The shots are synthesised rather than played out in physics. That turns out to
+be cheap: the rules layer reads exactly four things from the simulation, so a
+frame can be driven by setting three fields and removing balls, with no physics
+step at all. It stays deterministic, it runs in well under a second, and it
+does not inherit the float sensitivity that makes a seeded `--aigame` score a
+per-machine check. The cost is stated plainly in the source: it tests the rules
+against the events the engine is *believed* to emit, and cannot catch the
+physics emitting something else.
+
+Two choices are worth recording. It asserts named invariants rather than
+freezing a golden trace — a golden catches more but rewrites a large literal on
+every deliberate change and freezes in whatever was wrong when it was captured,
+which is the trap selftest 22 fell into at r16. And the full per-shot trace
+prints only on failure, so a break diagnoses itself: with the r23 handover bug
+reintroduced, the trace names shot 7 and shows the turn flipping to the wrong
+player, which is the whole diagnosis in one line.
+
+It was also mutation-tested before shipping. Five historical bugs were
+reintroduced one at a time and each was confirmed caught, on the principle that
+a test which has never failed has not been shown to work.
+
+No game code changed. `--snap` is byte-identical and the seeded `--aigame`
+score is unmoved, both of which are the point.
+
+## r27 — the potted-ball chamber clears when the table does
 
 Emptying the table now empties the chamber. In sandbox, re-racking (`T`),
 resetting (`R`) or clearing (`C`) rebuilt the table but left the *previous*

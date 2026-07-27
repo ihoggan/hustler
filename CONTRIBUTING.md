@@ -11,7 +11,7 @@ workflow and expectations.
 4. **Verify your baseline** before changing anything:
 
 ```bash
-python3 hustler.py --selftest      # expect: ALL PASS (67 assertions at r27)
+python3 hustler.py --selftest      # expect: ALL PASS (68 assertions at r28)
 ```
 
 If that doesn't pass on a clean checkout, stop and work out why before writing
@@ -70,12 +70,16 @@ Two notes on reading the results:
   If a count looks different, run it a few times on both versions before
   concluding anything.
 - `--snap` must stay **byte-identical** (md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`,
-  unchanged from R6.1 through r27) unless you are deliberately changing the
+  unchanged from R6.1 through r28) unless you are deliberately changing the
   rendered scene, in which case say so explicitly in the commit message.
-- Seeded `--aigame` results are **platform-sensitive**: the physics is
-  float-heavy, so a recorded score is a regression check against *the same
-  machine*, not an absolute. Note which machine a number came from when you
-  record one, and re-baseline rather than debug if you move machines.
+- A seeded `--aigame` result is a regression check against **one build on one
+  machine**, not an absolute. Note which machine a number came from when you
+  record one. It has now reproduced identically across nix5 and an x86-64
+  Linux container on the same bytes, so a change in the score means behaviour
+  moved — but both boxes share an architecture and a libc, genuine
+  cross-platform determinism is untested, and CI does not run `--aigame`. If
+  you move to different hardware and the number shifts, re-baseline and say so
+  rather than assuming a regression.
 
 Two measurement tools live alongside the game and are **not** part of the gate
 — they are slow, they only measure, and they change nothing:
@@ -187,8 +191,18 @@ The self-test suite is strong on pure functions and physics invariants and
 blind to gameplay flow. Every one of the four r23 bugs — turn handover, spin
 reset, cue placement, sandbox ball-in-hand — passed the entire validation chain
 and was found by sitting down and playing. So did the r27 chamber bug. That is
-five, and the tally is the argument for the scripted play-through tests at the
-top of the roadmap.
+five, and that tally is what the scripted play-through test at r28 exists to
+answer.
+
+Selftest 60 drives a whole frame — eight shots — through the rules engine and
+asserts eleven named invariants covering turn, visit, spin and placement state
+after every one. Two things about it are worth copying if you extend it. It
+asserts *named invariants* rather than freezing a golden trace, because a
+golden rewrites a large literal on every deliberate change and preserves
+whatever was wrong when it was captured. And it was **mutation-tested before it
+shipped**: five historical bugs were reintroduced one at a time and each was
+confirmed caught, because a test that has never failed has not been shown to
+work. Do that for anything you add here.
 
 So: add the assertion, run the chain, **and then play the game**. If you're
 adding rules or turn logic, consider a scripted play-through test that drives a

@@ -1,29 +1,38 @@
 # Roadmap
 
-## Current status: r27 — playable, validated
+## Current status: r28 — playable, validated
 
-**Validation snapshot (r27):**
+**Validation snapshot (r28, measured on nix5 and reproduced in a Linux
+container):**
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 67 assertions |
+| `--selftest` | ALL PASS — 68 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
-| `--aigame 12 --seed 4200` | SHARK 9–3 STEADY, all games completed cleanly |
+| `--aigame 12 --seed 4200` | SHARK 9–3 STEADY (nix5), all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 
-The `--aigame` figure is unchanged from the pre-r27 run on the same machine,
-which is the point: r27 touches sandbox and the rules layer, so the AI must be
-untouched. **Record which machine an `--aigame` number came from.** The physics
-is float-heavy and the result is platform-sensitive; the r25/r26 figures
-recorded here previously (SHARK 4–8 and 5–7) did not reproduce elsewhere on the
-same code, so treat a seeded score as a regression check against one machine
-rather than an absolute. `--snap` staying byte-identical confirms nothing about
-rendering moved.
+The `--aigame` figure is unchanged from the pre-r28 run, which is the point:
+r28 adds a test and touches no game code, so the AI must be untouched.
+**Record which machine an `--aigame` number came from.** A seeded score is a
+regression check against one build on one machine, not an absolute — it says
+"nothing moved since last time here", and nothing more.
 
-`hustler.py` is ~6,130 lines; `cushion_path.py` ~515. The game is two files,
+The r25/r26 figures recorded here previously (SHARK 4–8 and 5–7) do not
+reproduce on the current code and remain **unexplained**. That was once written
+up as platform sensitivity in the floating-point physics; that explanation has
+since been tested and does not hold — nix5 and an x86-64 Linux container return
+identical results, game for game, on identical bytes. A documentation artefact
+(a figure recorded from a build that was not quite what shipped) is the more
+likely story, but it is a guess and is labelled as one. Note that both machines
+share an architecture and a libc, so genuine cross-platform determinism is
+untested, and CI does not run `--aigame`. `--snap` staying byte-identical
+confirms nothing about rendering moved.
+
+`hustler.py` is ~6,260 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -57,12 +66,20 @@ a blank page.
 
 ### Near-term candidates
 
-**Scripted play-through tests.** All four r23 bugs escaped the entire validation
-chain because that chain has no test that plays a whole frame — and so did the
-r27 chamber bug, which makes five. Driving a
-complete game through the rules engine and asserting turn, visit, spin and
-placement state at each step would close the gap. Arguably the highest-value
-item on this list, since it protects everything else.
+**Scripted play-through tests — first increment SHIPPED at r28.** All four r23
+bugs escaped the entire validation chain because that chain had no test that
+played a whole frame, and so did the r27 chamber bug, which makes five.
+Selftest 60 now drives an eight-shot frame through the rules engine and asserts
+eleven named invariants covering turn, visit, spin and placement state after
+every shot. Shot outcomes are synthesised against a real `Sim` rather than
+played out in physics, which keeps it deterministic and fast; the stated cost
+is that it tests the rules against the events the engine is *believed* to emit
+and cannot catch the physics emitting something else.
+
+The natural follow-on is a **random-walk fuzzer** over generated frames
+asserting those same invariants never break. The invariants are now written
+down and mutation-proven, so the fuzzer has something trustworthy to assert
+against — it is the most likely route to a sixth bug.
 
 > **AI distance calibration (r25/r26/r27) is done.** `pot_estimate()`'s distance
 > floor was fitted and shipped at r25; STEADY's attempt threshold was moved

@@ -6049,6 +6049,134 @@ def selftest():
           f"margin={ais59['STEADY'] - POT_FLOOR:.3f} "
           f"(SHARK={ais59['SHARK']}, deliberately below)")
 
+    # 60. r28 SCRIPTED PLAY-THROUGH -- a whole frame driven through the rules
+    #     engine, asserting the turn, visit, spin and placement state after
+    #     every shot.
+    #
+    #     Why this exists: the last five bugs to reach the Maker (turn
+    #     handover, spin reset, cue repositioning, sandbox ball-in-hand, the
+    #     potted-ball chamber) ALL passed the entire validation chain and were
+    #     found by playing. Every assertion above tests one function in
+    #     isolation; a frame is a state machine, and its bugs live in the
+    #     ORDERING -- what the previous shot left behind. Nothing here tested
+    #     shot N+1 against the state shot N produced, so nothing could catch
+    #     them.
+    #
+    #     Three deliberate design choices:
+    #
+    #     (a) Shot OUTCOMES are synthesised against a REAL Sim rather than
+    #         played out in physics. The rules layer reads exactly four things
+    #         from the sim -- first_contact, cushion_after_contact,
+    #         potted_colours() and remaining() -- so a frame can be driven by
+    #         setting three fields and removing balls. That keeps this
+    #         deterministic and cross-platform (a physics-driven frame would be
+    #         float-sensitive, the same property that makes a seeded --aigame
+    #         score a per-machine check rather than an absolute) and fast
+    #         enough to stay in the chain. The cost, stated honestly: this
+    #         tests the rules against the events the engine is BELIEVED to
+    #         emit. It cannot catch the physics emitting something else.
+    #     (b) It asserts NAMED INVARIANTS, not a frozen golden trace. A golden
+    #         would catch more, but rewrites a large literal on every
+    #         deliberate change and freezes in whatever was wrong at capture --
+    #         the trap selftest #22 fell into at r16, when positions tuned
+    #         against a broken pot model had to be re-frozen once it was fixed.
+    #     (c) The full per-shot trace prints ONLY on failure, so a break
+    #         diagnoses itself instead of needing a debugger reproduction.
+    #
+    #     The shot-by-shot script is a real frame: dry break, open-table pot
+    #     that assigns colours, a continuation, a miss that hands over, a
+    #     wrong-ball foul, the free shot and second visit that foul buys, the
+    #     LAST colour of a suit, and the black.
+    sim60 = Sim(layout="empty")
+    _x0, _y0, _x1, _y1 = play_rect()
+    _w, _h = _x1 - _x0, _y1 - _y0
+    sim60._add_ball(sim60.CUE_ID, (_x0 + _w * 0.22, _y0 + _h * 0.5), "cue")
+    for _n, (_bid, _col) in enumerate([(1, "red"), (2, "red"), (3, "red"),
+                                       (4, "yellow"), (5, "yellow"),
+                                       (6, "yellow"), (7, "black")]):
+        sim60._add_ball(_bid, (_x0 + _w * (0.45 + 0.05 * _n), _y0 + _h * 0.5), _col)
+    g60 = Game(controllers=("human", "ai"))
+    trace60 = []
+
+    def _shot60(label, first_contact, cushion, pots=(), side=0.0, follow=0.0):
+        """One shot: reset the shot-scoped facts exactly as strike() does,
+        apply the outcome, then let the rules judge it."""
+        sim60.potted_log = []
+        sim60.first_contact = None
+        sim60.cushion_after_contact = False
+        applied = shot_spin_and_reset(side, follow)
+        for _b in pots:                      # mirrors _capture_pockets' removal
+            _body, _shape = sim60.balls.pop(_b)
+            sim60.space.remove(_body, _shape)
+            sim60.potted_log.append(_b)
+            sim60.potted_all.append(_b)
+        sim60.first_contact = first_contact
+        sim60.cushion_after_contact = cushion
+        g60.on_rest(sim60)
+        st = {"current": g60.current, "visits_left": g60.visits_left,
+              "free_shot": g60.free_shot, "bih": g60.ball_in_hand,
+              "over": g60.over, "winner": g60.winner,
+              "colours": dict(g60.colours), "chamber": sim60.potted_colours_all(),
+              "spin_applied": applied[:2], "spin_reset": applied[2:],
+              "event": g60.last_event}
+        trace60.append((label, st))
+        return st
+
+    a60 = _shot60("1 break, dry", "red", True, side=0.3, follow=0.5)
+    b60 = _shot60("2 P1 pots red (open table)", "red", True, pots=[1])
+    c60 = _shot60("3 P1 pots red again", "red", True, pots=[2])
+    d60 = _shot60("4 P1 misses", "red", True)
+    e60 = _shot60("5 P0 wrong ball first", "red", True)
+    f60 = _shot60("6 P1 free shot, misses", "yellow", True)
+    g_60 = _shot60("7 P1 pots LAST red", "red", True, pots=[3])
+    h60 = _shot60("8 P1 pots black cleanly", "black", True, pots=[7])
+
+    inv60 = [
+        ("a dry break is a legal miss — turn passes and the break's "
+         "ball-in-hand is consumed",
+         a60["current"] == 1 and a60["visits_left"] == 1 and a60["bih"] is False),
+        ("the first potted colour assigns suits to the potter",
+         b60["colours"] == {1: "red", 0: "yellow"}),
+        ("potting your own colour keeps you at the table",
+         b60["current"] == 1 and c60["current"] == 1),
+        ("a legal miss on a single visit hands the table over",
+         d60["current"] == 0),
+        ("a foul passes the table AND pays the penalty: free shot, two "
+         "visits, ball in hand",
+         e60["current"] == 1 and e60["free_shot"] is True
+         and e60["visits_left"] == 2 and e60["bih"] is True),
+        ("the free shot and ball-in-hand are consumed by the shot itself",
+         f60["free_shot"] is False and f60["bih"] is False),
+        ("missing on the second visit spends it but the striker STAYS",
+         f60["current"] == 1 and f60["visits_left"] == 1),
+        ("r23: potting the LAST ball of your colour is not a phantom "
+         "wrong-ball foul — the striker continues, on the black",
+         g_60["current"] == 1 and g_60["over"] is False),
+        ("the black after clearing your colour wins the frame",
+         h60["over"] is True and h60["winner"] == 1),
+        ("r27: the chamber carries the whole frame, in pot order",
+         h60["chamber"] == ["red", "red", "red", "black"]),
+        ("r23: spin applies as aimed, then resets to zero rather than "
+         "re-sending itself on the next shot",
+         a60["spin_applied"] == (0.3, 0.5) and a60["spin_reset"] == (0.0, 0.0)),
+    ]
+    bad60 = [nm for nm, ok in inv60 if not ok]
+    if bad60:                       # (c) the trace is a debugger, not an assertion
+        print("    play-through trace:")
+        for _lab, _st in trace60:
+            print(f"      {_lab:<28} cur={_st['current']} vis={_st['visits_left']} "
+                  f"free={str(_st['free_shot']):<5} bih={str(_st['bih']):<5} "
+                  f"over={str(_st['over']):<5} win={_st['winner']} "
+                  f"chamber={_st['chamber']} | {_st['event']}")
+    check("r28 scripted play-through — a whole frame driven shot by shot "
+          "through the rules engine, asserting turn, visit, spin and "
+          "placement state after every shot (the layer where all five "
+          "play-found bugs lived, and the one no isolated assertion reached)",
+          not bad60,
+          f"{len(inv60) - len(bad60)}/{len(inv60)} invariants over "
+          f"{len(trace60)} shots"
+          + (f"; FAILED: {bad60}" if bad60 else ""))
+
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
 
