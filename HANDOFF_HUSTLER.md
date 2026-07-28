@@ -823,9 +823,12 @@ Current open work now lives in two places, kept up to date:
   under "Recently fixed".
 - **[ROADMAP.md](ROADMAP.md)** — candidates under discussion, with dependencies:
   league mode, the "Grannie" whitewash rule, a possible snooker project, and
-  **the visual training overlay / coach mode**, which is the agreed next
-  substantial feature and is scoped there in detail. Read that entry before
-  proposing anything in its area: it records what has already been settled
+  **the cue-ball strike point and tip size**, which is the agreed next piece of
+  work, and **the visual training overlay / coach mode**, which is scoped there
+  in detail but is now PARKED behind it — coach mode draws spin-dependent
+  predictions, so the spin control's semantics have to settle first or the
+  overlay gets built twice. Read the coach-mode entry before proposing anything
+  in its area: it records what has already been settled
   (reflect off the real cushion-nose polyline rather than a rectangle; never
   draw a curve, because spin is an impulse at contact only; use
   `pot_assessment()` and not the AI's `pot_estimate()`; cap the prediction at

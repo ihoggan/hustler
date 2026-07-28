@@ -91,10 +91,75 @@ against — it is the most likely route to a sixth bug.
 
 ### Larger features under discussion
 
-**Visual training overlay / coach mode.** Scoped, not built. This is the next
-substantial feature, and it is aimed squarely at how the game is actually used
-— single player, setting the balls up and potting them. What exists today is
-the r14 aim overlay (toggle `G`, or the button on the Game tab): one shot, one
+**Cue-ball strike point and tip size — next.** The SpinPad works, but it has
+the same defect the power slider had before r29, to within a rounding error.
+The pad is 36 px in radius, so one pixel of movement is **0.028 of spin**,
+against a readout formatted to two decimals: it displays hundredths it cannot
+reach. `nudge_spin()` also does not snap, unlike `nudge_power()`, so a spin can
+be placed finely and then never returned to. Repeatability is the point — a
+contact point you can name is one you can play again.
+
+Three measured facts worth having before anyone redesigns this:
+
+- **Point-and-click already works.** `SpinPad.handle_event` calls `_apply()` on
+  `MOUSEBUTTONDOWN`, so a single click places the contact point; the drag is an
+  extra, not the only route. The problem is the size of the target, not the
+  interaction.
+- **A bigger pad does not fit the Shot tab.** The tab currently ends at 540 px
+  against a 548 px minimum window. Pad radius 48 would overflow by 16 px, and
+  60 by 40. Any larger picker has to live somewhere other than that panel —
+  drawn over the table, or on its own tab.
+- **No tip, no miscue limit, no squirt, no swerve are modelled** — those terms
+  appear nowhere in the source. `spin_pad_map()` divides the drag offset by the
+  pad's *pixel* radius and clamps to the unit circle; `follow` and `side` are
+  abstract coefficients in [-1, 1] applied as impulses at contact. Nothing maps
+  a point on the ball's surface to a spin magnitude.
+
+That last one has a useful consequence. Because the unit circle already means
+*maximum usable spin*, it is implicitly the miscue limit already. So a picker
+drawn as a ball face, with the strike zone as the inner region mapped onto the
+existing unit circle, is a **pure redraw with no physics change** — and drawing
+the unstrikeable outer part of the ball greyed would teach the real constraint
+instead of pretending the rim is reachable.
+
+Reference measurements taken from a training cue ball (a bullseye pattern with
+concentric rings): the tip marker is **0.200 × the ball's radius, i.e. 20% of
+its diameter** — about 10.2 mm on a 50.8 mm ball, which is a real UK/snooker
+tip. The printed rings sit at roughly 0.36 R and 0.75 R of projected radius,
+though the ball is tilted about 21° in the photograph so those two carry some
+error. The pad's current cursor is a hardcoded 5 px dot on a 36 px pad — 13.9%,
+proportionally smaller than a real tip. Drawing it at true scale matters: the
+tip's *size* is exactly why fine spin placement is hard in reality.
+
+Open forks, none decided:
+
+1. **Where a larger picker lives** — drawn over the table (the play area is
+   764 px wide, so 200–300 px across is available, and it costs no panel
+   space); its own tab; or keep the 36 px pad and add snapping only.
+2. **What it snaps to** — the nine named zones at two ring radii is 17 discrete
+   points, which matches how the technique is taught and makes each one
+   nameable ("top-right, outer"); versus a fine grid like power's 0.01; versus
+   no snapping. If it snaps, the r10 nudge buttons should stay as the escape
+   hatch for off-grid values.
+3. **Whether the picker draws the whole ball** with the unstrikeable region
+   greyed, or only the strike zone.
+
+Note that the nine zones — centre, four cardinals, four diagonals — already
+work continuously today; the pad is 2D and clamps to a circle, so a diagonal is
+simply follow and side together. Only the four nudge buttons are axis-aligned,
+which may be why the diagonals feel less available than they are. There are no
+discrete zones in the physics, so drawing them is a reading aid, not a model
+change, and should be described as one.
+
+**Visual training overlay / coach mode.** Scoped, not built, and **parked** —
+see the cue-ball strike point entry above, which now comes first. The reason is
+a dependency, not a change of mind: coach mode's whole output is spin-dependent
+(the predicted cue rest already moves live with the SpinPad, and cushion
+rebounds and the tangent line would too). If the spin control's geometry and
+semantics change underneath it, the overlay gets built twice. Everything below
+stays valid and should be read before proposing anything in this area.
+
+What exists today is the r14 aim overlay (toggle `G`, or the button on the Game tab): one shot, one
 contact, no cushions. It draws a tapered cue-to-ghost line tinted by pot
 chance, a translucent shaded ghost ball, the object-ball line to the pocket, a
 target-pocket glow that lights only when the pot is on, the tangent departure
