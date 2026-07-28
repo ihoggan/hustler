@@ -2327,19 +2327,48 @@ def nudge_power(value, delta, lo, hi, step=0.01):
     return max(lo, min(hi, round(snapped, 6)))
 
 
-def nudge_spin(follow, side, d_follow, d_side):
+def snap_spin(follow, side, step=0.01):
+    """r30 (strike point): snap a spin contact point to the `step` grid on each
+    axis, then re-clamp to the UNIT CIRCLE. Pure, no pygame.
+
+    Why it exists: the spin controls had exactly the defect r29 fixed for power.
+    A drag lands on an arbitrary float like 0.3472, shown as "+0.35", and
+    `nudge_spin` then walked it 0.3572, 0.3672 -- tracking correctly in the
+    readout while never being round, so a spin could be placed finely and never
+    RETURNED to. Repeatability is the whole point: a contact point you can name
+    is one you can play again.
+
+    ORDER IS LOAD-BEARING, and it is the opposite way round from the clamp.
+    Snap FIRST, clamp SECOND. Snapping a value that is already on the rim
+    pushes it back out -- a 45deg maximum is (0.7071, 0.7071), which snaps to
+    (0.71, 0.71) with magnitude 1.0041, i.e. more spin than the pad's budget
+    allows. Clamping afterwards pulls it back to exactly 1.0. The consequence,
+    which is deliberate and not a bug: RIM values sit exactly on the unit
+    circle rather than on the grid. That is the honest trade -- the rim means
+    "maximum", and maximum is a physical bound, not a grid point.
+    """
+    f = round(round(follow / step) * step, 6)
+    s = round(round(side / step) * step, 6)
+    mag = math.hypot(f, s)
+    if mag > 1.0:
+        f, s = f / mag, s / mag
+    return f, s
+
+
+def nudge_spin(follow, side, d_follow, d_side, step=0.01):
     """r10 (HUD fine adjustment): apply a small delta to the spin contact point
     and re-clamp to the UNIT CIRCLE, exactly as spin_pad_map does for a drag.
 
     Nudging must obey the same physical spin budget as dragging -- otherwise the
     buttons could walk the contact point outside the circle one 0.01 step at a
-    time and reach a spin the pad itself cannot express. Pure, no pygame."""
-    f = follow + d_follow
-    s = side + d_side
-    mag = math.hypot(f, s)
-    if mag > 1.0:
-        f, s = f / mag, s / mag
-    return f, s
+    time and reach a spin the pad itself cannot express. Pure, no pygame.
+
+    r30: the delta is applied FIRST and the result snapped SECOND, matching
+    nudge_power's r29 reasoning -- snapping first would make the opening press
+    off a dragged value merely land on the grid, and the button would look
+    broken. snap_spin owns the clamp, so the unit-circle budget is enforced in
+    one place for both the drag and the buttons."""
+    return snap_spin(follow + d_follow, side + d_side, step)
 
 
 def shot_spin_and_reset(side, follow):
@@ -3265,9 +3294,37 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             surf.blit(txt, txt.get_rect(center=self.rect.center))
 
     class SpinPad:
-        """Drag the contact point in the cue-ball circle: vertical = follow
-        / draw, horizontal = side, clamped to the unit circle (spin_pad_map).
-        HUD-only, like every other shot parameter (no mouse-table aiming)."""
+        """Drag or click the contact point on the cue-ball face: vertical =
+        follow / draw, horizontal = side, clamped to the unit circle
+        (spin_pad_map) and snapped to the 0.01 grid (snap_spin).
+        HUD-only, like every other shot parameter (no mouse-table aiming).
+
+        r30 -- THE DRAWN RIM IS THE UNIT CIRCLE, and that is the honest
+        choice, not a convenience. The engine models no tip, no miscue limit,
+        no squirt and no swerve; `spin_pad_map`'s unit circle already means
+        MAXIMUM USABLE SPIN. Drawing a larger ball with an outer band greyed
+        out would have asserted a miscue radius nothing in this project has
+        measured -- the two candidate numbers (the conventional half-ball rule
+        at 0.5R, and the 0.75R outer ring measured off a training cue ball
+        through about 21deg of photographic tilt) disagree, and neither is in
+        the physics. So the rim means "the most spin this engine can apply",
+        which is exactly true.
+
+        The teaching point survives as an ADVISORY dashed ring at 0.75 of the
+        rim, labelled as a real-cue note. It is drawn, not enforced: nothing
+        inside the rim is unreachable, so the 0.01 grid stays fully reachable
+        by dragging.
+
+        The cursor is drawn at TRUE TIP SCALE (TIP_FRAC of the ball radius,
+        measured off that same training ball) rather than the old hardcoded
+        5px dot, because the tip's size is precisely why fine spin placement is
+        hard in reality. It is an outline, not a disc, so it cannot hide the
+        guide it is sitting on.
+        """
+        TIP_FRAC = 0.200      # tip radius / ball radius, measured (r30)
+        ADVISORY_FRAC = 0.75  # where a real cue starts to miscue -- drawn only
+        INNER_FRAC = 0.5      # inner named ring (the 17 guide points)
+
         def __init__(self, centre, radius, get, set_):
             self.centre, self.radius, self.get, self.set = centre, radius, get, set_
             self.dragging = False
@@ -3287,19 +3344,72 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
 
         def _apply(self, pos):
             dx, dy = pos[0] - self.centre[0], pos[1] - self.centre[1]
-            self.set(*spin_pad_map(dx, dy, self.radius))
+            # r30: snap the drag too, not just the nudge buttons. Without this
+            # the pad hands back arbitrary floats and the buttons then walk
+            # them off-grid forever -- the r29 power defect, unfixed.
+            self.set(*snap_spin(*spin_pad_map(dx, dy, self.radius)))
+
+        def _dashed_circle(self, surf, colour, centre, radius, seg_deg=9):
+            """Dashed ring, drawn as alternating short arcs. pygame has no
+            dash primitive and draw.arc is unreliable at small radii, so this
+            steps segments directly -- dashed is the project's established
+            grammar for 'projection / advisory', not a solid object."""
+            cx, cy = centre
+            step = math.radians(seg_deg)
+            a = 0.0
+            on = True
+            while a < math.tau - 1e-9:
+                b = min(a + step, math.tau)
+                if on:
+                    pygame.draw.line(
+                        surf, colour,
+                        (cx + radius * math.cos(a), cy - radius * math.sin(a)),
+                        (cx + radius * math.cos(b), cy - radius * math.sin(b)), 1)
+                on = not on
+                a = b
 
         def draw(self, surf, font):
             cx, cy = self.centre
-            pygame.draw.circle(surf, (60, 64, 72), (cx, cy), self.radius)
-            pygame.draw.circle(surf, (150, 150, 150), (cx, cy), self.radius, 1)
-            pygame.draw.line(surf, (100, 100, 100), (cx - self.radius, cy), (cx + self.radius, cy), 1)
-            pygame.draw.line(surf, (100, 100, 100), (cx, cy - self.radius), (cx, cy + self.radius), 1)
+            R = self.radius
+            # Ball face. Lit slightly from the top-left so it reads as a
+            # sphere rather than a disc, using two flat circles -- no SRCALPHA
+            # surface needed, because nothing here is translucent.
+            pygame.draw.circle(surf, (222, 220, 214), (cx, cy), R)
+            pygame.draw.circle(surf, (238, 237, 233), (cx - R // 6, cy - R // 6),
+                               max(1, int(R * 0.62)))
+            # Crosshair, then the inner named ring.
+            pygame.draw.line(surf, (176, 174, 168), (cx - R, cy), (cx + R, cy), 1)
+            pygame.draw.line(surf, (176, 174, 168), (cx, cy - R), (cx, cy + R), 1)
+            pygame.draw.circle(surf, (176, 174, 168), (cx, cy),
+                               int(R * self.INNER_FRAC), 1)
+            # r30 advisory ring -- DRAWN, NOT ENFORCED. Everything inside the
+            # rim remains selectable; this is a note about real cues, not a
+            # limit this engine imposes.
+            self._dashed_circle(surf, (198, 132, 96), (cx, cy),
+                                int(R * self.ADVISORY_FRAC))
+            # The 17 named points: centre, plus 8 directions at two radii.
+            for frac in (self.INNER_FRAC, 1.0):
+                for k in range(8):
+                    a = k * math.pi / 4.0
+                    pygame.draw.circle(
+                        surf, (150, 148, 142),
+                        (int(cx + R * frac * math.cos(a)),
+                         int(cy - R * frac * math.sin(a))), 2)
+            pygame.draw.circle(surf, (150, 148, 142), (cx, cy), 2)
+            # Rim last, so it sits over the guide dots that touch it.
+            pygame.draw.circle(surf, (120, 118, 112), (cx, cy), R, 2)
+
             follow, side = self.get()
-            px, py = cx + side * self.radius, cy - follow * self.radius
-            pygame.draw.circle(surf, (255, 90, 90), (int(px), int(py)), 5)
+            px, py = cx + side * R, cy - follow * R
+            # True-scale tip outline + the exact contact point inside it.
+            tip_r = max(3, int(round(R * self.TIP_FRAC)))
+            pygame.draw.circle(surf, (206, 58, 54), (int(px), int(py)), tip_r, 2)
+            pygame.draw.circle(surf, (206, 58, 54), (int(px), int(py)), 2)
+
             lbl = font.render(f"spin  f{follow:+.2f} s{side:+.2f}", True, COL["hud"])
-            surf.blit(lbl, (cx - self.radius, cy - self.radius - 18))
+            surf.blit(lbl, (cx - R, cy - R - 18))
+            adv = font.render("- - miscue (real cue)", True, (198, 132, 96))
+            surf.blit(adv, (cx - R, cy + R + 4))
 
     class Dial:
         """Rotating cue-angle knob (Bug-report follow-up, R6.6): drag
@@ -3383,7 +3493,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     spin_side, spin_follow = 0.0, 0.0
     show_overlay = True
     aim_angle = 0.0          # degrees [0,360), absolute, HUD-only (no mouse aim)
-    panel_tab = 0            # 0=Shot, 1=Table, 2=Game, 3=Custom (r10)
+    panel_tab = 0            # index into TAB_LABELS. r30: resolve any
+                             # tab by NAME, never by a literal index --
+                             # adding the Spin tab moved Cust from 3 to 4.
     # r10 custom mode (trick-shot / practice editor). Active only when the
     # Custom tab is selected -- see custom_active(). Ball placement uses MOUSE
     # CLICKS ON THE TABLE, which deliberately reverses R6.6's "HUD-only, no
@@ -3525,7 +3637,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         """Mouse-table interaction is enabled ONLY here -- the Custom tab, in
         SANDBOX mode, with the table at rest. Everywhere else R6.6 still holds:
         the table is not clickable."""
-        return (panel_tab == 3 and mode == 0 and sim.all_at_rest())
+        return (panel_tab == TAB_LABELS.index("Cust")
+                and mode == 0 and sim.all_at_rest())
 
     def set_place_kind(i):
         nonlocal place_kind
@@ -3670,7 +3783,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # this font size, and the full word was clipped mid-glyph at the panel edge.
     # NB this is the LABEL only: panel_widgets is keyed by these strings, so the
     # Custom tab's widget list is registered under "Cust" too.
-    TAB_LABELS = ["Shot", "Table", "Game", "Cust"]
+    TAB_LABELS = ["Shot", "Spin", "Table", "Game", "Cust"]
     # r11: reserved height for the persistent status strip above the tabs. This
     # is where the old bottom-of-table HUD now lives (Maker's call), and unlike
     # the tab contents it is drawn on EVERY tab -- the readout has to be visible
@@ -3749,37 +3862,53 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                             lambda: nudge_aim_angle(-0.01)))
         shot.append(Button((px + nudge_w + 8, y, nudge_w, 22), "+0.01 deg",
                             lambda: nudge_aim_angle(0.01)))
-        # r10: HARD SEPARATION between the aim group and the spin group. The
-        # 0.1 deg row used to sit flush against the SpinPad's hit circle (which
-        # extends radius+6 px), so aim clicks landed on the pad and vice versa.
-        # This gap is the fix -- it is not decorative, don't close it up.
-        y += 34
-
-        pad_r = min(36, pw // 2 - 4)
-        pad_cx, pad_cy = px + pw // 2, y + pad_r + 12
-        shot.append(SpinPad((pad_cx, pad_cy), pad_r,
-                             lambda: (spin_follow, spin_side), set_spin))
-        y = pad_cy + pad_r + 8
-        # r10: spin fine adjustment. The pad is drag-only, and a drag can't
-        # resolve better than one pixel -- at this pad size that's ~0.02 of spin
-        # per pixel, so a precise contact point was simply unreachable. These
-        # nudge in 0.01 steps, re-clamped to the unit circle by nudge_spin so
-        # they can never walk outside the pad's own physical spin budget.
-        q = (pw - 12) // 4
-        shot.append(Button((px, y, q, 22), "draw",
-                            lambda: nudge_spin_by(-0.01, 0.0)))
-        shot.append(Button((px + q + 4, y, q, 22), "foll",
-                            lambda: nudge_spin_by(0.01, 0.0)))
-        shot.append(Button((px + 2 * (q + 4), y, q, 22), "left",
-                            lambda: nudge_spin_by(0.0, -0.01)))
-        shot.append(Button((px + 3 * (q + 4), y, q, 22), "right",
-                            lambda: nudge_spin_by(0.0, 0.01)))
-        y += 28
-        shot.append(Button((px, y, pw // 2 - 4, 26), "Reset spin", do_reset_spin))
-        shot.append(Button((px + pw // 2 + 4, y, pw // 2 - 4, 26), "Shoot", do_shoot,
+        # r30: the spin group moved to its own tab, so the r10 separation gap
+        # goes with it -- that gap existed because the 0.1 deg row sat flush
+        # against the SpinPad's hit circle (radius+6 px) and aim clicks were
+        # landing on the pad. With nothing below the aim buttons there is
+        # nothing to separate from. Shoot is now full width.
+        y += 12
+        shot.append(Button((px, y, pw, 26), "Shoot", do_shoot,
                             enabled=lambda: shoot_enabled(
                                 sim.cue() is not None, sim.all_at_rest(), my_turn())))
         panel_widgets["Shot"] = shot
+
+        # ---- Spin tab (r30) ------------------------------------------------
+        # Signed-off Fork 1B: its own tab rather than an overlay drawn on the
+        # table, because an overlay sits on the baize exactly when the table
+        # needs reading. The cost B was accepted with -- not being able to SET
+        # spin from the Shot tab -- is bounded by the r11 persistent status
+        # strip, which already renders the live spin readout on EVERY tab, and
+        # by SPACE, which strikes without returning to Shot.
+        spin_tab = []
+        y5 = STATUS_STRIP_H + 34
+        # Radius 100 is chosen, not spare-space: 1/100 = 0.0100 of spin per
+        # pixel, exactly the snap step, so every value on the 0.01 grid is
+        # reachable by dragging and no pixel of the picker is wasted. It is
+        # capped by the panel so a narrower panel degrades instead of
+        # overflowing. The +24 top gap clears the readout label, which draws
+        # at cy - radius - 18 and would otherwise land on the tabstrip.
+        ball_r = min(100, pw // 2 - 4)
+        ball_cx, ball_cy = px + pw // 2, y5 + ball_r + 24
+        spin_tab.append(SpinPad((ball_cx, ball_cy), ball_r,
+                                 lambda: (spin_follow, spin_side), set_spin))
+        y5 = ball_cy + ball_r + 22          # clears the advisory-ring caption
+        # r10's nudge buttons, unchanged in step and purpose. They are no
+        # longer the only way to reach a grid value (the picker resolves one
+        # step per pixel now), so they are back to being the escape hatch they
+        # were designed as.
+        q5 = (pw - 12) // 4
+        spin_tab.append(Button((px, y5, q5, 22), "draw",
+                                lambda: nudge_spin_by(-0.01, 0.0)))
+        spin_tab.append(Button((px + q5 + 4, y5, q5, 22), "foll",
+                                lambda: nudge_spin_by(0.01, 0.0)))
+        spin_tab.append(Button((px + 2 * (q5 + 4), y5, q5, 22), "left",
+                                lambda: nudge_spin_by(0.0, -0.01)))
+        spin_tab.append(Button((px + 3 * (q5 + 4), y5, q5, 22), "right",
+                                lambda: nudge_spin_by(0.0, 0.01)))
+        y5 += 28
+        spin_tab.append(Button((px, y5, pw, 26), "Reset spin", do_reset_spin))
+        panel_widgets["Spin"] = spin_tab   # key MUST match TAB_LABELS (r12.1)
 
         table = []
         y2 = STATUS_STRIP_H + 34   # r11: below the persistent status strip
@@ -6275,6 +6404,37 @@ def selftest():
           and abs(nudge_power(3.0, -0.1, lo61, hi61) - 2.9) < 1e-9,
           f"1.8472+0.01 -> {snap61:.4f}, 2.00 +0.01x7 -> {walk61:.4f}, "
           f"clamped at [{lo61}, {hi61}]")
+
+    # 62. r30 (cue-ball strike point): snap_spin. The pure core behind both the
+    # picker drag and the r10 nudge buttons.
+    #
+    # The third condition is the one that matters and the reason the order is
+    # written down in the docstring. A 45deg MAXIMUM is (0.7071, 0.7071);
+    # snapping it to the 0.01 grid gives (0.71, 0.71), whose magnitude is
+    # 1.0041 -- more spin than the pad's unit-circle budget allows. Snap first
+    # and clamp second and it comes back to exactly 1.0. Reverse the two and
+    # the control can express a spin the engine's own contract forbids, which
+    # is a silent physics change dressed up as a UI tweak.
+    snap62 = snap_spin(0.3472, -0.1149)
+    walk62 = nudge_spin(0.20, 0.0, 0.01, 0.0)[0]
+    for _ in range(6):
+        walk62 = nudge_spin(walk62, 0.0, 0.01, 0.0)[0]
+    d = 1.0 / math.sqrt(2.0)
+    rim62 = snap_spin(d, d)
+    off62 = snap_spin(0.30, 0.15)
+    check("r30 spin snap — a drag or nudge lands on the 0.01 grid (so the "
+          "two-decimal readout is the true value and a contact point can be "
+          "named and returned to), repeated steps don't drift off it, and a "
+          "diagonal MAXIMUM stays inside the unit circle because the snap "
+          "happens before the clamp, not after",
+          abs(snap62[0] - 0.35) < 1e-9 and abs(snap62[1] + 0.11) < 1e-9
+          and abs(walk62 - 0.27) < 1e-9
+          and math.hypot(*rim62) <= 1.0 + 1e-9
+          and abs(math.hypot(*rim62) - 1.0) < 1e-9
+          and abs(off62[0] - 0.30) < 1e-9 and abs(off62[1] - 0.15) < 1e-9,
+          f"(0.3472,-0.1149) -> ({snap62[0]:+.4f},{snap62[1]:+.4f}), "
+          f"0.20 +0.01x7 -> {walk62:.4f}, "
+          f"45deg max |v| = {math.hypot(*rim62):.6f}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
