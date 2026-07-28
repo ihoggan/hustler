@@ -2143,6 +2143,31 @@ def slider_value(frac, lo, hi):
     return lo + frac * (hi - lo)
 
 
+def spin_group_radius(avail_h, half_w, r_max=100, r_min=60, extra=100):
+    """r30.2 (Fork C -- strike-point picker on the Shot tab as well): the
+    largest picker radius whose WHOLE group (picker + caption + nudge row +
+    Reset) fits in `avail_h`, or None if it should be omitted entirely.
+    Pure, no pygame.
+
+    Why a floor rather than "shrink to whatever fits": panel widgets are laid
+    out in ABSOLUTE pixels from the top and do not scale with window height,
+    so the space below the Shot tab is generous on a desktop-sized borderless
+    window and nearly nothing at the F11 windowed size (BASE_H1 = 548). Without
+    a floor the Shot copy would silently degrade into a picker smaller than the
+    36px pad it replaced, and below about r=60 the true-scale tip outline
+    (0.200 x r, so 12px) starts crowding the 2px guide dots and the inner
+    ring -- the control would be drawn but not usable. Returning None is the
+    honest answer: the Spin tab always carries the full-size one, so omitting
+    the convenience copy costs a tab click, not a capability.
+
+    `extra` is everything in the group that is NOT the diameter: 24px above the
+    picker to clear its readout label, 22 below to clear the advisory-ring
+    caption, then 28 for the nudge row and 26 for Reset.
+    """
+    r = min(r_max, half_w, (avail_h - extra) // 2)
+    return r if r >= r_min else None
+
+
 def spin_pad_map(dx, dy, radius):
     """2D spin pad: a contact offset (dx, dy) in pixels from the pad centre
     -> (follow, side) in [-1, 1], clamped to the UNIT CIRCLE (not the
@@ -3371,12 +3396,16 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         def draw(self, surf, font):
             cx, cy = self.centre
             R = self.radius
-            # Ball face. Lit slightly from the top-left so it reads as a
-            # sphere rather than a disc, using two flat circles -- no SRCALPHA
-            # surface needed, because nothing here is translucent.
-            pygame.draw.circle(surf, (222, 220, 214), (cx, cy), R)
-            pygame.draw.circle(surf, (238, 237, 233), (cx - R // 6, cy - R // 6),
-                               max(1, int(R * 0.62)))
+            # Ball face -- FLAT, deliberately, and this is a correction.
+            # r30 first drew it as two offset circles to suggest a lit sphere.
+            # pygame.draw paints flat, so that is not a gradient: it produced a
+            # HARD-EDGED step from 238 to 222 at about r=0.45, with the dashed
+            # advisory ring falling inside the darker band. The Maker read it,
+            # correctly, as a greyed-out unstrikeable region -- which is the
+            # exact signal Fork 3 decided NOT to send, since the whole point is
+            # that nothing inside the rim is unreachable. Shading that means
+            # nothing is worse than no shading. Do not re-add it.
+            pygame.draw.circle(surf, (232, 231, 226), (cx, cy), R)
             # Crosshair, then the inner named ring.
             pygame.draw.line(surf, (176, 174, 168), (cx - R, cy), (cx + R, cy), 1)
             pygame.draw.line(surf, (176, 174, 168), (cx, cy - R), (cx, cy + R), 1)
@@ -3808,6 +3837,40 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # tabbed panel can't show an always-visible readout, so the strip is
         # deliberately outside the tab system. STATUS_STRIP_H is reserved space:
         # the tabs and every tab's widgets start below it.
+        # ---- Spin group (r30, made shareable at r30.2) ---------------------
+        # Signed-off Fork 1B put the picker on its own tab rather than over the
+        # table, because an overlay sits on the baize exactly when the table
+        # needs reading. Fork C (r30.2) then adds a SECOND copy on the Shot tab
+        # wherever the window is tall enough to hold it, so a full-screen game
+        # never needs the tab switch at all.
+        #
+        # The two copies cannot disagree. Both are VIEWS onto the same
+        # spin_follow / spin_side closure variables -- there is no second copy
+        # of the state -- and event dispatch only ever reaches the widgets of
+        # the CURRENTLY VISIBLE tab, so only one is live at a time. Building
+        # both from one function is what keeps them identical; do not inline
+        # either of them back.
+        def add_spin_group(target, y_top, radius):
+            cx_, cy_ = px + pw // 2, y_top + radius + 24
+            target.append(SpinPad((cx_, cy_), radius,
+                                   lambda: (spin_follow, spin_side), set_spin))
+            yy = cy_ + radius + 22        # clears the advisory-ring caption
+            qq = (pw - 12) // 4
+            target.append(Button((px, yy, qq, 22), "draw",
+                                  lambda: nudge_spin_by(-0.01, 0.0)))
+            target.append(Button((px + qq + 4, yy, qq, 22), "foll",
+                                  lambda: nudge_spin_by(0.01, 0.0)))
+            target.append(Button((px + 2 * (qq + 4), yy, qq, 22), "left",
+                                  lambda: nudge_spin_by(0.0, -0.01)))
+            target.append(Button((px + 3 * (qq + 4), yy, qq, 22), "right",
+                                  lambda: nudge_spin_by(0.0, 0.01)))
+            yy += 28
+            target.append(Button((px, yy, pw, 26), "Reset spin", do_reset_spin))
+            return yy + 26
+
+        # Radius 100 is chosen, not spare: 1/100 = 0.0100 of spin per pixel,
+        # exactly the snap step, so every value on the 0.01 grid is reachable
+        # by dragging and no pixel of the picker is wasted.
         y = STATUS_STRIP_H
         panel_widgets["tabstrip"] = TabStrip((win_w - PANEL_W, y, PANEL_W, 26),
                                               TAB_LABELS, lambda: panel_tab, set_tab)
@@ -3862,52 +3925,30 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                             lambda: nudge_aim_angle(-0.01)))
         shot.append(Button((px + nudge_w + 8, y, nudge_w, 22), "+0.01 deg",
                             lambda: nudge_aim_angle(0.01)))
-        # r30: the spin group moved to its own tab, so the r10 separation gap
-        # goes with it -- that gap existed because the 0.1 deg row sat flush
-        # against the SpinPad's hit circle (radius+6 px) and aim clicks were
-        # landing on the pad. With nothing below the aim buttons there is
-        # nothing to separate from. Shoot is now full width.
-        y += 12
+        # r30.1 BUG FIX: this was `y += 12` and Shoot overlapped the 0.01 deg
+        # row by 10px. The 34 it replaced was never "the separation gap" -- it
+        # was the 0.01 deg row's own 22px height PLUS a 12px gap, and I read
+        # the comment instead of the arithmetic. It stays 34: 22 clears the
+        # row, and the remaining 12 keeps Shoot visually apart from the fine
+        # adjust rows, which matters because Shoot is the irreversible one.
+        y += 34
         shot.append(Button((px, y, pw, 26), "Shoot", do_shoot,
                             enabled=lambda: shoot_enabled(
                                 sim.cue() is not None, sim.all_at_rest(), my_turn())))
+        y += 26
+        # r30.2 (Fork C): a second strike-point picker here when the window is
+        # tall enough, so a desktop-sized game never leaves the Shot tab. The
+        # fit rule is the pure spin_group_radius(); None means the window is
+        # too short and the Spin tab keeps sole custody, which is the honest
+        # outcome rather than drawing a picker too small to aim with.
+        shot_spin_r = spin_group_radius(win_h - (y + 32) - 8, pw // 2 - 4)
+        if shot_spin_r is not None:
+            add_spin_group(shot, y + 32, shot_spin_r)
         panel_widgets["Shot"] = shot
 
-        # ---- Spin tab (r30) ------------------------------------------------
-        # Signed-off Fork 1B: its own tab rather than an overlay drawn on the
-        # table, because an overlay sits on the baize exactly when the table
-        # needs reading. The cost B was accepted with -- not being able to SET
-        # spin from the Shot tab -- is bounded by the r11 persistent status
-        # strip, which already renders the live spin readout on EVERY tab, and
-        # by SPACE, which strikes without returning to Shot.
         spin_tab = []
-        y5 = STATUS_STRIP_H + 34
-        # Radius 100 is chosen, not spare-space: 1/100 = 0.0100 of spin per
-        # pixel, exactly the snap step, so every value on the 0.01 grid is
-        # reachable by dragging and no pixel of the picker is wasted. It is
-        # capped by the panel so a narrower panel degrades instead of
-        # overflowing. The +24 top gap clears the readout label, which draws
-        # at cy - radius - 18 and would otherwise land on the tabstrip.
-        ball_r = min(100, pw // 2 - 4)
-        ball_cx, ball_cy = px + pw // 2, y5 + ball_r + 24
-        spin_tab.append(SpinPad((ball_cx, ball_cy), ball_r,
-                                 lambda: (spin_follow, spin_side), set_spin))
-        y5 = ball_cy + ball_r + 22          # clears the advisory-ring caption
-        # r10's nudge buttons, unchanged in step and purpose. They are no
-        # longer the only way to reach a grid value (the picker resolves one
-        # step per pixel now), so they are back to being the escape hatch they
-        # were designed as.
-        q5 = (pw - 12) // 4
-        spin_tab.append(Button((px, y5, q5, 22), "draw",
-                                lambda: nudge_spin_by(-0.01, 0.0)))
-        spin_tab.append(Button((px + q5 + 4, y5, q5, 22), "foll",
-                                lambda: nudge_spin_by(0.01, 0.0)))
-        spin_tab.append(Button((px + 2 * (q5 + 4), y5, q5, 22), "left",
-                                lambda: nudge_spin_by(0.0, -0.01)))
-        spin_tab.append(Button((px + 3 * (q5 + 4), y5, q5, 22), "right",
-                                lambda: nudge_spin_by(0.0, 0.01)))
-        y5 += 28
-        spin_tab.append(Button((px, y5, pw, 26), "Reset spin", do_reset_spin))
+        add_spin_group(spin_tab, STATUS_STRIP_H + 34,
+                        min(100, pw // 2 - 4))
         panel_widgets["Spin"] = spin_tab   # key MUST match TAB_LABELS (r12.1)
 
         table = []
@@ -6435,6 +6476,39 @@ def selftest():
           f"(0.3472,-0.1149) -> ({snap62[0]:+.4f},{snap62[1]:+.4f}), "
           f"0.20 +0.01x7 -> {walk62:.4f}, "
           f"45deg max |v| = {math.hypot(*rim62):.6f}")
+
+    # 63. r30.2 (Fork C): spin_group_radius -- the pure fit rule deciding
+    # whether the Shot tab gets its own copy of the strike-point picker.
+    #
+    # The FLOOR is the assertion that matters. Panel widgets are laid out in
+    # absolute pixels and do not scale with window height, so at the F11
+    # windowed size there is barely any room below Shoot. Without the floor the
+    # rule happily returns a radius smaller than the 36px pad this replaced --
+    # or a negative one -- and the Shot tab would draw a picker too small to
+    # aim with, or off the bottom of the panel. None is the correct answer
+    # there, because the Spin tab always carries the full-size picker.
+    tall63 = spin_group_radius(400, 112)          # desktop-sized window
+    short63 = spin_group_radius(88, 112)          # BASE_H1 = 548, F11 windowed
+    narrow63 = spin_group_radius(400, 80)         # panel narrower than the cap
+    edge63 = spin_group_radius(220, 112)          # exactly at the r_min floor
+    # NB this assertion FAILED on its first run, and the CODE was right: I had
+    # expected spin_group_radius(400, 44) to return 44, forgetting that the
+    # floor applies to the width cap as well as the height fit. A 44px picker
+    # is below the usable floor whichever dimension squeezed it, so None is
+    # correct. Same episode as r29's #61 -- the test was wrong, not the build.
+    check("r30.2 shot-tab picker fit — the whole group is sized to the space "
+          "actually below Shoot, never wider than the panel, and is OMITTED "
+          "outright (not shrunk into uselessness) when the window is too "
+          "short, since the Spin tab always keeps the full-size picker",
+          tall63 == 100 and 2 * tall63 + 100 <= 400
+          and short63 is None
+          and narrow63 == 80
+          and spin_group_radius(400, 44) is None
+          and edge63 == 60 and 2 * edge63 + 100 <= 220
+          and spin_group_radius(218, 112) is None,
+          f"avail 400 -> r{tall63}, avail 88 -> {short63}, "
+          f"half_w 80 -> r{narrow63}, half_w 44 -> "
+          f"{spin_group_radius(400, 44)}, floor at avail 220 -> r{edge63}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
