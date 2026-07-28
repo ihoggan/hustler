@@ -246,14 +246,24 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   cushion geometry instead of the rectangle — it is what the custom-mode jaws
   placement fix was built on at r24, and what a cushion-accurate aim or coach
   overlay would need.
-- **Line endings:** `.gitattributes` now pins the repo to LF, but
-  `cushion_path.py` is still stored CRLF in the index, so a fresh clone reports
-  it as modified immediately — a 514-line phantom diff with zero content
-  change. Harmless to run. Fixing it (`git add --renormalize cushion_path.py`)
-  is one command, but it moves that file's md5 off the value the docs quote as
-  an identity marker, so do it deliberately and re-baseline in the same commit.
-  Until then, **do not commit with `git add -A`** unless you mean to include
-  it.
+- **Line endings: fixed at r30.3, and a dirty clone now means something.**
+  `.gitattributes` pins the repo to LF (`* text=auto eol=lf`), but
+  `cushion_path.py` had been committed CRLF long before that attribute existed.
+  Git normalises to LF when staging, so it compared the file against a blob
+  that disagreed and reported it modified forever — a 514-line phantom diff
+  with zero content change, in every clone, for many revisions. That is what
+  `git add --renormalize cushion_path.py` fixed, in one commit.
+
+  The file's md5 moved from `23198648db217016cdea85823e38e324` to
+  **`8568f6658a90ce33e05e04af73eb03f4`**. Nothing else moved: still 514 lines,
+  still 36 primitives from the standalone selftest, `--snap` still
+  byte-identical, `hustler.py` untouched. **If you are working from an older
+  re-entry prompt that quotes the old hash, that is the one thing to update.**
+
+  A fresh clone should now be completely clean. If `git status` shows
+  `cushion_path.py` as modified, that is a real change and not the old phantom
+  — treat it as one. Naming files explicitly on `git add` remains the practice
+  regardless; the phantom was one reason for it, not the only one.
 
 ## 4. Physics calibration (real spec, sourced)
 
