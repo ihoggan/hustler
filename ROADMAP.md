@@ -1,22 +1,25 @@
 # Roadmap
 
-## Current status: r29 — playable, validated
+## Current status: r30 — playable, validated
 
-**Validation snapshot (r29, measured on nix5 and reproduced in a Linux
+**Validation snapshot (r30, measured on nix5 and reproduced in a Linux
 container):**
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 69 assertions |
+| `--selftest` | ALL PASS — 71 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY (nix5), all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 
-The `--aigame` figure is unchanged from the pre-r28 run, which is the point:
-r28 adds a test and touches no game code, so the AI must be untouched.
+The `--aigame` figure is unchanged, which is the point: r28 through r30 add
+tests and human-facing controls and touch no AI code, so the AI must be
+untouched. `--snap` staying byte-identical says the same thing about the
+rendered scene — the panel is not drawn headlessly, so it proves the *table*
+render is untouched and nothing about the picker.
 **Record which machine an `--aigame` number came from.** A seeded score is a
 regression check against one build on one machine, not an absolute — it says
 "nothing moved since last time here", and nothing more.
@@ -32,7 +35,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~6,360 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~6,590 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -91,73 +94,37 @@ against — it is the most likely route to a sixth bug.
 
 ### Larger features under discussion
 
-**Cue-ball strike point and tip size — next.** The SpinPad works, but it has
-the same defect the power slider had before r29, to within a rounding error.
-The pad is 36 px in radius, so one pixel of movement is **0.028 of spin**,
-against a readout formatted to two decimals: it displays hundredths it cannot
-reach. `nudge_spin()` also does not snap, unlike `nudge_power()`, so a spin can
-be placed finely and then never returned to. Repeatability is the point — a
-contact point you can name is one you can play again.
+> **Cue-ball strike point and tip size (r30) is done.** The SpinPad had the
+> power slider's pre-r29 defect to within a rounding error — 0.028 of spin per
+> pixel against a two-decimal readout, and `nudge_spin()` did not snap. It now
+> snaps to the same 0.01 grid power uses, and the picker moved to its own Spin
+> tab at 100 px radius, which is one grid step per pixel exactly. All three
+> forks were decided against their original leanings and the reasoning is in
+> [CHANGELOG.md](CHANGELOG.md): the picker is on a tab rather than over the
+> table, because an overlay sits on the cloth exactly when the table needs
+> reading; it snaps to a grid with the seventeen named points drawn as guides
+> rather than as snap targets; and the drawn rim *is* the unit circle, with no
+> greyed band, because this engine models no miscue limit and the two candidate
+> radii for one disagree. Selftests 62 and 63.
+>
+> Two residuals, neither pursued. The engine still models no tip, squirt or
+> swerve, so the advisory ring at 0.75 R is a drawn note and nothing reads it.
+> And the picker's own layout is only checkable by instrumenting the real panel
+> builder, which is the blind spot below.
 
-Three measured facts worth having before anyone redesigns this:
+**Visual training overlay / coach mode.** Scoped, not built, and **no longer
+blocked.** It was parked behind the cue-ball strike point work for a dependency
+reason rather than a change of mind: coach mode's whole output is
+spin-dependent (the predicted cue rest already moves live with the spin
+control, and cushion rebounds and the tangent line would too), so building it
+first would have meant building it twice. r30 settled that geometry — spin is
+snapped, the unit circle is unchanged, and the drawn rim now means maximum
+usable spin — so the dependency is discharged and this is the largest piece of
+open work. Everything below stays valid and should be read before proposing
+anything in this area.
 
-- **Point-and-click already works.** `SpinPad.handle_event` calls `_apply()` on
-  `MOUSEBUTTONDOWN`, so a single click places the contact point; the drag is an
-  extra, not the only route. The problem is the size of the target, not the
-  interaction.
-- **A bigger pad does not fit the Shot tab.** The tab currently ends at 540 px
-  against a 548 px minimum window. Pad radius 48 would overflow by 16 px, and
-  60 by 40. Any larger picker has to live somewhere other than that panel —
-  drawn over the table, or on its own tab.
-- **No tip, no miscue limit, no squirt, no swerve are modelled** — those terms
-  appear nowhere in the source. `spin_pad_map()` divides the drag offset by the
-  pad's *pixel* radius and clamps to the unit circle; `follow` and `side` are
-  abstract coefficients in [-1, 1] applied as impulses at contact. Nothing maps
-  a point on the ball's surface to a spin magnitude.
-
-That last one has a useful consequence. Because the unit circle already means
-*maximum usable spin*, it is implicitly the miscue limit already. So a picker
-drawn as a ball face, with the strike zone as the inner region mapped onto the
-existing unit circle, is a **pure redraw with no physics change** — and drawing
-the unstrikeable outer part of the ball greyed would teach the real constraint
-instead of pretending the rim is reachable.
-
-Reference measurements taken from a training cue ball (a bullseye pattern with
-concentric rings): the tip marker is **0.200 × the ball's radius, i.e. 20% of
-its diameter** — about 10.2 mm on a 50.8 mm ball, which is a real UK/snooker
-tip. The printed rings sit at roughly 0.36 R and 0.75 R of projected radius,
-though the ball is tilted about 21° in the photograph so those two carry some
-error. The pad's current cursor is a hardcoded 5 px dot on a 36 px pad — 13.9%,
-proportionally smaller than a real tip. Drawing it at true scale matters: the
-tip's *size* is exactly why fine spin placement is hard in reality.
-
-Open forks, none decided:
-
-1. **Where a larger picker lives** — drawn over the table (the play area is
-   764 px wide, so 200–300 px across is available, and it costs no panel
-   space); its own tab; or keep the 36 px pad and add snapping only.
-2. **What it snaps to** — the nine named zones at two ring radii is 17 discrete
-   points, which matches how the technique is taught and makes each one
-   nameable ("top-right, outer"); versus a fine grid like power's 0.01; versus
-   no snapping. If it snaps, the r10 nudge buttons should stay as the escape
-   hatch for off-grid values.
-3. **Whether the picker draws the whole ball** with the unstrikeable region
-   greyed, or only the strike zone.
-
-Note that the nine zones — centre, four cardinals, four diagonals — already
-work continuously today; the pad is 2D and clamps to a circle, so a diagonal is
-simply follow and side together. Only the four nudge buttons are axis-aligned,
-which may be why the diagonals feel less available than they are. There are no
-discrete zones in the physics, so drawing them is a reading aid, not a model
-change, and should be described as one.
-
-**Visual training overlay / coach mode.** Scoped, not built, and **parked** —
-see the cue-ball strike point entry above, which now comes first. The reason is
-a dependency, not a change of mind: coach mode's whole output is spin-dependent
-(the predicted cue rest already moves live with the SpinPad, and cushion
-rebounds and the tangent line would too). If the spin control's geometry and
-semantics change underneath it, the overlay gets built twice. Everything below
-stays valid and should be read before proposing anything in this area.
+One thing r30 adds to the list of settled constraints: the picker asserts no
+miscue limit, because the engine has none. A coach overlay must not either.
 
 What exists today is the r14 aim overlay (toggle `G`, or the button on the Game tab): one shot, one
 contact, no cushions. It draws a tapered cue-to-ghost line tinted by pot

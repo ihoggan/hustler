@@ -11,7 +11,7 @@ workflow and expectations.
 4. **Verify your baseline** before changing anything:
 
 ```bash
-python3 hustler.py --selftest      # expect: ALL PASS (69 assertions at r29)
+python3 hustler.py --selftest      # expect: ALL PASS (71 assertions at r30)
 ```
 
 If that doesn't pass on a clean checkout, stop and work out why before writing
@@ -70,7 +70,7 @@ Two notes on reading the results:
   If a count looks different, run it a few times on both versions before
   concluding anything.
 - `--snap` must stay **byte-identical** (md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`,
-  unchanged from R6.1 through r29) unless you are deliberately changing the
+  unchanged from R6.1 through r30) unless you are deliberately changing the
   rendered scene, in which case say so explicitly in the commit message.
 - A seeded `--aigame` result is a regression check against **one build on one
   machine**, not an absolute. Note which machine a number came from when you
@@ -114,7 +114,7 @@ md5sum ~/Downloads/hustler.py | grep -q <expected> && cp ~/Downloads/hustler.py 
 and assert the assertion **count**, not just that it says ALL PASS:
 
 ```bash
-python3 hustler.py --selftest | grep -c "\[PASS\]"     # expect 69, not "passes"
+python3 hustler.py --selftest | grep -c "\[PASS\]"     # expect 71, not "passes"
 ```
 
 Nothing was lost — the previous revision was a commit away in history — but it
@@ -224,6 +224,15 @@ Collected from real time lost. Each of these cost somebody a session.
   looked at actual numbers.
 - **Check *who* a bug affects before asking why.** Half of one long investigation
   turned out to be legal play that was never a bug at all.
+- **Resolve a tab by name, never by a literal index.** `custom_active()` tested
+  `panel_tab == 3` for years. Adding the Spin tab at r30 moved Custom to 4, and
+  mouse-table ball placement would have started firing on the wrong tab with
+  every automated check still green. It now reads `TAB_LABELS.index("Cust")`.
+- **Write git command blocks with no globs.** The maintainer's shell is zsh,
+  where an unmatched glob raises `no matches found` and abandons the *entire*
+  command line — so a defensive `for f in files*/thing.py` silently prevents
+  everything after it from running, including the guard that was supposed to
+  protect you. Name paths explicitly, or use `find`.
 
 ## Testing philosophy
 
@@ -247,6 +256,26 @@ work. Do that for anything you add here.
 So: add the assertion, run the chain, **and then play the game**. If you're
 adding rules or turn logic, consider a scripted play-through test that drives a
 whole frame and asserts the state at each step.
+
+### When an assertion fails, find out which end is wrong
+
+Twice now — r29's power nudge and r30's picker fit rule — a new assertion has
+failed on its first run with the *code* correct and the *expectation* wrong.
+Both times the instinct was to reach for the implementation. Read the failure
+detail first and work out which end you actually trust: a test written from an
+idea of how something should behave is exactly as likely to be wrong as the
+code written from the same idea, and it is cheaper to be wrong in the test.
+When it turns out the test was at fault, leave a note in the assertion saying
+so. Both of those episodes are recorded in the source beside the assertion.
+
+### Measuring that it fits is not measuring that it is laid out
+
+The panel layout probe below reports the extent of a tab — its topmost and
+bottommost widget. At r30 the Shoot button was moved up by a wrong constant and
+overlapped the aim row by 10 px, and the probe reported a perfectly sensible
+bottom edge throughout, because an overlap does not change a maximum. Any probe
+of this kind should also compare every pair of widget rectangles for
+intersection. It costs four lines and it catches the whole class.
 
 ## Getting help
 

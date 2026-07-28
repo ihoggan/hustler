@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r29 — playable, validated, no known blocking bugs.
+**Status:** r30 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~6,360 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~6,590 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r29
+## Validation snapshot at r30
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 69 assertions |
+| `--selftest` | ALL PASS — 71 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -59,7 +59,7 @@ them remains accurate as history and the engine facts in §3 are still current
 and still worth reading — but roughly sixteen revisions of work happened
 afterwards. That later work is documented in:
 
-- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r29
+- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r30
 - [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — the three open threads, each with its diagnosis
 - [ROADMAP.md](ROADMAP.md) — what's under discussion and what it depends on
 - [CONTRIBUTING.md](CONTRIBUTING.md) — workflow, standards, and the traps that have cost real time
@@ -100,6 +100,17 @@ times coarser than its own two-decimal readout. Both are described in the
 CHANGELOG; the second blind spot r29 exposed, that the HUD panel cannot be
 rendered headlessly at all, is written up after the r23 lesson.
 
+**r30** finishes what r29 started. Aim had fine adjustment from r10 and power
+from r29; spin was the last shot parameter still set by eye, with the same
+pixel-versus-readout mismatch and no snapping at all. It now snaps to the same
+0.01 grid, and the contact point is set on a cue-ball picker with its own tab —
+drawn at true tip scale, with the rim meaning maximum usable spin rather than
+pretending to a miscue limit the engine does not model. Two follow-ups, r30.1
+and r30.2, came straight out of playing it: a button overlap the layout probe
+could not see, a piece of shading that accidentally signalled a distinction
+that does not exist, and a second copy of the picker on the Shot tab wherever
+the window is tall enough to hold it.
+
 **The most important lesson of the whole period** is from r23: all four of those
 gameplay bugs — turn handover, spin reset, cue placement, sandbox ball-in-hand —
 passed the *entire* validation chain and were found by sitting down and playing.
@@ -120,10 +131,23 @@ headlessly** and no automated capture can show it. Panel layout can still be
 checked without eyes, but numerically rather than visually: copy the tree
 aside, inject a `print` and a `raise SystemExit(0)` immediately after
 `panel_widgets["Shot"] = shot`, run `run_gui(smoke=False)` under
-`SDL_VIDEODRIVER=dummy`, and read `max(w.rect.bottom for w in shot)` against
-`win_h`. That is how r29's four-button row was confirmed to fit — 19 widgets
-ending at 540 px against a 548 px minimum window. Anything about how the panel
-*looks*, as opposed to where it ends, still needs a human at the keyboard.
+`SDL_VIDEODRIVER=dummy`, and read the widget rectangles against `win_h`. That
+is how r29's four-button row was confirmed to fit — 19 widgets ending at 540 px
+against a 548 px minimum window.
+
+**r30 showed that is not enough on its own.** A probe reading only the topmost
+and bottommost widget reports the *extent* of a tab, and an overlap does not
+change a maximum. The Shoot button was moved up by a wrong constant and sat
+10 px inside the aim row, and the probe reported a perfectly sensible bottom
+edge the whole time. Compare every pair of widget rectangles for intersection
+as well; it is four lines and it catches the class. Run it at more than one
+window size, too — layout is in absolute pixels and does not scale with window
+height, so a tab that fits a desktop-sized borderless window may not fit the
+1144×548 the F11 toggle restores.
+
+Anything about how the panel *looks*, as opposed to where it sits, still needs
+a human at the keyboard — and r30 proved that twice over, since both of its
+follow-up fixes were found by playing rather than by measuring.
 
 ---
 
@@ -139,7 +163,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 69 assertions, all
+  out) rather than the pygame wrapper around it. Currently 71 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -201,6 +225,22 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   than it is. Don't point one at the other without an explicit decision — this
   is why r16's over-harshness went unnoticed for so long, since no human path
   ever touches `pot_estimate`.
+- **The spin unit circle IS the miscue limit, and nothing else is.** No tip,
+  miscue threshold, squirt or swerve is modelled anywhere — those words appear
+  zero times in the source. `spin_pad_map()` divides a pixel offset by the
+  picker's radius and clamps the magnitude to 1, and `follow`/`side` are
+  abstract coefficients in [-1, 1] applied as impulses at contact. So the unit
+  circle already means *maximum usable spin*, which is why r30's picker draws
+  its rim as the circle and greys nothing: an outer band would assert a miscue
+  radius this project has not measured. The dashed ring at 0.75 R is drawn as a
+  real-cue note and no code reads it. Any future overlay must not assert one
+  either.
+- **Spin snaps to a 0.01 grid, and the order is snap-then-clamp** (r30,
+  `snap_spin()`). Snapping a value already on the rim pushes it back out — a
+  45° maximum is (0.7071, 0.7071), which snaps to (0.71, 0.71) with magnitude
+  1.0041, i.e. more spin than the budget allows — so the clamp must come
+  second. The deliberate consequence is that rim values sit exactly on the
+  circle rather than on the grid.
 - **`cushion_path.flatten(path, max_seg_deg=5.0)`** returns the tangent-true
   cushion as a vertex list. That's the starting point for anything needing real
   cushion geometry instead of the rectangle — it is what the custom-mode jaws
@@ -823,19 +863,21 @@ Current open work now lives in two places, kept up to date:
   under "Recently fixed".
 - **[ROADMAP.md](ROADMAP.md)** — candidates under discussion, with dependencies:
   league mode, the "Grannie" whitewash rule, a possible snooker project, and
-  **the cue-ball strike point and tip size**, which is the agreed next piece of
-  work, and **the visual training overlay / coach mode**, which is scoped there
-  in detail but is now PARKED behind it — coach mode draws spin-dependent
-  predictions, so the spin control's semantics have to settle first or the
-  overlay gets built twice. Read the coach-mode entry before proposing anything
-  in its area: it records what has already been settled
+  **the visual training overlay / coach mode**, which is now the largest piece
+  of open work. It was parked behind the cue-ball strike point because coach
+  mode draws spin-dependent predictions and would otherwise have been built
+  twice; **that dependency is discharged — the strike point shipped at r30**,
+  so coach mode is unblocked. Read its entry before proposing anything in its
+  area: it records what has already been settled
   (reflect off the real cushion-nose polyline rather than a rectangle; never
   draw a curve, because spin is an impulse at contact only; use
   `pot_assessment()` and not the AI's `pot_estimate()`; cap the prediction at
   the cue plus the first object ball plus cushions, because a break's secondary
   scatter is chaotic and drawing it would be fiction) as well as what is
-  genuinely still open. Scripted play-through tests were on this list and
-  shipped at r28.
+  genuinely still open. r30 adds one more settled constraint: the engine models
+  no miscue limit, so an overlay must not assert one either. Scripted
+  play-through tests were on this list and shipped at r28; the cue-ball strike
+  point was on it and shipped at r30.
 
 Two constraints worth restating here, because both have been nearly broken by
 accident:
@@ -866,13 +908,20 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 > parameters and utility weights, never scripted shots.
 >
 > **Confirm the chain passes on the attached files before proposing anything:**
-> selftest ALL PASS (69 assertions), `--batch 30` with 0 containment escapes,
+> selftest ALL PASS (71 assertions), `--batch 30` with 0 containment escapes,
 > `--smoke` 90 frames, `--snap` md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`
 > byte-identical, `cushion_path.py` standalone green. If a marker is missing or
 > a number is off, say so before editing anything — an earlier session was very
 > nearly built on a stale copy of the file, and a later one found the repo
 > documenting two measurement scripts that had never actually been committed.
 > Check what is in front of you rather than what the docs claim is there.
+>
+> **Two blind spots the chain cannot cover.** The HUD panel is never built or
+> drawn headlessly (`build_panel_widgets()` runs only in the non-smoke branch),
+> so no capture can show it — instrument the real builder instead, and check
+> widget rectangles for overlap rather than only reading the topmost and
+> bottommost, at more than one window size. And a seeded `--aigame` score is a
+> per-build, per-machine regression check, not an absolute.
 >
 > **Two measurement tools** sit alongside the game and are not part of the
 > chain: `distance_calibration_sweep.py` (fires real simulated shots on a grid
@@ -906,5 +955,5 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 
 ---
 
-*(Written at r23, refreshed at r29. The file is safe to play. Good hunting,
+*(Written at r23, refreshed at r30. The file is safe to play. Good hunting,
 next instance.)*

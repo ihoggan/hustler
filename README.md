@@ -65,8 +65,19 @@ python hustler.py
 ```
 
 The game starts full-screen. Aiming is done entirely from the on-screen control
-panel (fine angle buttons, a spin pad, power) — this is deliberate, so a shot
-is set precisely rather than flicked with the mouse.
+panel — this is deliberate, so a shot is set precisely rather than flicked with
+the mouse. Angle, power and spin each have a coarse control and fine adjustment
+buttons, and all three snap to a grid fine enough that the number you read is
+the number you get: a shot you can write down is a shot you can play again.
+
+Spin is set by clicking or dragging on a cue-ball picker, which has its own
+**Spin** tab and also appears on the **Shot** tab when the window is tall
+enough to hold it. The rim of the drawn ball is the most spin the engine can
+apply — nothing is greyed out, because everything inside it is reachable. The
+dashed ring at three-quarters is an advisory note about where a real cue starts
+to miscue; the simulation does not model a tip, so nothing enforces it. The
+cursor is drawn at true tip scale, which is why placing fine spin feels
+fiddly — it is fiddly in reality, for the same reason.
 
 ### Keyboard controls
 

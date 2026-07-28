@@ -5,7 +5,95 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r29 — power you can name (current)
+## r30 — a contact point you can name (current)
+
+Aim got fine adjustment at r10 and power at r29. Spin was the last of the three
+shot parameters still set by eye, and it had the same defect to within a
+rounding error: the pad is 36 px in radius, so one pixel of movement is 0.028
+of spin against a readout formatted to two decimals. It displayed hundredths it
+could not reach. Worse, `nudge_spin()` did not snap where `nudge_power()` did,
+so a spin could be placed finely by dragging and then walked 0.3572, 0.3672,
+0.3772 — tracking correctly in the readout while never once being round. A
+value you cannot write down is a value you cannot play again.
+
+Three decisions shaped the fix, and the first two were reversals.
+
+**The picker lives on its own tab, not over the table.** Drawing it on the
+baize would have given it 200–300 px and cost no panel space, which is what
+first recommended it. It was rejected for a better reason than it was proposed:
+an overlay sits on the cloth exactly when the table needs reading. A fifth tab
+costs a click, and the persistent status strip already shows the live spin
+readout on every tab, so the value is never out of sight while it is being set.
+
+**The rim of the drawn ball *is* the unit circle.** The plan had been to draw a
+whole ball with the unstrikeable outer band greyed, teaching the real
+constraint. That was dropped on measurement. This engine models no tip, no
+miscue limit, no squirt and no swerve — those words appear nowhere in the
+source — and `spin_pad_map()`'s unit circle already means *maximum usable
+spin*. Greying an outer band would have asserted a miscue radius nothing here
+has measured: the conventional half-ball rule says 0.5 R, a training cue ball's
+outer printed ring measures about 0.75 R through 21° of photographic tilt, and
+the two disagree. It would also have cost half the picker's linear resolution
+for no gain in truth. So the rim means "the most spin this engine can apply",
+which is exactly true, and the teaching point survives as a dashed advisory
+ring at 0.75 labelled as a real-cue note — drawn, not enforced.
+
+**It snaps to the same 0.01 grid power uses**, on both axes, with the seventeen
+named contact points drawn as labelled guides rather than as snap targets. A
+seventeen-point snap would have made the picker discrete while the r10 nudge
+buttons stayed continuous — two value spaces inside one control, which is the
+shape of several bugs in this project's history.
+
+Order matters, and it is the opposite way round from what feels natural: snap
+first, clamp second. A 45° maximum is (0.7071, 0.7071); snapping that to the
+grid gives (0.71, 0.71), whose magnitude is 1.0041 — more spin than the pad's
+own budget allows. Clamping afterwards pulls it back to exactly 1.0. The
+deliberate consequence is that rim values sit on the circle rather than on the
+grid.
+
+The picker is 100 px in radius, and that number is chosen rather than left
+over: 1/100 is 0.0100 of spin per pixel, exactly the snap step, so every value
+on the grid is reachable by dragging and no pixel is wasted. The cursor is now
+drawn at true tip scale — 20% of the ball's radius, measured from that same
+training ball — instead of the old hardcoded 5 px dot at 13.9%. The tip's size
+is precisely why fine spin placement is hard in reality, and drawing it
+honestly is part of the point. It is an outline rather than a disc so it cannot
+hide the guide underneath it.
+
+Adding a fifth tab set a trap that was caught before it bit. `custom_active()`
+tested `panel_tab == 3`; inserting Spin after Shot moved Custom to 4, and
+custom-mode mouse-table ball placement would have started firing on the Spin
+tab with the entire validation chain still green. Tabs are now resolved by name.
+
+**r30.1** fixed two things found by playing it. The Shoot button had been moved
+up by a wrong constant and overlapped the aim row by 10 px — the `y += 34` it
+replaced was never "the separation gap", it was the row's own 22 px height plus
+a 12 px gap, and the comment got read instead of the arithmetic. And the ball
+face had been drawn as two offset circles to suggest a lit sphere; because
+`pygame.draw` paints flat, that was not a gradient but a hard-edged step from
+238 to 222 at about r=0.45, with the advisory ring falling inside the darker
+band. It read as exactly the greyed-out region this revision had argued against
+drawing. Unrequested decoration is not free: in a control whose job is to teach
+a constraint, any visual distinction will be read as meaning something. The
+face is flat now.
+
+**r30.2** puts a second copy of the picker on the Shot tab wherever the window
+is tall enough to hold it, so a full-screen game never needs the tab switch at
+all. Both copies are built by one function and are views onto the same two
+closure variables, so there is no second copy of the state and only the visible
+tab receives events. The fit rule is pure and tested: below a 60 px radius the
+group is omitted outright rather than shrunk into uselessness, because the Spin
+tab always carries the full-size one — omitting the convenience copy costs a
+tab click, not a capability.
+
+Validation: 71 assertions, 0 containment escapes over 30 batch strikes, 90
+smoke frames, `--snap` byte-identical, `--aigame 12 --seed 4200` unchanged at
+SHARK 9–3. Selftests 62 and 63 were both mutation-tested four ways before
+shipping.
+
+---
+
+## r29 — power you can name
 
 Aim had fine adjustment from r10. Power did not, and the difference was not
 cosmetic: the slider spans 6.5 m/s across about 232 px of panel, which is
