@@ -1840,6 +1840,101 @@ STUDY_SCHEMA = 4   # bump when the JSONL record shape changes, so old study
                    # 2 (r19): added cut_deg / t_cue / d_tp -- the pot geometry.
 
 
+def summarise_shots(rows, x1, y1):
+    """r33.2: turn a shot log into the numbers a player actually wants. Pure --
+    rows in, list of printable lines out, no file I/O and no pygame.
+
+    Bands rather than a scatter, deliberately. With a few dozen shots a
+    scatter plot is noise; "how do I do from here" is answerable and useful
+    long before any individual shot is. And it separates practice from
+    tournament rather than pooling them, for the reason recorded on
+    make_shot_record -- in practice the player sets the balls up themselves,
+    so the two measure different things.
+
+    The aim-error spread at the end is the interesting one: it is the same
+    quantity as the AI's aim_jitter, measured rather than assumed, and it is
+    what a human profile would eventually be cloned from."""
+    out = ["%d shots logged" % len(rows)]
+    for md in ("practice", "tournament"):
+        att, made, rate = shot_accuracy(rows, source="human", mode=md)
+        if att:
+            out.append("  %-11s called %3d  potted %3d  = %5.1f%%"
+                       % (md, att, made, rate * 100))
+    geo = [(r, pocket_geometry(tuple(r["obj_pos"]), tuple(r["called_pocket"]),
+                               x1, y1))
+           for r in rows
+           if r.get("intent") == "called" and r.get("obj_pos")
+           and r.get("called_pocket")]
+    if not geo:
+        out.append("  (no called shots yet -- switch calling on and nominate)")
+        return out
+
+    def _rate(sel, label):
+        if not sel:
+            return None
+        m = sum(1 for r, _g in sel
+                if r.get("called_ball") in (r.get("potted_ids") or []))
+        return "    %-12s %2d/%2d = %5.1f%%" % (label, m, len(sel),
+                                                100.0 * m / len(sel))
+
+    out.append("")
+    out.append("  by APPROACH ANGLE off the pocket mouth")
+    for lo, hi in ((0, 10), (10, 20), (20, 30), (30, 90)):
+        ln = _rate([(r, g) for r, g in geo if lo <= g["approach_deg"] < hi],
+                   "%2d-%2d deg" % (lo, hi))
+        if ln:
+            out.append(ln)
+    out.append("")
+    out.append("  by DISTANCE to the pocket")
+    for lo, hi in ((0.0, 0.3), (0.3, 0.6), (0.6, 3.0)):
+        ln = _rate([(r, g) for r, g in geo if lo <= g["dist"] < hi],
+                   "%.1f-%.1fm" % (lo, hi))
+        if ln:
+            out.append(ln)
+    errs = [r["aim_err_deg"] for r, _g in geo if r.get("aim_err_deg") is not None]
+    if errs:
+        mu = sum(errs) / len(errs)
+        sd = math.sqrt(sum((v - mu) ** 2 for v in errs) / len(errs))
+        out.append("")
+        out.append("  aim error: mean %+.2f deg, spread %.2f deg over %d shots"
+                   % (mu, sd, len(errs)))
+        out.append("  (the spread IS your aim_jitter -- the AI's is %.3f)"
+                   % STUDY_JITTER)
+    return out
+
+
+def call_led(call_on, ball, pocket, logged_ago=None, flash_frames=45):
+    """r33.1: what the call indicator should show. Pure -- state in, (colour,
+    label) out, no pygame.
+
+    This exists because the first version of called shots gave no feedback at
+    all: the Maker played a session and could not tell whether a shot had been
+    nominated, or whether anything had been recorded. A control whose effect is
+    invisible is a control you cannot trust, and an unnoticed half-nomination
+    silently writes `intent: "none"` -- an honest row, but not the one the
+    player thought they were making.
+
+    Four states, and the ordering matters. A freshly written row outranks
+    everything for `flash_frames`, because confirmation is the thing that was
+    missing; after that the indicator falls back to describing the NEXT shot.
+
+      calling off   -- dark, the feature is disabled
+      armed         -- red, calling is on and nothing is nominated yet
+      part-called   -- amber, a ball is chosen and the pocket is not
+      called        -- green, this shot will record as a called shot
+      logged        -- bright, a row was just written
+    """
+    if logged_ago is not None and 0 <= logged_ago < flash_frames:
+        return ((120, 240, 140), "SHOT LOGGED")
+    if not call_on:
+        return ((70, 74, 80), "calling off")
+    if ball is None:
+        return ((210, 60, 55), "call: pick a ball")
+    if pocket is None:
+        return ((235, 165, 60), "call: pick a pocket")
+    return ((90, 210, 110), "CALLED — ready")
+
+
 def fit_box(box_w, box_h, world_w, world_h):
     """r33 (called shots): scale and offset that fit a world rectangle inside a
     widget box, preserving aspect and centring the remainder. Pure.
@@ -4035,6 +4130,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     call_pocket = None      # nominated pocket, world metres
     shot_pending = False    # a struck shot awaits its LOG row
     shot_pre = None         # geometry captured before the balls moved
+    logged_frame = None     # r33.1: frame a row was last written, for the LED
     profile_name = os.environ.get("HUSTLER_PLAYER", "PLAYER")
 
     def log_human_shot(rec):
@@ -4804,6 +4900,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     obj_pos=_pre["obj"], layout=_pre["layout"],
                     potted_ids=list(sim.potted_log)))
             shot_pre = None
+            logged_frame = frames
             call_ball, call_pocket = None, None
 
         # ---- game logic (modes 1 and 2) ----
@@ -5295,6 +5392,16 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     break                      # clip; never spill onto the tabs
                 display.blit(panel_font.render(ln, True, COL["hud"]), (sx, sy))
                 sy += line_h
+            # r33.1: the call indicator. It lives in the PERSISTENT strip so
+            # it is readable from every tab, including the Shot tab where the
+            # shot actually gets taken and the mini table is not visible.
+            _lc, _lt = call_led(call_on, call_ball, call_pocket,
+                                (frames - logged_frame)
+                                if logged_frame is not None else None)
+            _ly = min(sy + 2, STATUS_STRIP_H - 14)
+            pygame.draw.circle(display, _lc, (sx + 5, _ly + 5), 5)
+            pygame.draw.circle(display, (20, 22, 26), (sx + 5, _ly + 5), 5, 1)
+            display.blit(panel_font.render(_lt, True, _lc), (sx + 16, _ly - 1))
             pygame.draw.line(display, (68, 72, 80),
                               (win_w - PANEL_W, STATUS_STRIP_H - 3),
                               (win_w - 1, STATUS_STRIP_H - 3), 1)
@@ -7181,6 +7288,7 @@ def selftest():
         # that resets it without `nonlocal` fails here rather than silently
         # doing nothing -- which is how the r31 finale bug reached main.
         "call_on", "call_ball", "call_pocket", "shot_pending", "shot_pre",
+        "logged_frame",
     }
     leaks72 = closure_state_leaks(run_gui.__code__, RUN_GUI_STATE)
     # and prove the detector itself can see one, rather than trusting a
@@ -7391,6 +7499,81 @@ def selftest():
           f"scale {sc77:.2f} px/m, centred offset ({ox77:.1f}, {oy77:.1f}); "
           f"near click -> {hit77}, distant -> {far77}")
 
+    # 78. r33.1: the call indicator's state mapping.
+    #
+    # This exists because the first cut of called shots shipped with no
+    # feedback at all, and a session of real play found it immediately: there
+    # was no way to tell whether a shot had been nominated or whether anything
+    # had been recorded. The ordering is the part worth pinning. A freshly
+    # written row must outrank every other state for the flash window --
+    # confirmation is exactly what was missing -- and a HALF nomination must
+    # never read the same as a complete one, because a ball chosen without a
+    # pocket silently records `intent: "none"`: an honest row, but not the one
+    # the player believed they were making.
+    off78 = call_led(False, None, None)
+    armed78 = call_led(True, None, None)
+    part78 = call_led(True, 4, None)
+    full78 = call_led(True, 4, (0.03, 0.03))
+    fresh78 = call_led(True, 4, (0.03, 0.03), logged_ago=0)
+    stale78 = call_led(True, 4, (0.03, 0.03), logged_ago=45)
+    # a logged row outranks even a state that would otherwise read "off"
+    over78 = call_led(False, None, None, logged_ago=3)
+    labels78 = {off78[1], armed78[1], part78[1], full78[1], fresh78[1]}
+    check("r33.1 call indicator — every stage of a nomination reads "
+          "differently (off, armed, ball-but-no-pocket, ready), a half call "
+          "never looks like a complete one since it silently records as "
+          "un-nominated, a freshly written row outranks all of them for the "
+          "flash window, and the flash EXPIRES back to the live state rather "
+          "than latching on",
+          len(labels78) == 5
+          and off78[1] == "calling off" and armed78[0] == (210, 60, 55)
+          and part78 != full78
+          and fresh78[1] == "SHOT LOGGED" and over78[1] == "SHOT LOGGED"
+          and stale78 == full78,
+          f"off={off78[1]!r} armed={armed78[1]!r} part={part78[1]!r} "
+          f"full={full78[1]!r} fresh={fresh78[1]!r} expired->{stale78[1]!r}")
+
+    # 79. r33.2: the shot-log summary. Pure -- rows in, printable lines out.
+    #
+    # The two things worth pinning are both about NOT lying with a small
+    # sample. Practice and tournament must stay in separate lines rather than
+    # being pooled (in practice the player sets the balls up themselves, so
+    # the two measure different things), and a log with no called shots must
+    # say so plainly instead of printing a confident 0.0% over nothing --
+    # which would read as "you missed everything" rather than "you haven't
+    # nominated anything yet".
+    plan79 = {"type": "pot", "p": 0.5, "power": 2.0, "follow": 0, "side": 0,
+              "est": {}}
+
+    def _row79(mode, made, pocket=(0.03, 0.03), obj=(0.4, 0.4), intent="called"):
+        return make_shot_record(
+            1, 0, "P", None, plan79, [], None, True, None, None, False, False,
+            None, source="human", mode=mode, intent=intent,
+            called=({"ball": 4, "pocket": pocket, "perfect_deg": 40.0}
+                    if intent == "called" else None),
+            aim_deg=41.0, p_model="assessment", cue_pos=(0.1, 0.1),
+            obj_pos=obj, layout=[], potted_ids=([4] if made else []))
+
+    rows79 = [_row79("practice", True), _row79("practice", False),
+              _row79("tournament", True)]
+    lines79 = summarise_shots(rows79, 1.82, 0.91)
+    txt79 = "\n".join(lines79)
+    empty79 = summarise_shots([_row79("practice", True, intent="none")],
+                              1.82, 0.91)
+    check("r33.2 shot summary — practice and tournament are reported on "
+          "SEPARATE lines rather than pooled (they measure different things, "
+          "since in practice the player racks it themselves), the aim-error "
+          "spread is reported as the human's own aim_jitter, and a log with "
+          "no called shots says so instead of printing a confident 0.0% over "
+          "nothing",
+          "practice" in txt79 and "tournament" in txt79
+          and "50.0%" in txt79 and "100.0%" in txt79
+          and "aim_jitter" in txt79
+          and any("no called shots" in ln for ln in empty79)
+          and not any("0.0%" in ln for ln in empty79),
+          f"{len(lines79)} lines; practice+tournament split shown; "
+          f"empty-log line: {[ln for ln in empty79 if 'called' in ln][:1]}")
+
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
 
@@ -7433,6 +7616,8 @@ def main():
     ap.add_argument("--batch", type=int, metavar="N", help="run N random strikes headless")
     ap.add_argument("--breaks", type=int, metavar="N", help="break analyser, N trials per config")
     ap.add_argument("--aigame", type=int, metavar="N", help="run N headless AI vs AI games")
+    ap.add_argument("--stats", nargs="?", const="", metavar="FILE",
+                    help="summarise a shot log (default ~/hustler_shots.jsonl)")
     ap.add_argument("--jsonl", metavar="FILE",
                     help="with --aigame: write a per-shot study log, one game "
                          "per line, for external analysis")
@@ -7445,6 +7630,21 @@ def main():
                     help="write every sound voice to WAV (no mixer, no game) "
                          "so they can be auditioned directly")
     args = ap.parse_args()
+
+    if args.stats is not None:
+        path = args.stats or os.path.join(os.path.expanduser("~"),
+                                          "hustler_shots.jsonl")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                rows = [json.loads(ln) for ln in fh if ln.strip()]
+        except OSError as exc:
+            print(f"no shot log at {path}: {exc}")
+            sys.exit(1)
+        x0, y0, x1, y1 = play_rect()
+        print(f"--- {path}")
+        for line in summarise_shots(rows, x1, y1):
+            print(line)
+        sys.exit(0)
 
     if args.selftest:
         sys.exit(0 if selftest() else 1)

@@ -41,7 +41,28 @@ fire.
 Rows land in `~/hustler_shots.jsonl`, appended, one per shot, and the write is
 best-effort by design: a full or unwritable disk costs a row and never a shot.
 
-Validation: 77 assertions, 0 containment escapes over 30 batch strikes, 90
+**r33.1 adds the indicator that should have been there from the start.** A
+session of real play found the gap immediately: there was no way to tell
+whether a shot had been nominated, or whether anything had been recorded. A
+control whose effect is invisible is a control you cannot trust — and a half
+nomination, a ball chosen without a pocket, silently recorded as un-nominated:
+an honest row, but not the one the player believed they were making. A small
+lamp now sits in the persistent status strip, readable from every tab
+including the one where the shot is actually taken, and reads dark for off,
+red for armed, amber for a ball without a pocket, green for ready, and flashes
+when a row lands.
+
+**r33.2 adds `--stats`.** The log existed and was filling up correctly, but
+there was no way to read it without writing a script, which is a poor place to
+leave a feature whose whole point is telling you how you are playing. The
+summary reports called-shot accuracy banded by approach angle and by distance,
+and finishes with the spread of your aim error — which is the same quantity as
+the AI's `aim_jitter`, measured rather than assumed, and eventually the number
+a human profile gets cloned from. Practice and tournament are reported on
+separate lines rather than pooled, and a log with no called shots says so
+plainly instead of printing a confident 0.0% over nothing.
+
+Validation: 79 assertions, 0 containment escapes over 30 batch strikes, 90
 smoke frames, `--snap` byte-identical, `--aigame 12 --seed 4200` unchanged at
 SHARK 9–3. Probed at three window sizes with zero widget overlaps; the caller
 is omitted outright at the F11 windowed size rather than drawn off the panel.

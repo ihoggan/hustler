@@ -11,7 +11,7 @@ workflow and expectations.
 4. **Verify your baseline** before changing anything:
 
 ```bash
-python3 hustler.py --selftest      # expect: ALL PASS (77 assertions at r33)
+python3 hustler.py --selftest      # expect: ALL PASS (79 assertions at r33)
 ```
 
 If that doesn't pass on a clean checkout, stop and work out why before writing
@@ -114,7 +114,7 @@ md5sum ~/Downloads/hustler.py | grep -q <expected> && cp ~/Downloads/hustler.py 
 and assert the assertion **count**, not just that it says ALL PASS:
 
 ```bash
-python3 hustler.py --selftest | grep -c "\[PASS\]"     # expect 77, not "passes"
+python3 hustler.py --selftest | grep -c "\[PASS\]"     # expect 79, not "passes"
 ```
 
 Nothing was lost — the previous revision was a commit away in history — but it
