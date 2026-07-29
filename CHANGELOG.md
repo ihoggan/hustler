@@ -5,7 +5,64 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r31 — a hardening pass, and a reset that never reset (current)
+## r32 — the shot ledger (current)
+
+Groundwork, and it changes nothing you can see. Nothing in the game calls any
+of it yet: the file plays exactly as r31.1 did. What it adds is the shape the
+data will be recorded in, decided and tested before a single row exists —
+because a schema is the one thing that cannot be fixed afterwards. Shots
+logged under an ambiguous model can never be disambiguated later; you cannot
+recover, a year on, whether a given miss was a miss or a well-judged safety.
+
+**Every row now carries provenance.** Four fields decide which records may
+legitimately be added together: `source` (human or ai), `mode` (practice or
+tournament), `intent` (called or none), and `p_model` — which of the two
+difficulty functions produced the predicted pot chance. Each exists because
+pooling across it would be a quiet lie. A human aims by typing a number into
+the HUD and has no applied jitter; the AI does. In practice the player sets
+the balls up themselves, so a practice pot rate measures which shots they
+chose to rehearse rather than how well they play. An un-nominated shot has no
+declared goal, and scoring a safety as a failed pot is the exact mistake that
+cost r19 through r21 a five-hypothesis rabbit hole. And the two difficulty
+models have drifted apart — different thinness term, different distance decay
+— so their numbers are not on one scale.
+
+**Aim error is now measurable, which is the interesting part.** The AI's
+`aim_jitter` is noise we add, so we know it. A human's execution is exact —
+the cue goes precisely where the angle says — which means all of a human's
+error lives in judgement, and it is one specific number: the gap between the
+angle they chose and the angle that would have potted the ball they nominated.
+The spread of that over many shots *is* their aim_jitter, on the same axis r18
+established for the AI personalities. It is only meaningful on a called shot,
+so it returns nothing without a nomination rather than inventing a plausible
+zero.
+
+**Profiles store identity and completed frames. Nothing else.** Every
+statistic — pot rate, win rate, aim spread, whatever nobody has thought of yet
+— is derived from the log on read. That is what makes it safe to create
+profiles before any real data exists. Store computed aggregates instead and
+the day a statistic turns out to have been wrong, every profile on disk is
+wrong with it. r16 found `pot_estimate` had been five times over-confident and
+every conclusion drawn from it was discarded; functions over a raw log get
+rewritten and re-run, stored numbers get migrated or lost.
+
+An abandoned or crashed frame writes nothing at all. Telling a rage quit from
+a power cut is not reliably possible, and a forfeit inferred from an orphaned
+marker would punish the wrong player often enough to matter — so only whole,
+clean games count.
+
+Three assertions, mutation-tested five ways. One of those mutants survived the
+first attempt: the test that guards against counting un-nominated shots as
+missed pots had no un-nominated shot in its fixture, so the guard could be
+deleted with the assertion still passing. The fixture has one now.
+
+Validation: 75 assertions, 0 containment escapes over 30 batch strikes, 90
+smoke frames, `--snap` byte-identical, `--aigame 12 --seed 4200` unchanged at
+SHARK 9–3.
+
+---
+
+## r31 — a hardening pass, and a reset that never reset
 
 No new features. Before anything else went in, the repository was audited end
 to end for the class of thing that does not announce itself: code that runs

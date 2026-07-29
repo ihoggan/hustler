@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r31 — playable, validated, no known blocking bugs.
+**Status:** r32 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~6,695 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r31
+## Validation snapshot at r32
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 72 assertions |
+| `--selftest` | ALL PASS — 75 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -68,7 +68,7 @@ them remains accurate as history and the engine facts in §3 are still current
 and still worth reading — but roughly sixteen revisions of work happened
 afterwards. That later work is documented in:
 
-- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r31
+- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r32
 - [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — the three open threads, each with its diagnosis
 - [ROADMAP.md](ROADMAP.md) — what's under discussion and what it depends on
 - [CONTRIBUTING.md](CONTRIBUTING.md) — workflow, standards, and the traps that have cost real time
@@ -172,7 +172,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 72 assertions, all
+  out) rather than the pygame wrapper around it. Currently 75 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -234,6 +234,22 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   than it is. Don't point one at the other without an explicit decision — this
   is why r16's over-harshness went unnoticed for so long, since no human path
   ever touches `pot_estimate`.
+- **Shot-log rows carry provenance, and it is not decoration.** Every record
+  written from r32 says `source` (human or ai), `mode` (practice or
+  tournament), `intent` (called or none) and `p_model` (which difficulty
+  function produced `p_pred`). Rows that disagree on any of these MUST NOT be
+  pooled. A human aims by HUD number with no applied jitter and the AI does
+  not; in practice the player sets the balls up themselves, so a practice pot
+  rate measures what they chose to rehearse; an un-nominated shot has no
+  declared goal and is not a missed pot; and `pot_estimate` and
+  `pot_assessment` are different scales that have drifted apart. Each of those
+  is a population, and r19-r21 was one long lesson in what happens when you
+  measure the wrong one.
+- **The shot log is the source of truth; profiles store identity and results
+  only.** Every statistic is derived on read. This is deliberate: when a
+  statistic later turns out to have been computed wrongly — and r16 found
+  exactly that, a 5x over-confident estimator — a function gets rewritten and
+  re-run. Stored aggregates would have to be migrated or thrown away.
 - **A reset inside a nested function needs `nonlocal`, or it resets nothing.**
   `run_gui` is one long closure and its handlers are nested functions, so
   `finale = None` inside `do_rack()` silently created a local and left the

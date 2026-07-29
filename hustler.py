@@ -1830,14 +1830,65 @@ def default_ais(rng=None):
                    caution=0.70, rng=rng)]
 
 
-STUDY_SCHEMA = 2   # bump when the JSONL record shape changes, so old study
+STUDY_SCHEMA = 3   # bump when the JSONL record shape changes, so old study
                    # files can never be silently misread by a newer analysis.
                    # 2 (r19): added cut_deg / t_cue / d_tp -- the pot geometry.
 
 
+def perfect_aim_deg(cue_pos, obj_pos, pocket_pos, r_cue, r_obj):
+    """r32 (stats): the aim angle, in degrees, that would send `obj_pos` dead
+    into `pocket_pos` -- i.e. the direction from the cue ball to the GHOST BALL
+    centre. Pure geometry, no sim.
+
+    This is the reference a human shot is measured against. It is deliberately
+    the same ghost-ball construction `ghost_ball()` inverts: the ghost centre
+    sits one combined radius back from the object ball along the object-to-
+    pocket line, and the perfect aim is the line from the cue ball to it.
+
+    Returns None when the pocket line is degenerate (object ball sitting on the
+    pocket) or the ghost coincides with the cue ball, because there is no
+    meaningful angle in either case and returning 0.0 would quietly pollute
+    every aggregate built on top of this.
+    """
+    ox, oy = obj_pos
+    px, py = pocket_pos
+    dx, dy = px - ox, py - oy
+    d = math.hypot(dx, dy)
+    if d < 1e-9:
+        return None
+    ux, uy = dx / d, dy / d
+    gx, gy = ox - ux * (r_cue + r_obj), oy - uy * (r_cue + r_obj)
+    ax, ay = gx - cue_pos[0], gy - cue_pos[1]
+    if math.hypot(ax, ay) < 1e-9:
+        return None
+    return math.degrees(math.atan2(ay, ax)) % 360.0
+
+
+def aim_error_deg(aim_deg, perfect_deg):
+    """r32 (stats): signed smallest-angle difference, in (-180, 180].
+
+    THIS IS THE HUMAN SKILL MEASUREMENT, and it is measurable in a way the AI's
+    is not. The AI's aim_jitter is applied noise -- we know it because we added
+    it. A human's execution is EXACT: they type an angle into the HUD and the
+    cue goes exactly there. So all of a human's error lives in JUDGEMENT, and
+    it is precisely this number -- the gap between the angle they chose and the
+    angle that would have potted the ball they nominated. The spread of this
+    over many shots IS their aim_jitter, on the same axis r18 established for
+    the AI personalities.
+
+    It only means anything on a CALLED shot. Without a nomination there is no
+    intended pocket, so there is no perfect angle to difference against, and
+    the caller must not invent one."""
+    if aim_deg is None or perfect_deg is None:
+        return None
+    return ((float(aim_deg) - float(perfect_deg) + 180.0) % 360.0) - 180.0
+
+
 def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
                      cushion_after, foul, event, ball_in_hand, free_shot,
-                     cue_placed):
+                     cue_placed, source="ai", mode="tournament",
+                     intent="none", called=None, aim_deg=None,
+                     p_model="estimate"):
     """r15 (study output): one shot -> one plain, JSON-safe dict.
 
     The payload that matters for analysis is `p_pred` (what the AI THOUGHT the
@@ -1855,6 +1906,30 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
     reverse-engineered from the power formula, which is a hack. These three
     fields are exactly the inputs pot_estimate() already computes and throws
     away, so logging them is free and makes the residual directly diagnosable.
+
+    r32 (stats): four fields carry PROVENANCE, because this log is about to
+    hold rows from two very different sources and pooling them would be a
+    silent lie.
+
+      source   -- "human" or "ai". A human aims by HUD number and has no
+                  applied jitter; the AI does. Never average their aim error.
+      mode     -- "practice" or "tournament". In practice the player SETS THE
+                  BALLS UP THEMSELVES, so a practice pot rate measures which
+                  shots they chose to rehearse, not how well they play. It is
+                  worth having and worth keeping apart. (This is the r21
+                  free-shot contamination lesson: the fix there was excluding a
+                  population that was never trying to do the thing being
+                  measured.)
+      intent   -- "called" or "none". Only a called shot can be scored as a
+                  made-or-missed POT. Everything else is a row with an outcome
+                  and no declared goal, and must be excluded from accuracy
+                  aggregates rather than counted as a miss.
+      p_model  -- which function produced `p_pred`: "estimate" (the AI's
+                  pot_estimate) or "assessment" (the human overlay's
+                  pot_assessment). These two have drifted -- different thinness
+                  term, different distance decay, and pot_assessment takes the
+                  actual aim error with no jitter parameter. They are NOT the
+                  same scale and must never be pooled.
 
     Pure: no sim, no pygame, no file I/O -- just values in, dict out."""
     est = plan.get("est") or {}
@@ -1876,6 +1951,20 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
                     if fullness is not None else None),
         "t_cue": (round(float(est["t_cue"]), 4) if "t_cue" in est else None),
         "d_tp": (round(float(est["d_tp"]), 4) if "d_tp" in est else None),
+        # r32 provenance -- see the docstring; these decide which rows may
+        # legitimately be aggregated together.
+        "source": source,
+        "mode": mode,
+        "intent": intent,
+        "p_model": p_model,
+        "called_ball": (called or {}).get("ball"),
+        "called_pocket": ([round(float((called or {})["pocket"][0]), 4),
+                           round(float((called or {})["pocket"][1]), 4)]
+                          if called and called.get("pocket") else None),
+        "aim_deg": (round(float(aim_deg), 3) if aim_deg is not None else None),
+        "aim_err_deg": (round(float(aim_error_deg(aim_deg, (called or {}).get("perfect_deg"))), 3)
+                        if (aim_deg is not None and (called or {}).get("perfect_deg") is not None)
+                        else None),
         "ball_in_hand": bool(ball_in_hand),
         "free_shot": bool(free_shot),
         "cue_placed": ([round(cue_placed[0], 4), round(cue_placed[1], 4)]
@@ -1886,6 +1975,131 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
         "foul": foul,
         "event": event,
     }
+
+
+PROFILE_SCHEMA = 1
+
+
+def new_profile(name, kind="human"):
+    """r32 (stats): a player profile. IDENTITY AND RESULTS ONLY -- deliberately.
+
+    THE SHOT LOG IS THE SOURCE OF TRUTH. Every statistic this project will ever
+    want -- pot rate, aim spread, cut-angle breakdown, whatever nobody has
+    thought of yet -- is DERIVED FROM THE JSONL ON READ, not stored here. That
+    is the whole design, and it is what makes it safe to create profiles now,
+    before a single real human shot has been seen.
+
+    The alternative -- storing computed aggregates -- means that the day we
+    realise a statistic was being computed wrongly, or want one that was never
+    recorded, every existing profile is either wrong or unable to answer. This
+    project has already paid for that once: r16 found pot_estimate had been 5x
+    over-confident, and every conclusion drawn from it had to be thrown away.
+    Aggregates stored on disk would have had to be migrated or discarded.
+    Functions over a raw log just get rewritten and re-run.
+
+    So: `kind` is "human" or "ai"; `games` is a list of completed frames. An
+    ABANDONED OR CRASHED GAME WRITES NOTHING (Maker's call -- telling a rage
+    quit from a power cut is not reliably possible, so rather than infer a
+    forfeit from an orphaned marker, only whole clean games count). `params` is
+    the four-number style: for an AI profile it is what it plays; for a human
+    it is null until fitted from their own logged shots."""
+    return {
+        "schema": PROFILE_SCHEMA,
+        "name": str(name),
+        "kind": "ai" if kind == "ai" else "human",
+        "games": [],
+        "params": None,
+    }
+
+
+def profile_record_game(profile, opponent, won, mode="tournament", shots=0):
+    """r32: append ONE COMPLETED frame. Returns a new dict; does not mutate.
+
+    Only complete games arrive here -- see new_profile's docstring. `mode`
+    keeps practice and tournament apart at the row level so no aggregate can
+    accidentally pool them."""
+    out = dict(profile)
+    out["games"] = list(profile.get("games", [])) + [{
+        "opponent": str(opponent),
+        "won": bool(won),
+        "mode": "practice" if mode == "practice" else "tournament",
+        "shots": int(shots),
+    }]
+    return out
+
+
+def profile_record(profile, mode="tournament"):
+    """r32: (played, won, win_rate, lo, hi) for ONE mode, never pooled.
+
+    The interval is Wilson, and it is not decoration. A ranking built on five
+    frames sits deep inside coin-flip noise -- this project's own --aigame
+    output already calls twelve games "inconclusive". Reporting a bare win rate
+    would imply a certainty the data has not got, so the bounds travel with it
+    and a caller has to work to ignore them."""
+    games = [g for g in profile.get("games", [])
+             if g.get("mode") == ("practice" if mode == "practice" else "tournament")]
+    n = len(games)
+    w = sum(1 for g in games if g.get("won"))
+    lo, hi = wilson_interval(w, n)
+    return (n, w, (w / n if n else 0.0), lo, hi)
+
+
+def serialise_profile(profile):
+    """r32: profile -> plain JSON-safe dict, same discipline as
+    serialise_layout (real units, no pixels, nothing pygame-shaped)."""
+    return {
+        "schema": PROFILE_SCHEMA,
+        "name": str(profile.get("name", "")),
+        "kind": "ai" if profile.get("kind") == "ai" else "human",
+        "games": [{"opponent": str(g.get("opponent", "")),
+                   "won": bool(g.get("won")),
+                   "mode": ("practice" if g.get("mode") == "practice"
+                            else "tournament"),
+                   "shots": int(g.get("shots", 0))}
+                  for g in profile.get("games", []) if isinstance(g, dict)],
+        "params": (dict(profile["params"]) if isinstance(profile.get("params"), dict)
+                   else None),
+    }
+
+
+def deserialise_profile(data):
+    """r32: inverse of serialise_profile. Skips malformed entries rather than
+    raising -- the same choice deserialise_layout makes, for the same reason: a
+    hand-edited or truncated profile should cost you a row, not the game."""
+    if not isinstance(data, dict) or not data.get("name"):
+        return None
+    prof = new_profile(data["name"], data.get("kind", "human"))
+    for g in data.get("games", []) or []:
+        if not isinstance(g, dict) or "won" not in g:
+            continue
+        prof = profile_record_game(prof, g.get("opponent", "?"), g.get("won"),
+                                    g.get("mode", "tournament"),
+                                    g.get("shots", 0))
+    if isinstance(data.get("params"), dict):
+        prof["params"] = dict(data["params"])
+    return prof
+
+
+def shot_accuracy(records, source=None, mode=None):
+    """r32: (attempts, made, rate) over CALLED shots only.
+
+    Rows without a nomination are EXCLUDED, not counted as misses. A safety, a
+    cannon or a deliberate roll-up is not a failed pot, and scoring it as one
+    is exactly the mistake r21 spent a rabbit hole undoing -- shots that were
+    never trying to pot were being measured against a pot model. `source` and
+    `mode` filter rather than pool, for the reasons in make_shot_record."""
+    att = made = 0
+    for r in records:
+        if r.get("intent") != "called":
+            continue
+        if source is not None and r.get("source") != source:
+            continue
+        if mode is not None and r.get("mode") != mode:
+            continue
+        att += 1
+        if r.get("called_ball") is not None and r.get("called_ball") in (r.get("potted") or []):
+            made += 1
+    return (att, made, (made / att if att else 0.0))
 
 
 def wilson_interval(wins, n, z=1.96):
@@ -6612,6 +6826,107 @@ def selftest():
           "can see it); and the detector is shown to catch a planted one",
           leaks72 == [] and caught72 == [("_resets", "canary")],
           f"run_gui leaks: {leaks72 or 'none'}; planted canary caught: {caught72}")
+
+    # 73. r32 (stats): schema 3 provenance survives a real JSON round trip, and
+    # the fields that decide which rows may be pooled are actually present.
+    plan73 = {"type": "pot", "p": 0.7, "u": 0.6, "risk": 0.1, "power": 2.0,
+              "follow": 0.0, "side": 0.0,
+              "est": {"fullness": 0.9, "t_cue": 0.5, "d_tp": 0.8}}
+    called73 = {"ball": 4, "pocket": (0.03, 0.03), "perfect_deg": 40.0}
+    hum73 = make_shot_record(1, 0, "IAIN", "red", plan73, [4], "red", True,
+                             None, None, False, False, None,
+                             source="human", mode="practice", intent="called",
+                             called=called73, aim_deg=41.5,
+                             p_model="assessment")
+    back73 = json.loads(json.dumps(hum73))          # must survive a REAL trip
+    ai73 = make_shot_record(2, 1, "SHARK", "red", plan73, [], "red", True,
+                            None, None, False, False, None)
+    check("r32 shot record schema 3 — a human row carries its provenance "
+          "(source/mode/intent/p_model, the nominated ball and pocket, and the "
+          "aim error against that nomination) through a real JSON round trip, "
+          "and an AI row still defaults to the AI shape, so the two can never "
+          "be pooled by accident",
+          back73["source"] == "human" and back73["mode"] == "practice"
+          and back73["intent"] == "called" and back73["p_model"] == "assessment"
+          and back73["called_ball"] == 4 and back73["called_pocket"] == [0.03, 0.03]
+          and abs(back73["aim_err_deg"] - 1.5) < 1e-9
+          and ai73["source"] == "ai" and ai73["intent"] == "none"
+          and ai73["called_ball"] is None and ai73["aim_err_deg"] is None
+          and STUDY_SCHEMA >= 3,
+          f"human aim_err {back73['aim_err_deg']} deg, ai intent "
+          f"{ai73['intent']!r}, schema {STUDY_SCHEMA}")
+
+    # 74. r32: the aim-error measurement itself — the human skill number.
+    #
+    # The wrap case is the one that matters and the reason this is a named
+    # function rather than a subtraction. Aim is stored in [0, 360), so a shot
+    # aimed at 359 deg against a perfect 1 deg is 2 degrees off, not 358. Get
+    # that wrong and every aim_jitter fit is poisoned by a handful of enormous
+    # phantom errors near the wrap, which would look like a wild player rather
+    # than a bug.
+    pa74 = perfect_aim_deg((0.0, 0.0), (1.0, 0.0), (2.0, 0.0), 0.0238, 0.0254)
+    wrap74 = aim_error_deg(359.0, 1.0)
+    wrap74b = aim_error_deg(1.0, 359.0)
+    none74 = (aim_error_deg(None, 10.0), aim_error_deg(10.0, None),
+              perfect_aim_deg((0.0, 0.0), (1.0, 0.0), (1.0, 0.0), 0.02, 0.02))
+    # NB this failed on its first run with the CODE right and the expectation
+    # backwards -- the third time in three revisions (r29 #61, r30.2 #63). The
+    # sign is `aim - perfect` taken the short way, so aiming at 359 against a
+    # perfect 1 is 2 degrees SHORT and reads -2.0, not +2.0.
+    check("r32 aim error — a dead-straight pot gives a 0 deg perfect aim, the "
+          "signed error takes the SHORT way round the circle (359 against a "
+          "perfect 1 is 2 degrees short, not 358 the long way, or every fit is "
+          "poisoned near the wrap by a handful of enormous phantom errors that "
+          "would read as a wild player rather than a bug), and an un-nominated "
+          "or degenerate shot returns None rather than a plausible zero",
+          pa74 is not None and abs(pa74) < 1e-9
+          and abs(wrap74 + 2.0) < 1e-9 and abs(wrap74b - 2.0) < 1e-9
+          and none74 == (None, None, None),
+          f"perfect {pa74:.3f} deg, 359 vs 1 -> {wrap74:+.1f}, "
+          f"1 vs 359 -> {wrap74b:+.1f}, degenerate -> {none74}")
+
+    # 75. r32: the profile layer. Identity and results on disk; every statistic
+    # derived on read, and practice never pooled with tournament.
+    pr75 = new_profile("IAIN", "human")
+    pr75 = profile_record_game(pr75, "SHARK", True, "tournament", shots=20)
+    pr75 = profile_record_game(pr75, "SHARK", False, "tournament", shots=18)
+    pr75 = profile_record_game(pr75, "-", True, "practice", shots=9)
+    round75 = deserialise_profile(json.loads(json.dumps(serialise_profile(pr75))))
+    t75 = profile_record(round75, "tournament")
+    p75 = profile_record(round75, "practice")
+    junk75 = deserialise_profile({"name": "X", "kind": "human",
+                                  "games": [{"won": True, "mode": "tournament"},
+                                            "not a dict", {"no_won_key": 1}]})
+    recs75 = [hum73, ai73,
+              make_shot_record(3, 0, "IAIN", "red", plan73, [], "red", True,
+                               None, None, False, False, None, source="human",
+                               mode="practice", intent="called",
+                               called={"ball": 7, "pocket": (0.0, 0.0)},
+                               aim_deg=10.0, p_model="assessment"),
+              # The row that matters: a human practice SAFETY, same source and
+              # mode as the two called shots, deliberately not nominated. It
+              # must be excluded outright, not counted as a missed pot. Without
+              # this fixture the filter can be deleted and the assertion still
+              # passes -- mutation testing caught exactly that.
+              make_shot_record(4, 0, "IAIN", None, {"type": "safety"}, [],
+                               "red", True, None, None, False, False, None,
+                               source="human", mode="practice", intent="none",
+                               p_model="assessment")]
+    acc75 = shot_accuracy(recs75, source="human", mode="practice")
+    check("r32 profiles — identity and completed frames round-trip through "
+          "JSON, malformed rows are skipped rather than fatal, every statistic "
+          "is DERIVED on read (so nothing on disk can go stale or need "
+          "migrating), practice and tournament are counted separately, the "
+          "win rate carries its Wilson bounds, and accuracy scores CALLED "
+          "shots only — a safety is not a missed pot",
+          t75[0] == 2 and t75[1] == 1 and abs(t75[2] - 0.5) < 1e-9
+          and t75[3] < 0.5 < t75[4]
+          and p75[0] == 1 and p75[1] == 1
+          and len(junk75["games"]) == 1
+          and acc75 == (2, 1, 0.5)
+          and round75["params"] is None,
+          f"tournament {t75[1]}/{t75[0]} (95% CI {t75[3]:.2f}-{t75[4]:.2f}), "
+          f"practice {p75[1]}/{p75[0]}, called accuracy {acc75[1]}/{acc75[0]}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
