@@ -1975,6 +1975,19 @@ def summarise_shots(rows, x1, y1):
                    "%.1f-%.1fm" % (lo, hi))
         if ln:
             out.append(ln)
+    bands = {}
+    for r, _g in geo:
+        key = spin_band(r.get("follow"), r.get("side"))
+        made_ = r.get("called_ball") in (r.get("potted_ids") or [])
+        hit, tot = bands.get(key, (0, 0))
+        bands[key] = (hit + (1 if made_ else 0), tot + 1)
+    if bands:
+        out.append("")
+        out.append("  by SPIN used")
+        for key in sorted(bands, key=lambda k: -bands[k][1]):
+            hit, tot = bands[key]
+            out.append("    %-14s %2d/%2d = %5.1f%%"
+                       % (key, hit, tot, 100.0 * hit / tot))
     errs = [r["aim_err_deg"] for r, _g in geo if r.get("aim_err_deg") is not None]
     if errs:
         mu = sum(errs) / len(errs)
@@ -1998,7 +2011,34 @@ def summarise_shots(rows, x1, y1):
     return out
 
 
-def call_led(call_on, ball, pocket, logged_ago=None, flash_frames=45):
+def spin_band(follow, side, dead=0.12):
+    """r34.1: name the spin family a shot was struck with. Pure.
+
+    Banded, not bucketed by exact value, and that is deliberate: the picker
+    snaps to a 0.01 grid but RIM values are clamped to the unit circle instead,
+    so a 45-degree maximum is stored as 0.7071 while the readout shows 0.71.
+    Grouping on exact numbers would scatter the very shots most worth counting
+    across a dozen near-identical keys.
+
+    The corner families are the interesting ones. Full follow or draw combined
+    with full side is what makes a ball hold or swing off the cushion into a
+    pocket that the straight line does not serve -- the shot the Maker
+    recognised from professional demos and which this picker made reachable
+    for the first time at r30, because the old 36px pad could not resolve the
+    diagonals precisely enough to repeat one."""
+    f = float(follow or 0.0)
+    s_ = float(side or 0.0)
+    if math.hypot(f, s_) < dead:
+        return "centre"
+    vert = "top" if f > dead else ("bottom" if f < -dead else "")
+    horiz = "right" if s_ > dead else ("left" if s_ < -dead else "")
+    if vert and horiz:
+        return f"{vert}-{horiz}"
+    return vert or horiz
+
+
+def call_led(call_on, ball, pocket, logged_ago=None, flash_frames=45,
+             made=None):
     """r33.1: what the call indicator should show. Pure -- state in, (colour,
     label) out, no pygame.
 
@@ -2020,7 +2060,14 @@ def call_led(call_on, ball, pocket, logged_ago=None, flash_frames=45):
       logged        -- bright, a row was just written
     """
     if logged_ago is not None and 0 <= logged_ago < flash_frames:
-        return ((120, 240, 140), "SHOT LOGGED")
+        # r34.1: say whether the CALL came off, not merely that a row landed.
+        # "did I get that one right" is the question actually being asked at
+        # the table, and it is answerable the instant the balls stop.
+        if made is True:
+            return ((120, 240, 140), "CALLED SHOT — MADE")
+        if made is False:
+            return ((235, 130, 60), "call missed")
+        return ((150, 190, 220), "shot logged")
     if not call_on:
         return ((70, 74, 80), "calling off")
     if ball is None:
@@ -4226,6 +4273,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     shot_pending = False    # a struck shot awaits its LOG row
     shot_pre = None         # geometry captured before the balls moved
     logged_frame = None     # r33.1: frame a row was last written, for the LED
+    logged_made = None      # r34.1: did that call come off? None = uncalled
     profile_name = os.environ.get("HUSTLER_PLAYER", "PLAYER")
 
     def log_human_shot(rec):
@@ -4996,6 +5044,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     potted_ids=list(sim.potted_log)))
             shot_pre = None
             logged_frame = frames
+            logged_made = ((_pre["ball"] in list(sim.potted_log))
+                           if (_pre["ball"] is not None
+                               and _pre["pocket"] is not None) else None)
             call_ball, call_pocket = None, None
 
         # ---- game logic (modes 1 and 2) ----
@@ -5492,7 +5543,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             # shot actually gets taken and the mini table is not visible.
             _lc, _lt = call_led(call_on, call_ball, call_pocket,
                                 (frames - logged_frame)
-                                if logged_frame is not None else None)
+                                if logged_frame is not None else None,
+                                made=logged_made)
             _ly = min(sy + 2, STATUS_STRIP_H - 14)
             pygame.draw.circle(display, _lc, (sx + 5, _ly + 5), 5)
             pygame.draw.circle(display, (20, 22, 26), (sx + 5, _ly + 5), 5, 1)
@@ -7383,7 +7435,7 @@ def selftest():
         # that resets it without `nonlocal` fails here rather than silently
         # doing nothing -- which is how the r31 finale bug reached main.
         "call_on", "call_ball", "call_pocket", "shot_pending", "shot_pre",
-        "logged_frame",
+        "logged_frame", "logged_made",
     }
     leaks72 = closure_state_leaks(run_gui.__code__, RUN_GUI_STATE)
     # and prove the detector itself can see one, rather than trusting a
@@ -7613,20 +7665,27 @@ def selftest():
     stale78 = call_led(True, 4, (0.03, 0.03), logged_ago=45)
     # a logged row outranks even a state that would otherwise read "off"
     over78 = call_led(False, None, None, logged_ago=3)
+    made78 = call_led(True, 4, (0.03, 0.03), logged_ago=1, made=True)
+    miss78 = call_led(True, 4, (0.03, 0.03), logged_ago=1, made=False)
     labels78 = {off78[1], armed78[1], part78[1], full78[1], fresh78[1]}
     check("r33.1 call indicator — every stage of a nomination reads "
           "differently (off, armed, ball-but-no-pocket, ready), a half call "
           "never looks like a complete one since it silently records as "
           "un-nominated, a freshly written row outranks all of them for the "
-          "flash window, and the flash EXPIRES back to the live state rather "
+          "flash window, the flash says whether the CALL CAME OFF rather than "
+          "merely that a row landed (which is the question actually being "
+          "asked at the table), and it EXPIRES back to the live state rather "
           "than latching on",
           len(labels78) == 5
           and off78[1] == "calling off" and armed78[0] == (210, 60, 55)
           and part78 != full78
-          and fresh78[1] == "SHOT LOGGED" and over78[1] == "SHOT LOGGED"
+          and "logged" in fresh78[1] and "logged" in over78[1]
+          and made78[1] != miss78[1] and made78[0] != miss78[0]
+          and "MADE" in made78[1] and "missed" in miss78[1]
           and stale78 == full78,
           f"off={off78[1]!r} armed={armed78[1]!r} part={part78[1]!r} "
-          f"full={full78[1]!r} fresh={fresh78[1]!r} expired->{stale78[1]!r}")
+          f"full={full78[1]!r} made={made78[1]!r} miss={miss78[1]!r} "
+          f"expired->{stale78[1]!r}")
 
     # 79. r33.2: the shot-log summary. Pure -- rows in, printable lines out.
     #
@@ -7715,6 +7774,31 @@ def selftest():
           f"+{r80['penalty_s']:.0f}s; last-colour-plus-black -> "
           f"{both80['reason']!r}; clean finish -> {done80['reason']!r}; "
           f"clock {format_clock(75.4)}")
+
+    # 81. r34.1: spin banding for the summary.
+    #
+    # Banded rather than keyed on exact values, and that is the point. The
+    # picker snaps to a 0.01 grid but RIM values are clamped to the unit
+    # circle instead, so a 45-degree maximum is stored as 0.7071 while the
+    # readout shows 0.71. Grouping on exact numbers would scatter the corner
+    # shots -- the ones worth counting -- across a dozen near-identical keys
+    # and quietly report each as a sample of one.
+    corners81 = {spin_band(f, s) for f, s in
+                 ((0.7071, 0.7071), (0.71, 0.71), (0.68, 0.74))}
+    check("r34 spin bands — the four corner families are named, a rim value "
+          "and its snapped neighbour land in the SAME band (they are the same "
+          "shot; keying on exact numbers would split the corner shots into "
+          "samples of one), pure follow and pure side stay distinct from the "
+          "corners, and a dead-centre strike is its own band",
+          corners81 == {"top-right"}
+          and spin_band(0.7071, -0.7071) == "top-left"
+          and spin_band(-0.7071, 0.7071) == "bottom-right"
+          and spin_band(-0.7071, -0.7071) == "bottom-left"
+          and spin_band(0.9, 0.0) == "top" and spin_band(0.0, -0.9) == "left"
+          and spin_band(0.0, 0.0) == "centre" and spin_band(0.05, -0.05) == "centre",
+          f"(0.7071,0.7071)/(0.71,0.71)/(0.68,0.74) all -> {corners81}; "
+          f"pure follow -> {spin_band(0.9, 0.0)!r}; "
+          f"dead centre -> {spin_band(0.02, 0.01)!r}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

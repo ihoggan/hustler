@@ -34,6 +34,22 @@ had not earned, and it would have looked entirely reasonable in the log. The
 black is now judged against what was potted alongside it as well as what is
 left.
 
+**r34.1 shows the spin back to you, and says whether the call came off.** The
+spin used on every shot has been recorded since r33 and never displayed, which
+made the most interesting thing in the log invisible: the full-follow and
+full-side corner strikes that hold or swing a ball into a pocket the straight
+line does not serve. `--stats` now bands by spin family.
+
+The bands are families rather than exact values on purpose. The picker snaps
+to a 0.01 grid but rim values are clamped to the unit circle instead, so a
+45-degree maximum is stored as 0.7071 while the readout shows 0.71 — keying on
+exact numbers would scatter the corner shots across a dozen near-identical
+keys and report each as a sample of one.
+
+The indicator now says whether the nominated ball actually went down rather
+than merely that a row was written. "Did I get that one right" is the question
+being asked at the table, and it is answerable the moment the balls stop.
+
 Rules only so far: nothing calls this yet and no mode draws it. The clock, the
 readout and the fourth mode come next.
 
