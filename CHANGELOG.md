@@ -52,7 +52,21 @@ deliberately. The upkeep is the guard. Checked against an older build: it
 reports 69 assertions against an expected 72, and is caught.
 
 **And the lint job had been green over a red check.** `isort` was failing and
-`continue-on-error` was hiding it. It is clean now and blocking.
+`continue-on-error` was hiding it. It is clean now and blocking — and in
+r31.1 the last soft failure went with it. No step in the workflow carries
+`continue-on-error` any more.
+
+black was removed rather than fixed. Its diff on this repository runs to 1353
+removals against 2469 additions, roughly a third of `hustler.py`, and 251 of
+those lines are aligned inline comments — including the configuration table
+where the alignment is doing real work explaining the physics constants.
+Enforcing it would bury every future change under a reformat, which is the
+same problem the line-ending normalisation had just removed. pyflakes took the
+slot instead, and earned it: pyflakes is what found the `finale` bug in the
+first place, by reporting a local variable assigned and never used. A cosmetic
+check that can never pass was swapped for a semantic one that already caught
+something. The two measurement scripts, tracked since r26 and never checked by
+anything, are now compiled and linted with the rest.
 
 Also: three dead locals and three placeholder-free f-strings removed, the dev
 extras in `setup.py` corrected to the tools actually used, an unreferenced

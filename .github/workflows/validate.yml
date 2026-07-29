@@ -46,6 +46,10 @@ jobs:
       run: |
         python -m py_compile hustler.py
         python -m py_compile cushion_path.py
+        # r31.1: these two are tracked but nothing had ever checked them, so
+        # they could rot silently against a changing hustler.py.
+        python -m py_compile distance_calibration_sweep.py
+        python -m py_compile floor_threshold_audit.py
 
     - name: Run selftest suite
       run: |
@@ -100,18 +104,36 @@ jobs:
       with:
         python-version: '3.12'
 
+    # r31.1: NOTHING in this workflow is advisory any more. Every step here
+    # can fail the build, which is the only thing that makes a check worth
+    # having -- isort had been genuinely failing for months behind
+    # continue-on-error and nobody saw it, precisely because the job was
+    # known to be ignorable.
+    #
+    # black was REMOVED rather than fixed, deliberately. Its diff on this
+    # repo is 1353 removals against 2469 additions -- roughly a third of
+    # hustler.py -- and 251 of those lines are aligned inline comments,
+    # including the CFG table where the alignment is doing real documentation
+    # work for the physics constants. Applying it would bury every future
+    # real change under a reformat, which is the same phantom-diff problem
+    # r30.3 removed by normalising line endings. A permanently-red check that
+    # everyone learns to ignore is worse than no check at all.
+    #
+    # pyflakes takes its place, and it earns it: pyflakes is what found the
+    # r31 `finale` bug, by reporting a local variable assigned and never
+    # used -- the signature of a missing `nonlocal`. It is a semantic check,
+    # not a cosmetic one, and it is clean.
     - name: Install lint tools
       run: |
         python -m pip install --upgrade pip
-        pip install pylint black isort
+        pip install isort pyflakes
 
-    - name: Check code format (black)
-      run: |
-        black --check hustler.py cushion_path.py
-      continue-on-error: true
-
-    # r31: isort is BLOCKING now. It had been failing silently behind
-    # continue-on-error; the file is clean, so this is a real gate.
     - name: Check import sort (isort)
       run: |
-        isort --check-only hustler.py cushion_path.py
+        isort --check-only hustler.py cushion_path.py \
+              distance_calibration_sweep.py floor_threshold_audit.py
+
+    - name: Check for dead code and undefined names (pyflakes)
+      run: |
+        python -m pyflakes hustler.py cushion_path.py \
+               distance_calibration_sweep.py floor_threshold_audit.py

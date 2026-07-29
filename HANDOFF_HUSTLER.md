@@ -37,8 +37,17 @@ are *deliberately* re-capturing the baseline, change that hash in the same
 commit and say so — being forced to do it visibly is the point. Worth knowing
 that the baseline has now been confirmed identical on three independent
 platforms, so a mismatch means a real render change, not a machine difference.
-The `lint` job (black, isort) is advisory: both steps are `continue-on-error`
-and it can never fail the build.
+The `lint` job (isort, pyflakes) is **blocking**. As of r31.1 nothing in this
+workflow is advisory — no step anywhere carries `continue-on-error`. That
+matters more than it sounds: isort had been genuinely failing for months
+behind `continue-on-error` and nobody noticed, precisely because the job was
+known to be ignorable. A check that cannot fail trains you to stop reading it,
+and then it hides the one that could. black was removed rather than fixed —
+its diff here runs to roughly a third of `hustler.py`, including 251 aligned
+inline comments, so enforcing it would bury every future change under a
+reformat. pyflakes replaced it and earns the slot: it is what found the r31
+`finale` bug, by reporting a local assigned and never used, which is the
+signature of a missing `nonlocal`.
 
 Three notes on reading those. `--batch` uses an **unseeded** RNG, so pot and
 scratch counts vary run to run — the invariant is `containment escapes: 0`, not
