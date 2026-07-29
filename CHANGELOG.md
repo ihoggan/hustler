@@ -62,6 +62,13 @@ a human profile gets cloned from. Practice and tournament are reported on
 separate lines rather than pooled, and a log with no called shots says so
 plainly instead of printing a confident 0.0% over nothing.
 
+**r33.3 fixes a units bug in that summary**, found the first time it ran on
+real shots. `aim_jitter` is measured in radians — `PoolAI` says so in its own
+constructor — and the summary printed the human's spread in degrees directly
+beside it. The comparison looked meaningful and was wrong by a factor of 57:
+a player roughly four times more accurate than the study AI read as twelve
+times worse. Both numbers now print in radians, with the ratio spelled out.
+
 Validation: 79 assertions, 0 containment escapes over 30 batch strikes, 90
 smoke frames, `--snap` byte-identical, `--aigame 12 --seed 4200` unchanged at
 SHARK 9–3. Probed at three window sizes with zero widget overlaps; the caller

@@ -1896,10 +1896,21 @@ def summarise_shots(rows, x1, y1):
         mu = sum(errs) / len(errs)
         sd = math.sqrt(sum((v - mu) ** 2 for v in errs) / len(errs))
         out.append("")
+        sd_rad = math.radians(sd)
         out.append("  aim error: mean %+.2f deg, spread %.2f deg over %d shots"
                    % (mu, sd, len(errs)))
-        out.append("  (the spread IS your aim_jitter -- the AI's is %.3f)"
-                   % STUDY_JITTER)
+        # UNITS. `aim_jitter` is RADIANS (PoolAI.__init__ says so), and the
+        # first version of this line printed the human's spread in DEGREES
+        # beside it -- a comparison that looked meaningful and was off by a
+        # factor of 57. It made a player who is roughly four times more
+        # accurate than the AI read as twelve times worse. Convert, print
+        # both, and say which is which.
+        out.append("  = %.4f rad sigma   (the AI's aim_jitter is %.4f rad)"
+                   % (sd_rad, STUDY_JITTER))
+        if sd_rad > 0:
+            out.append("  you are %.1fx %s than the study AI on aim"
+                       % (max(sd_rad, STUDY_JITTER) / min(sd_rad, STUDY_JITTER),
+                          "tighter" if sd_rad < STUDY_JITTER else "looser"))
     return out
 
 
@@ -7563,12 +7574,14 @@ def selftest():
     check("r33.2 shot summary — practice and tournament are reported on "
           "SEPARATE lines rather than pooled (they measure different things, "
           "since in practice the player racks it themselves), the aim-error "
-          "spread is reported as the human's own aim_jitter, and a log with "
+          "spread is reported IN RADIANS beside the AI's aim_jitter rather "
+          "than in degrees beside it (which read as a meaningful comparison "
+          "and was wrong by a factor of 57), and a log with "
           "no called shots says so instead of printing a confident 0.0% over "
           "nothing",
           "practice" in txt79 and "tournament" in txt79
           and "50.0%" in txt79 and "100.0%" in txt79
-          and "aim_jitter" in txt79
+          and "aim_jitter" in txt79 and "rad" in txt79
           and any("no called shots" in ln for ln in empty79)
           and not any("0.0%" in ln for ln in empty79),
           f"{len(lines79)} lines; practice+tournament split shown; "
