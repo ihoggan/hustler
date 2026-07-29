@@ -21,7 +21,7 @@ source of truth.
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 75 assertions |
+| `--selftest` | ALL PASS — 76 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -172,7 +172,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 75 assertions, all
+  out) rather than the pygame wrapper around it. Currently 76 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -234,6 +234,15 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   than it is. Don't point one at the other without an explicit decision — this
   is why r16's over-harshness went unnoticed for so long, since no human path
   ever touches `pot_estimate`.
+- **The shot log stores RAW POSITIONS, and angles are derived on read.**
+  Every row carries the cue ball, the object ball and the whole table layout
+  in metres at the moment of striking. `pocket_geometry()` turns those into
+  distance, bearing and — the one that matters here — the angle the ball sat
+  off the pocket's own mouth axis. Distance alone cannot tell a ball tight on
+  the cushion from one in open baize at the same range, and on this table
+  those are not the same shot: over four logged AI frames the pot rate ran
+  59% within 10 degrees of the mouth and 5% beyond 30. Add derived scalars if
+  they are convenient, but never at the cost of the positions.
 - **Shot-log rows carry provenance, and it is not decoration.** Every record
   written from r32 says `source` (human or ai), `mode` (practice or
   tournament), `intent` (called or none) and `p_model` (which difficulty

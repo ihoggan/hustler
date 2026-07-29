@@ -1666,6 +1666,11 @@ class PoolAI:
                 if best is None or u > best["u"]:
                     best = {"type": "pot", "aim": est["aim"], "p": p, "u": u,
                             "leave": leave, "risk": risk, "target": t,
+                            # r32.1: the ball id was in scope here and thrown
+                            # away. The AI DOES nominate -- it picks a ball and
+                            # a pocket -- so its shots are called shots, and
+                            # without the id nothing downstream can score them.
+                            "ball": bid,
                             "ghost": est["ghost"], "pocket": pc, "d": d,
                             "est": est, "power": power,
                             "rem": [q for (qid, q) in targets if qid != bid],
@@ -1830,9 +1835,68 @@ def default_ais(rng=None):
                    caution=0.70, rng=rng)]
 
 
-STUDY_SCHEMA = 3   # bump when the JSONL record shape changes, so old study
+STUDY_SCHEMA = 4   # bump when the JSONL record shape changes, so old study
                    # files can never be silently misread by a newer analysis.
                    # 2 (r19): added cut_deg / t_cue / d_tp -- the pot geometry.
+
+
+def pocket_axis(pocket, x1, y1):
+    """r32.1 (stats): unit vector pointing from a pocket INTO the table -- the
+    axis a ball has to arrive along to drop cleanly. Pure geometry.
+
+    Corners and middles differ and cannot be handled by one rule. A corner
+    faces along the diagonal; a middle faces square across the short axis. You
+    cannot derive either by pointing at the table centre, because the table is
+    2:1 -- that would put a corner's axis at about 26.6 degrees instead of 45,
+    which would then silently skew every approach angle computed from it.
+
+    Middles are identified by sitting on the table's mid-line in x (they are at
+    x = x1/2 by construction); everything else is a corner."""
+    px, py = pocket
+    sx = 1.0 if px < x1 / 2.0 else -1.0
+    sy = 1.0 if py < y1 / 2.0 else -1.0
+    if abs(px - x1 / 2.0) < 0.05:
+        return (0.0, sy)
+    k = math.sqrt(0.5)
+    return (sx * k, sy * k)
+
+
+def pocket_geometry(obj_pos, pocket, x1, y1):
+    """r32.1 (stats): where an object ball sat RELATIVE TO a pocket. Pure.
+
+    This exists because distance alone throws away the thing that decides
+    whether a ball drops on this table. `d_tp` already told us how FAR the ball
+    was from the pocket; it never told us which WAY. A ball half a metre out
+    tight against the cushion and one half a metre out in open baize recorded
+    identically, and on a table whose knuckles are as unforgiving as this one
+    they are not remotely the same shot.
+
+    Returns:
+      dist        -- centre-to-centre, metres (what d_tp already carried)
+      bearing_deg -- absolute direction from POCKET to BALL, [0, 360)
+      approach_deg -- the same direction measured against the pocket's own
+                      inward axis, so 0 means the ball is sitting straight out
+                      in front of the mouth and larger means further round
+                      towards the jaw. THIS is the number that should predict
+                      whether a pot survives the knuckles, and it is the one
+                      nothing in the log could previously answer.
+
+    Derived on read, never stored: the positions are recorded and every angle
+    comes from them. Same principle as the profile layer -- raw geometry
+    answers questions nobody has thought of yet; stored scalars answer only the
+    question that was in mind the day they were written."""
+    ox, oy = obj_pos
+    px, py = pocket
+    dx, dy = ox - px, oy - py
+    dist = math.hypot(dx, dy)
+    if dist < 1e-9:
+        return {"dist": 0.0, "bearing_deg": None, "approach_deg": None}
+    bearing = math.degrees(math.atan2(dy, dx)) % 360.0
+    ax, ay = pocket_axis(pocket, x1, y1)
+    cosang = max(-1.0, min(1.0, (dx * ax + dy * ay) / dist))
+    return {"dist": dist,
+            "bearing_deg": bearing,
+            "approach_deg": math.degrees(math.acos(cosang))}
 
 
 def perfect_aim_deg(cue_pos, obj_pos, pocket_pos, r_cue, r_obj):
@@ -1888,7 +1952,8 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
                      cushion_after, foul, event, ball_in_hand, free_shot,
                      cue_placed, source="ai", mode="tournament",
                      intent="none", called=None, aim_deg=None,
-                     p_model="estimate"):
+                     p_model="estimate", cue_pos=None, obj_pos=None,
+                     layout=None, potted_ids=None):
     """r15 (study output): one shot -> one plain, JSON-safe dict.
 
     The payload that matters for analysis is `p_pred` (what the AI THOUGHT the
@@ -1931,6 +1996,21 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
                   actual aim error with no jitter parameter. They are NOT the
                   same scale and must never be pooled.
 
+    r32.1: and three fields carry the RAW GEOMETRY -- `cue_pos`, `obj_pos` and
+    the full `layout` at the moment of striking, all in metres. Everything
+    else about the shot's shape is derivable from those and the pocket: the cut
+    angle, both distances, the bearing from pocket to ball, how tight to the
+    cushion it sat, the angle it approached the jaws at. The derived scalars
+    above (cut_deg, t_cue, d_tp) stay for convenience, but they are a
+    convenience -- they answer the questions that were in mind the day they
+    were written, and the positions answer the rest.
+
+    `layout` is the whole table, not just the two balls in play, because
+    obstruction, congestion and the quality of the leave cannot be
+    reconstructed from anything else at any price. It costs roughly 700 bytes a
+    row, which is about 37 MB for five hundred frames. That is not a
+    constraint; losing the ability to ask the question later is.
+
     Pure: no sim, no pygame, no file I/O -- just values in, dict out."""
     est = plan.get("est") or {}
     fullness = est.get("fullness")
@@ -1961,6 +2041,14 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
         "called_pocket": ([round(float((called or {})["pocket"][0]), 4),
                            round(float((called or {})["pocket"][1]), 4)]
                           if called and called.get("pocket") else None),
+        # r32.1 raw geometry -- derive angles from these, don't add scalars
+        "cue_pos": ([round(float(cue_pos[0]), 4), round(float(cue_pos[1]), 4)]
+                    if cue_pos else None),
+        "obj_pos": ([round(float(obj_pos[0]), 4), round(float(obj_pos[1]), 4)]
+                    if obj_pos else None),
+        "layout": ([{"id": b["id"], "c": b["c"],
+                     "x": round(float(b["x"]), 4), "y": round(float(b["y"]), 4)}
+                    for b in layout] if layout else None),
         "aim_deg": (round(float(aim_deg), 3) if aim_deg is not None else None),
         "aim_err_deg": (round(float(aim_error_deg(aim_deg, (called or {}).get("perfect_deg"))), 3)
                         if (aim_deg is not None and (called or {}).get("perfect_deg") is not None)
@@ -1970,6 +2058,10 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
         "cue_placed": ([round(cue_placed[0], 4), round(cue_placed[1], 4)]
                        if cue_placed else None),
         "potted": list(potted),
+        # r32.1: `potted` is COLOURS on every path. A nominated shot names a
+        # BALL, so scoring one against the other silently never matched. Ids
+        # travel alongside; colours stay because the rules layer speaks them.
+        "potted_ids": (list(potted_ids) if potted_ids is not None else None),
         "first_contact": first_contact,
         "cushion_after": bool(cushion_after),
         "foul": foul,
@@ -2097,7 +2189,14 @@ def shot_accuracy(records, source=None, mode=None):
         if mode is not None and r.get("mode") != mode:
             continue
         att += 1
-        if r.get("called_ball") is not None and r.get("called_ball") in (r.get("potted") or []):
+        # r32.1: ids, not colours. Note the deliberate limitation: this asks
+        # "did the nominated BALL go down", not "did it go down the nominated
+        # POCKET". The sim does not record which pocket swallowed which ball
+        # (`last_pot_events` is cleared every step), so a ball that drops in a
+        # different pocket than called still scores. Recording the drop pocket
+        # means a shot-scoped list on Sim alongside potted_log -- small, but it
+        # touches rules-critical bookkeeping, so it is a separate decision.
+        if r.get("called_ball") is not None and r.get("called_ball") in (r.get("potted_ids") or []):
             made += 1
     return (att, made, (made / att if att else 0.0))
 
@@ -2203,11 +2302,25 @@ def play_ai_game(seed=0, max_shots=300, verbose=False, log_shots=False):
                   f"p={shot['p']:.2f} pow={shot['power']:.2f}")
         colour = game.colours.get(striker)
         n_shot = game.shots + 1
+        # r32.1: snapshot the geometry BEFORE the balls move. After strike()
+        # and run_to_rest() the positions are the LEAVE, not the shot -- and a
+        # log that quietly recorded the wrong end of the shot would be worse
+        # than no log, because nothing downstream could tell.
+        pre_layout = pre_cue = pre_obj = None
+        if log_shots:
+            pre_layout = [{"id": bid, "c": sim.colours.get(bid),
+                           "x": b.position.x, "y": b.position.y}
+                          for bid, (b, _) in sim.balls.items()]
+            _c = sim.cue()
+            pre_cue = (_c.position.x, _c.position.y) if _c is not None else None
+            _t = shot.get("target")
+            pre_obj = (float(_t[0]), float(_t[1])) if _t else None
         sim.strike(shot["aim"], shot["power"],
                    side=shot.get("side", 0.0), follow=shot.get("follow", 0.0))
         sim.run_to_rest()
         # Snapshot what the shot actually DID, before on_rest() mutates state.
         potted = sim.potted_colours()
+        potted_ids = list(sim.potted_log)
         first_contact = sim.first_contact
         cushion_after = sim.cushion_after_contact
         fouls_before = game.fouls
@@ -2218,7 +2331,14 @@ def play_ai_game(seed=0, max_shots=300, verbose=False, log_shots=False):
                     and game.last_event.startswith("foul") else None)
             shot_log.append(make_shot_record(
                 n_shot, striker, ai.name, colour, shot, potted, first_contact,
-                cushion_after, foul, game.last_event, bih, free, cue_placed))
+                cushion_after, foul, game.last_event, bih, free, cue_placed,
+                cue_pos=pre_cue, obj_pos=pre_obj, layout=pre_layout,
+                potted_ids=potted_ids,
+                # r32.1: an AI pot IS a called shot -- it names a ball and a
+                # pocket before striking. Safeties nominate nothing.
+                intent=("called" if shot.get("pocket") else "none"),
+                called=({"ball": shot.get("ball"), "pocket": shot["pocket"]}
+                        if shot.get("pocket") else None)))
     rec = {"over": game.over, "winner": game.winner,
            "winner_name": game.names[game.winner] if game.winner is not None else "-",
            "reason": game.reason, "shots": game.shots, "visits": game.visits,
@@ -6833,11 +6953,13 @@ def selftest():
               "follow": 0.0, "side": 0.0,
               "est": {"fullness": 0.9, "t_cue": 0.5, "d_tp": 0.8}}
     called73 = {"ball": 4, "pocket": (0.03, 0.03), "perfect_deg": 40.0}
-    hum73 = make_shot_record(1, 0, "IAIN", "red", plan73, [4], "red", True,
+    hum73 = make_shot_record(1, 0, "IAIN", "red", plan73, ["red"], "red", True,
                              None, None, False, False, None,
                              source="human", mode="practice", intent="called",
                              called=called73, aim_deg=41.5,
-                             p_model="assessment")
+                             p_model="assessment", potted_ids=[4],
+                             cue_pos=(0.4, 0.3), obj_pos=(1.1, 0.2),
+                             layout=[{"id": 4, "c": "red", "x": 1.1, "y": 0.2}])
     back73 = json.loads(json.dumps(hum73))          # must survive a REAL trip
     ai73 = make_shot_record(2, 1, "SHARK", "red", plan73, [], "red", True,
                             None, None, False, False, None)
@@ -6845,10 +6967,14 @@ def selftest():
           "(source/mode/intent/p_model, the nominated ball and pocket, and the "
           "aim error against that nomination) through a real JSON round trip, "
           "and an AI row still defaults to the AI shape, so the two can never "
-          "be pooled by accident",
+          "be pooled by accident; and the RAW GEOMETRY travels with it, since "
+          "the positions answer questions the derived scalars were never "
+          "written to answer",
           back73["source"] == "human" and back73["mode"] == "practice"
           and back73["intent"] == "called" and back73["p_model"] == "assessment"
           and back73["called_ball"] == 4 and back73["called_pocket"] == [0.03, 0.03]
+          and back73["obj_pos"] == [1.1, 0.2] and back73["potted_ids"] == [4]
+          and len(back73["layout"]) == 1
           and abs(back73["aim_err_deg"] - 1.5) < 1e-9
           and ai73["source"] == "ai" and ai73["intent"] == "none"
           and ai73["called_ball"] is None and ai73["aim_err_deg"] is None
@@ -6902,7 +7028,8 @@ def selftest():
                                None, None, False, False, None, source="human",
                                mode="practice", intent="called",
                                called={"ball": 7, "pocket": (0.0, 0.0)},
-                               aim_deg=10.0, p_model="assessment"),
+                               aim_deg=10.0, p_model="assessment",
+                               potted_ids=[]),
               # The row that matters: a human practice SAFETY, same source and
               # mode as the two called shots, deliberately not nominated. It
               # must be excluded outright, not counted as a missed pot. Without
@@ -6911,7 +7038,7 @@ def selftest():
               make_shot_record(4, 0, "IAIN", None, {"type": "safety"}, [],
                                "red", True, None, None, False, False, None,
                                source="human", mode="practice", intent="none",
-                               p_model="assessment")]
+                               p_model="assessment", potted_ids=[])]
     acc75 = shot_accuracy(recs75, source="human", mode="practice")
     check("r32 profiles — identity and completed frames round-trip through "
           "JSON, malformed rows are skipped rather than fatal, every statistic "
@@ -6927,6 +7054,48 @@ def selftest():
           and round75["params"] is None,
           f"tournament {t75[1]}/{t75[0]} (95% CI {t75[3]:.2f}-{t75[4]:.2f}), "
           f"practice {p75[1]}/{p75[0]}, called accuracy {acc75[1]}/{acc75[0]}")
+
+    # 76. r32.1 (stats): where the ball sat RELATIVE TO the pocket.
+    #
+    # This is the field the log was missing and the reason for the schema bump.
+    # `d_tp` already said how FAR a ball was from its pocket; nothing said
+    # which WAY. A ball half a metre out tight on the cushion and one half a
+    # metre out in open baize recorded identically, and on a table with these
+    # knuckles they are not the same shot at all.
+    #
+    # The corner-vs-middle split is the part that would fail silently. A corner
+    # faces along the diagonal and a middle faces square across the short axis;
+    # deriving either by pointing at the table centre puts a corner's axis at
+    # about 26.6 degrees rather than 45, because the table is 2:1 -- and every
+    # approach angle computed from it would then be quietly wrong rather than
+    # obviously broken.
+    x76a, y76a = 1.82, 0.91
+    corner76 = pocket_axis((-0.0144, -0.0144), x76a, y76a)
+    middle76 = pocket_axis((0.91, -0.03), x76a, y76a)
+    k76 = math.sqrt(0.5)
+    # straight out in front of the bottom-left corner: 45 deg bearing, 0 approach
+    straight76 = pocket_geometry((0.3, 0.3), (-0.0144, -0.0144), x76a, y76a)
+    # same DISTANCE from the same pocket, but hugging the bottom cushion --
+    # the case d_tp alone could not distinguish
+    hug76 = pocket_geometry((0.4302, 0.0256), (-0.0144, -0.0144), x76a, y76a)
+    degen76 = pocket_geometry((0.91, -0.03), (0.91, -0.03), x76a, y76a)
+    check("r32.1 pocket geometry — a corner's mouth faces along the diagonal "
+          "and a middle faces square (deriving either from the table centre "
+          "would put a corner at 26.6 deg, not 45, because the table is 2:1), "
+          "a ball straight out in front reads 0 deg approach, and a ball at "
+          "the SAME DISTANCE but hugging the cushion reads a wide one — which "
+          "is the distinction the old distance-only record could not make",
+          abs(corner76[0] - k76) < 1e-9 and abs(corner76[1] - k76) < 1e-9
+          and middle76 == (0.0, 1.0)
+          and abs(straight76["bearing_deg"] - 45.0) < 1e-6
+          and straight76["approach_deg"] < 1e-6
+          and abs(hug76["dist"] - straight76["dist"]) < 0.002
+          and hug76["approach_deg"] > 38.0
+          and degen76["bearing_deg"] is None,
+          f"corner axis {corner76[0]:.3f},{corner76[1]:.3f}; middle {middle76}; "
+          f"straight {straight76['approach_deg']:.1f} deg vs cushion-hugger "
+          f"{hug76['approach_deg']:.1f} deg at the same "
+          f"{hug76['dist']:.3f}m/{straight76['dist']:.3f}m")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

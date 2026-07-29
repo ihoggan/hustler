@@ -51,12 +51,36 @@ a power cut is not reliably possible, and a forfeit inferred from an orphaned
 marker would punish the wrong player often enough to matter — so only whole,
 clean games count.
 
-Three assertions, mutation-tested five ways. One of those mutants survived the
+**r32.1 adds the half that was missing.** The first cut recorded the cut angle
+and the distance to the pocket, and stopped there — so a ball half a metre out
+tight against the cushion and one half a metre out in open baize produced
+identical rows. On a table with these knuckles they are not remotely the same
+shot. Rather than bolt on another derived number, the rows now carry the raw
+positions: the cue ball, the object ball, and the whole table layout in metres
+at the moment of striking. Every angle is derived from those on read, including
+the one that turns out to matter — how far round from the pocket's own mouth
+axis the ball was sitting. Over four logged AI frames the pot rate runs 59%
+within ten degrees of the mouth and 5% beyond thirty. Distance alone could
+never have shown that.
+
+Two things surfaced only by running the pipeline on real games rather than
+fixtures. The accuracy check compared a nominated BALL against a list of
+potted COLOURS, so it could never match anything and quietly scored every
+shot a miss. And the AI, which does nominate a ball and a pocket before every
+pot, was throwing the ball id away — its own shots were unscoreable by the
+very statistic being built for them. Both are fixed; AI pot shots are now
+recorded as the called shots they always were.
+
+One known limitation, recorded rather than hidden: a shot scores as made when
+the nominated ball goes down, not when it goes down the nominated pocket. The
+sim does not currently record which pocket swallowed which ball.
+
+Four assertions, mutation-tested ten ways. One of those mutants survived the
 first attempt: the test that guards against counting un-nominated shots as
 missed pots had no un-nominated shot in its fixture, so the guard could be
 deleted with the assertion still passing. The fixture has one now.
 
-Validation: 75 assertions, 0 containment escapes over 30 batch strikes, 90
+Validation: 76 assertions, 0 containment escapes over 30 batch strikes, 90
 smoke frames, `--snap` byte-identical, `--aigame 12 --seed 4200` unchanged at
 SHARK 9–3.
 
