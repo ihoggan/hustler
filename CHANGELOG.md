@@ -5,7 +5,41 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r33 — calling your shot (current)
+## r34 — the solo clearance rules (current)
+
+The rules half of a timed solo game, built and tested before anything draws
+it. Pot every colour in any order, the black last, against the clock.
+
+Any-order won over a reds-then-yellows sequence, and the Maker got there by
+asking the right question: how do you foul a player who pots two different
+colours at once? Notice what the answer does — with no sequence to break, a
+mixed pot cannot break one. The rule that caused the problem was the rule
+worth dropping. It is also the better rule for a time trial: with a clock
+running, a forced colour order mostly punishes how the rack happened to break,
+while any-order rewards reading the table and choosing a run.
+
+The black is the only ordering rule left and it is absolute. Down before the
+colours are cleared and the run ends there.
+
+Fouls cost TIME rather than a turn — ten seconds — because a solo game has no
+opponent to hand the table to. The clock is the only currency it has. A
+scratch and an air shot both foul; a scratch still gives ball in hand in
+baulk, which the r13 placement machinery already handles.
+
+One rule went in wrong and the assertion caught it on its first run. Potting
+the last colour and the black on the same shot read as a clean clearance,
+because the test compared the colours remaining AFTER the shot — which is zero
+either way. A lucky double-pot would have handed the player a clearance they
+had not earned, and it would have looked entirely reasonable in the log. The
+black is now judged against what was potted alongside it as well as what is
+left.
+
+Rules only so far: nothing calls this yet and no mode draws it. The clock, the
+readout and the fourth mode come next.
+
+---
+
+## r33 — calling your shot
 
 The first visible half of the stats work. A scale model of the table now sits
 in the Spin tab: click a ball, click a pocket, take the shot. That nomination

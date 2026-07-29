@@ -1840,6 +1840,90 @@ STUDY_SCHEMA = 4   # bump when the JSONL record shape changes, so old study
                    # 2 (r19): added cut_deg / t_cue / d_tp -- the pot geometry.
 
 
+SOLO_FOUL_PENALTY_S = 10.0
+
+
+def new_solo_run():
+    """r34: a solo clearance run. Pot every colour in ANY ORDER, black last,
+    against the clock.
+
+    The Maker chose any-order over a reds-then-yellows sequence, and it is the
+    better rule for a timed solo game for a reason worth writing down: with a
+    clock running, a forced colour order mostly punishes how the rack happened
+    to break, while any-order rewards reading the table and picking a run.
+    It also dissolves the awkward case that prompted the question -- potting
+    two different colours at once cannot break a sequence that does not exist.
+
+    The black is the only ordering rule left, and it is absolute: down before
+    the colours are cleared and the run is over."""
+    return {"started": False, "shots": 0, "fouls": 0,
+            "penalty_s": 0.0, "over": False, "reason": None}
+
+
+def solo_apply_shot(run, potted_colours, cue_potted, first_contact,
+                    colours_left, penalty_s=SOLO_FOUL_PENALTY_S):
+    """r34: advance a solo run by one shot. Pure -- state in, new state out,
+    no sim, no clock, no pygame.
+
+    `colours_left` is the count of NON-black object balls still on the table
+    AFTER this shot. Fouls cost time rather than a turn, because there is no
+    opponent to hand the table to -- the clock is the only currency a solo
+    game has.
+
+    Ordering inside this function matters. The black is checked BEFORE the
+    cleared test: potting the black on the same shot as your last colour is
+    still an early black, not a finish, and scoring it as a win would let a
+    lucky double-pot end the run in the player's favour."""
+    out = dict(run)
+    if out["over"]:
+        return out
+    out["started"] = True
+    out["shots"] = run["shots"] + 1
+    foul = False
+    if cue_potted:
+        foul = True
+    elif first_contact is None:
+        foul = True
+    if "black" in (potted_colours or []):
+        # A colour potted on THIS shot alongside the black still counts as an
+        # early black. `colours_left` is the count AFTER the shot, so on its
+        # own it cannot tell a clean finish from the last colour and the black
+        # dropping together -- and that difference is the whole rule. Caught
+        # by selftest 80 on its first run.
+        same_shot_colour = any(c != "black" for c in (potted_colours or []))
+        if colours_left > 0 or same_shot_colour:
+            out["over"] = True
+            out["reason"] = "black potted early"
+            if foul:
+                out["fouls"] = run["fouls"] + 1
+                out["penalty_s"] = run["penalty_s"] + penalty_s
+            return out
+        out["over"] = True
+        out["reason"] = "cleared"
+    if foul:
+        out["fouls"] = run["fouls"] + 1
+        out["penalty_s"] = run["penalty_s"] + penalty_s
+    return out
+
+
+def solo_elapsed(start_t, now_t, penalty_s):
+    """r34: wall time since the first strike plus accumulated penalties. Pure.
+
+    Returns 0.0 before the run has started rather than a negative or a wild
+    number -- a clock that reads oddly before you have taken a shot invites
+    the player to distrust it afterwards."""
+    if start_t is None or now_t is None or now_t < start_t:
+        return float(penalty_s or 0.0)
+    return (now_t - start_t) + float(penalty_s or 0.0)
+
+
+def format_clock(seconds):
+    """r34: seconds -> M:SS.s, the readout a time trial wants. Pure."""
+    seconds = max(0.0, float(seconds))
+    m = int(seconds // 60)
+    return "%d:%04.1f" % (m, seconds - m * 60)
+
+
 def summarise_shots(rows, x1, y1):
     """r33.2: turn a shot log into the numbers a player actually wants. Pure --
     rows in, list of printable lines out, no file I/O and no pygame.
@@ -7586,6 +7670,51 @@ def selftest():
           and not any("0.0%" in ln for ln in empty79),
           f"{len(lines79)} lines; practice+tournament split shown; "
           f"empty-log line: {[ln for ln in empty79 if 'called' in ln][:1]}")
+
+    # 80. r34: the solo clearance rules.
+    #
+    # Any colour, any order, black last, against the clock. The ordering
+    # INSIDE solo_apply_shot is the part that would go wrong quietly: the
+    # black must be judged BEFORE the cleared test, or potting the black on
+    # the same shot as your last colour ends the run as a WIN rather than an
+    # early black. That is a lucky double-pot handing the player a clearance
+    # they did not earn, and it would look entirely reasonable in the log.
+    #
+    # Fouls cost time, not a turn, because a solo game has no opponent to
+    # hand the table to -- the clock is its only currency.
+    r80 = new_solo_run()
+    r80 = solo_apply_shot(r80, ["red"], False, "red", 6)          # clean pot
+    r80 = solo_apply_shot(r80, [], True, "yellow", 6)             # scratch
+    scratched80 = dict(r80)
+    r80 = solo_apply_shot(r80, [], False, None, 6)                # air shot
+    # black down with colours still up -> over, and NOT a clearance
+    early80 = solo_apply_shot(r80, ["black"], False, "black", 3)
+    # the trap: last colour and the black in the same shot is STILL early
+    both80 = solo_apply_shot(r80, ["yellow", "black"], False, "yellow", 0)
+    # a genuine finish: black alone, nothing else left
+    done80 = solo_apply_shot(r80, ["black"], False, "black", 0)
+    after80 = solo_apply_shot(done80, ["red"], False, "red", 0)   # over stays over
+    check("r34 solo clearance — any colour in any order, fouls cost TIME "
+          "rather than a turn (there is no opponent to hand the table to), a "
+          "scratch and an air shot both foul, the black down with colours "
+          "still up ends the run as an early black, potting the last colour "
+          "AND the black together is still an early black rather than a "
+          "clearance handed over by a lucky double-pot, and a finished run "
+          "cannot be advanced further",
+          scratched80["fouls"] == 1
+          and abs(scratched80["penalty_s"] - SOLO_FOUL_PENALTY_S) < 1e-9
+          and r80["fouls"] == 2 and r80["shots"] == 3 and not r80["over"]
+          and early80["over"] and early80["reason"] == "black potted early"
+          and both80["over"] and both80["reason"] == "black potted early"
+          and done80["over"] and done80["reason"] == "cleared"
+          and after80["shots"] == done80["shots"]
+          and abs(solo_elapsed(10.0, 25.0, 20.0) - 35.0) < 1e-9
+          and abs(solo_elapsed(None, None, 10.0) - 10.0) < 1e-9
+          and format_clock(75.4) == "1:15.4",
+          f"{r80['shots']} shots, {r80['fouls']} fouls, "
+          f"+{r80['penalty_s']:.0f}s; last-colour-plus-black -> "
+          f"{both80['reason']!r}; clean finish -> {done80['reason']!r}; "
+          f"clock {format_clock(75.4)}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
