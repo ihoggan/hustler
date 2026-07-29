@@ -1840,6 +1840,44 @@ STUDY_SCHEMA = 4   # bump when the JSONL record shape changes, so old study
                    # 2 (r19): added cut_deg / t_cue / d_tp -- the pot geometry.
 
 
+def fit_box(box_w, box_h, world_w, world_h):
+    """r33 (called shots): scale and offset that fit a world rectangle inside a
+    widget box, preserving aspect and centring the remainder. Pure.
+
+    THE SAME SCALE MULTIPLIES BOTH AXES -- deliberately, and it is the same
+    discipline the main renderer follows. A mini table stretched to fill its
+    box would show the geometry at a lie: pockets would stop being round, the
+    knuckles would stop being where they are, and a click would land on a
+    different part of the table from the one under the cursor. Returns
+    (scale, ox, oy) where world (wx, wy) maps to (ox + wx*scale, oy + wy*scale).
+    """
+    if world_w <= 0 or world_h <= 0:
+        return (1.0, 0.0, 0.0)
+    scale = min(box_w / world_w, box_h / world_h)
+    return (scale, (box_w - world_w * scale) / 2.0,
+            (box_h - world_h * scale) / 2.0)
+
+
+def nearest_within(point, candidates, max_dist):
+    """r33 (called shots): index of the candidate nearest `point`, or None if
+    the nearest is further than `max_dist`. Pure, no pygame.
+
+    The cap is the whole point. Without it a click anywhere on the widget
+    silently nominates whatever happened to be closest, including a ball right
+    across the table -- so a mis-click becomes a nomination the player never
+    made, and the shot is then scored against it. A nomination nobody intended
+    is worse than no nomination, because `intent: "none"` is honest and a wrong
+    call is data that looks right."""
+    best_i, best_d = None, None
+    for i, c in enumerate(candidates):
+        d = math.hypot(c[0] - point[0], c[1] - point[1])
+        if best_d is None or d < best_d:
+            best_i, best_d = i, d
+    if best_d is None or best_d > max_dist:
+        return None
+    return best_i
+
+
 def pocket_axis(pocket, x1, y1):
     """r32.1 (stats): unit vector pointing from a pocket INTO the table -- the
     axis a ball has to arrive along to drop cleanly. Pure geometry.
@@ -3696,6 +3734,98 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                (240, 240, 240) if en else (120, 122, 126))
             surf.blit(txt, txt.get_rect(center=self.rect.center))
 
+    class MiniTable:
+        """r33: a scale model of the real table, for nominating a shot.
+
+        The geometry is NOT redrawn from first principles -- it is the actual
+        `nose_loop_m()` cushion polyline and the actual `capture_points()`,
+        scaled down. That matters twice over: the table geometry is settled and
+        must not be re-derived, and a mini table with invented pockets would
+        put the knuckles somewhere they are not, which is precisely the part of
+        this table that decides whether a pot survives.
+
+        Interaction is two clicks -- ball, then pocket -- and it is HUD-only.
+        Nothing here reads or writes a table click; the widget lives in the
+        panel and converts its OWN pixels to world coordinates. R6.6 is
+        untouched: aim, power, spin and now nomination are all set in the HUD.
+
+        Clicks that land nowhere near a ball or a pocket are ignored rather
+        than snapped to the closest thing on the table (see nearest_within):
+        a nomination the player did not make is worse than no nomination at
+        all, because the shot then gets scored against it.
+        """
+        def __init__(self, rect, get_state, on_ball, on_pocket):
+            self.rect = pygame.Rect(rect)
+            self.get_state = get_state      # -> (enabled, balls, ball_id, pocket)
+            self.on_ball = on_ball
+            self.on_pocket = on_pocket
+
+        def _xf(self):
+            x0, y0, x1, y1 = play_rect()
+            pad = 6
+            sc, ox, oy = fit_box(self.rect.w - 2 * pad, self.rect.h - 2 * pad, x1, y1)
+            return sc, self.rect.x + pad + ox, self.rect.y + pad + oy
+
+        def _w2s(self, p, sc, ox, oy):
+            return (ox + p[0] * sc, oy + p[1] * sc)
+
+        def handle_event(self, ev):
+            enabled, balls, _bid, _pk = self.get_state()
+            if not enabled or ev.type != pygame.MOUSEBUTTONDOWN:
+                return False
+            if not self.rect.collidepoint(ev.pos):
+                return False
+            sc, ox, oy = self._xf()
+            wx = (ev.pos[0] - ox) / max(sc, 1e-9)
+            wy = (ev.pos[1] - oy) / max(sc, 1e-9)
+            # Pockets first: a corner pocket sits close to the balls racked
+            # near it, and the pocket is the smaller, more deliberate target.
+            pks = [pc for (pc, _r) in capture_points()]
+            i = nearest_within((wx, wy), pks, CFG["CUE_R_M"] * 2.5)
+            if i is not None:
+                self.on_pocket(pks[i])
+                return True
+            pos = [b["pos"] for b in balls]
+            j = nearest_within((wx, wy), pos, ball_r() * 2.0)
+            if j is not None:
+                self.on_ball(balls[j]["id"])
+                return True
+            return False
+
+        def draw(self, surf, font):
+            enabled, balls, bid, pocket = self.get_state()
+            sc, ox, oy = self._xf()
+            pygame.draw.rect(surf, (18, 62, 38), self.rect, border_radius=4)
+            loop = [self._w2s(p, sc, ox, oy) for p in nose_loop_m()]
+            if len(loop) > 2:
+                pygame.draw.polygon(surf, (26, 92, 56), loop)
+                pygame.draw.polygon(surf, (140, 150, 145), loop, 1)
+            for (pc, cap_r) in capture_points():
+                c = self._w2s(pc, sc, ox, oy)
+                pygame.draw.circle(surf, (8, 8, 8), (int(c[0]), int(c[1])),
+                                   max(2, int(cap_r * sc)))
+                if pocket is not None and math.hypot(pc[0] - pocket[0],
+                                                     pc[1] - pocket[1]) < 1e-6:
+                    pygame.draw.circle(surf, (255, 210, 90), (int(c[0]), int(c[1])),
+                                       max(3, int(cap_r * sc) + 3), 2)
+            r_px = max(2, int(ball_r() * sc))
+            for b in balls:
+                c = self._w2s(b["pos"], sc, ox, oy)
+                pygame.draw.circle(surf, COL.get(b["c"], (200, 200, 200)),
+                                   (int(c[0]), int(c[1])), r_px)
+                if b["id"] == bid:
+                    pygame.draw.circle(surf, (255, 210, 90),
+                                       (int(c[0]), int(c[1])), r_px + 3, 2)
+            if bid is not None and pocket is not None:
+                bp = next((b["pos"] for b in balls if b["id"] == bid), None)
+                if bp:
+                    pygame.draw.line(surf, (255, 210, 90),
+                                     self._w2s(bp, sc, ox, oy),
+                                     self._w2s(pocket, sc, ox, oy), 1)
+            if not enabled:
+                lbl = font.render("calling off", True, (170, 170, 170))
+                surf.blit(lbl, (self.rect.x + 6, self.rect.bottom - 16))
+
     class SpinPad:
         """Drag or click the contact point on the cue-ball face: vertical =
         follow / draw, horizontal = side, clamped to the unit circle
@@ -3895,6 +4025,32 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     ai_plan = None
     ai_wait = 0
     pending = False        # a struck shot awaits rules resolution
+    # r33 (called shots). `shot_pending` is DELIBERATELY separate from
+    # `pending`: pending is only ever set when a Game exists, so in sandbox --
+    # which is where the Maker actually plays -- there is no shot-completed
+    # event at all. Recording practice shots needs its own flag.
+    call_on = True          # nomination enabled; a shot fired without one is
+                            # logged intent="none", never blocked
+    call_ball = None        # nominated ball id
+    call_pocket = None      # nominated pocket, world metres
+    shot_pending = False    # a struck shot awaits its LOG row
+    shot_pre = None         # geometry captured before the balls moved
+    profile_name = os.environ.get("HUSTLER_PLAYER", "PLAYER")
+
+    def log_human_shot(rec):
+        """r33: append one shot to the ledger. Best-effort by design -- a
+        failed write must never cost the player their shot, so an unwritable
+        or full disk loses a row and nothing else. The log is runtime state,
+        not source; .gitignore already covers *.jsonl."""
+        rec["schema"] = STUDY_SCHEMA
+        rec["player"] = profile_name
+        try:
+            with open(os.path.join(os.path.expanduser("~"),
+                                   "hustler_shots.jsonl"), "a",
+                      encoding="utf-8") as fh:
+                fh.write(json.dumps(rec) + "\n")
+        except OSError:
+            pass
     mode = 0
     power = CFG["POWER_DEFAULT"]
     spin_side, spin_follow = 0.0, 0.0
@@ -3949,6 +4105,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
 
     def do_shoot():
         nonlocal pending, spin_side, spin_follow, sandbox_bih
+        nonlocal shot_pending, shot_pre
         cue = sim.cue()
         if not shoot_enabled(cue is not None, sim.all_at_rest(), my_turn()):
             return
@@ -3958,12 +4115,53 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # to every subsequent shot and the SpinPad would not de-select.
         use_side, use_follow, spin_side, spin_follow = \
             shot_spin_and_reset(spin_side, spin_follow)
+        # r33: snapshot the table BEFORE it moves. After run_to_rest these
+        # positions are the LEAVE, not the shot, and a log that silently
+        # recorded the wrong end of it would be worse than no log.
+        shot_pre = {
+            "layout": [{"id": b, "c": sim.colours.get(b),
+                        "x": bd.position.x, "y": bd.position.y}
+                       for b, (bd, _) in sim.balls.items()],
+            "cue": (cue.position.x, cue.position.y),
+            "aim": aim_angle % 360.0,
+            "power": power,
+            "side": use_side, "follow": use_follow,
+            "ball": call_ball, "pocket": call_pocket,
+            "obj": next((tuple(bd.position) for b, (bd, _) in sim.balls.items()
+                         if b == call_ball), None),
+            "bih": (game.ball_in_hand if game is not None else sandbox_bih),
+            "free": (game.free_shot if game is not None else False),
+        }
+        shot_pending = True
         sim.strike((dx, dy), power, side=use_side, follow=use_follow)
         sandbox_bih = False   # r23: placement is spent by playing the shot
         if not smoke:
             play_sound("cue_strike", power / CFG["POWER_MAX"])
         if game is not None:
             pending = True
+
+    def do_call_toggle():
+        nonlocal call_on, call_ball, call_pocket
+        call_on = not call_on
+        call_ball, call_pocket = None, None
+
+    def do_call_clear():
+        nonlocal call_ball, call_pocket
+        call_ball, call_pocket = None, None
+
+    def set_call_ball(bid):
+        nonlocal call_ball
+        call_ball = bid
+
+    def set_call_pocket(pk):
+        nonlocal call_pocket
+        call_pocket = tuple(pk)
+
+    def mini_state():
+        balls = [{"id": b, "c": sim.colours.get(b, "?"),
+                  "pos": (bd.position.x, bd.position.y)}
+                 for b, (bd, _) in sim.balls.items()]
+        return (call_on, balls, call_ball, call_pocket)
 
     def do_cycle_mode():
         nonlocal mode, sim, game, ais, ai_plan, ai_wait, pending, sandbox_bih
@@ -4251,7 +4449,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                   lambda: nudge_spin_by(0.0, 0.01)))
             yy += 28
             target.append(Button((px, yy, pw, 26), "Reset spin", do_reset_spin))
-            return yy + 26
+            return yy + 26   # r33: the caller stacks below this
 
         # Radius 100 is chosen, not spare: 1/100 = 0.0100 of spin per pixel,
         # exactly the snap step, so every value on the 0.01 grid is reachable
@@ -4332,8 +4530,22 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         panel_widgets["Shot"] = shot
 
         spin_tab = []
-        add_spin_group(spin_tab, STATUS_STRIP_H + 34,
-                        min(100, pw // 2 - 4))
+        y6 = add_spin_group(spin_tab, STATUS_STRIP_H + 34,
+                             min(100, pw // 2 - 4))
+        # r33 (called shots): the caller lives here, in the room the Spin tab
+        # already had. Sized by the same fit-or-omit rule the picker uses --
+        # the table is 2:1, so the model needs half its width in height, plus
+        # a row for the toggle and a row of caption.
+        y6 += 14
+        mini_h = pw // 2 + 4
+        if win_h - (y6 + mini_h + 34) > 8:
+            spin_tab.append(MiniTable((px, y6, pw, mini_h), mini_state,
+                                       set_call_ball, set_call_pocket))
+            y6 += mini_h + 6
+            spin_tab.append(Button((px, y6, pw // 2 - 4, 24), "Call: on/off",
+                                    do_call_toggle))
+            spin_tab.append(Button((px + pw // 2 + 4, y6, pw // 2 - 4, 24),
+                                    "Clear call", do_call_clear))
         panel_widgets["Spin"] = spin_tab   # key MUST match TAB_LABELS (r12.1)
 
         table = []
@@ -4548,6 +4760,51 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # smoke path and the real path drift apart.
         if mode == 0 and cue_was_potted(sim.last_pot_events, Sim.CUE_ID):
             sandbox_bih = True
+
+        # ---- r33: log the human's shot once the table settles ----
+        # This sits ABOVE the game block and is not gated on `game`, because
+        # sandbox has no Game and no `pending` -- and sandbox is where the
+        # practice frames happen. It reads outcome state only; it never
+        # touches rules, physics or the AI.
+        if shot_pending and sim.all_at_rest():
+            shot_pending = False
+            if not smoke and shot_pre is not None:
+                _pre = shot_pre
+                _called = None
+                _intent = "none"
+                if _pre["ball"] is not None and _pre["pocket"] is not None:
+                    _perf = perfect_aim_deg(_pre["cue"], _pre["obj"],
+                                            _pre["pocket"], CFG["CUE_R_M"],
+                                            ball_r()) if _pre["obj"] else None
+                    _called = {"ball": _pre["ball"], "pocket": _pre["pocket"],
+                               "perfect_deg": _perf}
+                    _intent = "called"
+                _gb = (ghost_ball(_pre["cue"], rotate_vector(1.0, 0.0, _pre["aim"]),
+                                  [b["pos"] for b in mini_state()[1]
+                                   if b["id"] != Sim.CUE_ID],
+                                  CFG["CUE_R_M"], ball_r())
+                       if _pre["obj"] is None else None)
+                _pa = pot_assessment(_gb) if _gb else None
+                _plan = {"type": ("pot" if _intent == "called" else "unknown"),
+                         "p": (_pa["prob"] if _pa else 0.0),
+                         "power": _pre["power"], "follow": _pre["follow"],
+                         "side": _pre["side"], "est": {}}
+                log_human_shot(make_shot_record(
+                    (game.shots if game is not None else 0), 0,
+                    profile_name, (game.colours.get(game.current)
+                                   if game is not None else None),
+                    _plan, sim.potted_colours(), sim.first_contact,
+                    sim.cushion_after_contact, None,
+                    (game.last_event if game is not None else None),
+                    _pre["bih"], _pre["free"], None,
+                    source="human",
+                    mode=("practice" if mode == 0 else "tournament"),
+                    intent=_intent, called=_called, aim_deg=_pre["aim"],
+                    p_model="assessment", cue_pos=_pre["cue"],
+                    obj_pos=_pre["obj"], layout=_pre["layout"],
+                    potted_ids=list(sim.potted_log)))
+            shot_pre = None
+            call_ball, call_pocket = None, None
 
         # ---- game logic (modes 1 and 2) ----
         if game is not None and sim.all_at_rest():
@@ -6920,6 +7177,10 @@ def selftest():
         "finale", "sim", "game", "ais", "pending", "sandbox_bih",
         "ai_plan", "ai_wait", "spin_side", "spin_follow", "panel_tab",
         "aim_angle", "power", "ball_in_hand", "fullscreen",
+        # r33: the nomination state joins the guarded set, so a future handler
+        # that resets it without `nonlocal` fails here rather than silently
+        # doing nothing -- which is how the r31 finale bug reached main.
+        "call_on", "call_ball", "call_pocket", "shot_pending", "shot_pre",
     }
     leaks72 = closure_state_leaks(run_gui.__code__, RUN_GUI_STATE)
     # and prove the detector itself can see one, rather than trusting a
@@ -7096,6 +7357,39 @@ def selftest():
           f"straight {straight76['approach_deg']:.1f} deg vs cushion-hugger "
           f"{hug76['approach_deg']:.1f} deg at the same "
           f"{hug76['dist']:.3f}m/{straight76['dist']:.3f}m")
+
+    # 77. r33 (called shots): the mini table's pure cores.
+    #
+    # `fit_box` must preserve aspect. A model stretched to fill its box shows
+    # the geometry at a lie -- pockets stop being round, the knuckles move,
+    # and a click lands on a different part of the table from the one under
+    # the cursor. The same scale must multiply both axes, exactly as the main
+    # renderer does.
+    #
+    # `nearest_within` must REFUSE a distant click rather than snapping to
+    # whatever is closest. Without the cap, a mis-click nominates a ball
+    # across the table and the shot is then scored against a call the player
+    # never made -- which is worse than no call, because `intent: "none"` is
+    # honest and a wrong nomination is data that looks right.
+    sc77, ox77, oy77 = fit_box(200, 200, 1.82, 0.91)     # wide world, square box
+    tall77 = fit_box(100, 400, 1.82, 0.91)
+    cands77 = [(0.0, 0.0), (1.0, 0.0), (0.5, 0.5)]
+    hit77 = nearest_within((0.95, 0.02), cands77, 0.2)
+    far77 = nearest_within((5.0, 5.0), cands77, 0.2)
+    empty77 = nearest_within((0.0, 0.0), [], 1.0)
+    check("r33 mini table — the model fits its box on ONE scale for both axes "
+          "(a stretched table puts the knuckles somewhere they are not, and a "
+          "click then lands on different geometry from the one under the "
+          "cursor) with the spare space centred; and a click further than the "
+          "cap nominates NOTHING rather than snapping to the nearest ball "
+          "across the table, because a call the player never made is worse "
+          "than no call at all",
+          abs(sc77 - 200 / 1.82) < 1e-9 and abs(ox77) < 1e-9
+          and abs(oy77 - (200 - 0.91 * sc77) / 2.0) < 1e-9
+          and abs(tall77[0] - 100 / 1.82) < 1e-9
+          and hit77 == 1 and far77 is None and empty77 is None,
+          f"scale {sc77:.2f} px/m, centred offset ({ox77:.1f}, {oy77:.1f}); "
+          f"near click -> {hit77}, distant -> {far77}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

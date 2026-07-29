@@ -5,7 +5,50 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r32 — the shot ledger (current)
+## r33 — calling your shot (current)
+
+The first visible half of the stats work. A scale model of the table now sits
+in the Spin tab: click a ball, click a pocket, take the shot. That nomination
+is what makes a result meaningful — without it, "did it go in" has no answer,
+because nothing knows where it was supposed to go.
+
+The model is not a drawing of a table. It is the actual `nose_loop_m()`
+cushion polyline and the actual `capture_points()`, scaled down, so the jaws
+sit exactly where they sit on the full-size table. A mini table with invented
+pockets would misplace the one feature that decides whether a pot survives.
+Both axes take the same scale, for the same reason: stretched to fill its box,
+a click would land on different geometry from the one under the cursor.
+
+Nomination is HUD-only, like every other shot parameter. The widget converts
+its own pixels, never a table click, so R6.6 is untouched.
+
+A click that lands nowhere near a ball or a pocket nominates nothing rather
+than snapping to whatever happened to be closest. A call the player never made
+is worse than no call at all — an unnominated shot logs honestly as
+`intent: "none"` and is excluded from accuracy, while a wrong nomination is
+data that looks right.
+
+Shooting without calling is allowed and always will be. The shot fires
+normally and records with no intent; it still contributes its geometry and its
+outcome. Calling can be switched off entirely.
+
+**One thing this exposed:** sandbox has no shot-completed event at all.
+`pending` is only ever set when a `Game` exists, so in mode 0 — which is
+precisely where the practice frames happen — nothing ever resolved a shot. The
+logging carries its own flag rather than borrowing one that was never going to
+fire.
+
+Rows land in `~/hustler_shots.jsonl`, appended, one per shot, and the write is
+best-effort by design: a full or unwritable disk costs a row and never a shot.
+
+Validation: 77 assertions, 0 containment escapes over 30 batch strikes, 90
+smoke frames, `--snap` byte-identical, `--aigame 12 --seed 4200` unchanged at
+SHARK 9–3. Probed at three window sizes with zero widget overlaps; the caller
+is omitted outright at the F11 windowed size rather than drawn off the panel.
+
+---
+
+## r32 — the shot ledger
 
 Groundwork, and it changes nothing you can see. Nothing in the game calls any
 of it yet: the file plays exactly as r31.1 did. What it adds is the shape the

@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r32 — playable, validated, no known blocking bugs.
+**Status:** r33 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~6,695 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r32
+## Validation snapshot at r33
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 76 assertions |
+| `--selftest` | ALL PASS — 77 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -68,7 +68,7 @@ them remains accurate as history and the engine facts in §3 are still current
 and still worth reading — but roughly sixteen revisions of work happened
 afterwards. That later work is documented in:
 
-- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r32
+- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r33
 - [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — the three open threads, each with its diagnosis
 - [ROADMAP.md](ROADMAP.md) — what's under discussion and what it depends on
 - [CONTRIBUTING.md](CONTRIBUTING.md) — workflow, standards, and the traps that have cost real time
@@ -172,7 +172,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 76 assertions, all
+  out) rather than the pygame wrapper around it. Currently 77 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -234,6 +234,11 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   than it is. Don't point one at the other without an explicit decision — this
   is why r16's over-harshness went unnoticed for so long, since no human path
   ever touches `pot_estimate`.
+- **Sandbox has no shot-completed event.** `pending` is only ever set when a
+  `Game` exists, so mode 0 — which is where the practice frames actually
+  happen — never resolves a shot at all. r33's logging carries its own
+  `shot_pending` flag for exactly this reason. Anything that needs to react to
+  a human shot finishing must not assume `pending` will fire.
 - **The shot log stores RAW POSITIONS, and angles are derived on read.**
   Every row carries the cue ball, the object ball and the whole table layout
   in metres at the moment of striking. `pocket_geometry()` turns those into
