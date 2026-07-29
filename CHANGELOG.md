@@ -5,7 +5,69 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r30 — a contact point you can name (current)
+## r31 — a hardening pass, and a reset that never reset (current)
+
+No new features. Before anything else went in, the repository was audited end
+to end for the class of thing that does not announce itself: code that runs
+without error and does nothing, checks that cannot fail, and guards that have
+quietly been reporting green over a real problem.
+
+**The bug.** `do_rack()` carried `finale = None`, but omitted `finale` from
+its `nonlocal` list. In Python that makes the name local for the whole
+function, so the reset wrote to a throwaway and the enclosing value was never
+touched. Racking during the slow-mo black finale left the win animation
+playing over the fresh rack until it aged out on its own. Cosmetic, and it
+healed itself in about a second — but it is the second time this exact shape
+has landed. At r23 the HUD's spin values were re-sent every shot for the same
+reason. Nothing in the validation chain can see it, because there is nothing
+wrong with the code except which variable it wrote to.
+
+So the fix is not the one-line `nonlocal`. It is selftest 72, which reads the
+compiled code objects and asserts that no nested function inside `run_gui`
+assigns a piece of the enclosing state without declaring it — a leaked name
+lands in the nested function's `co_varnames` when it belongs in
+`co_freevars`. That guards the class rather than the instance. The assertion
+carries a deliberately planted leak alongside the real check, so a clean
+result cannot be a check that simply never fired; mutation testing showed the
+first version of that canary was one level deep and still passed when the
+detector's recursion was removed, so it is nested two deep now.
+
+**Two assertions were being computed and thrown away.** The impact-sound test
+built `ok31i_polymer` and `ok31i_lp` and never passed them to `check()`. The
+comment above them said, in as many words, that these properties get asserted
+rather than merely described — and then they were not. Both passed once wired
+in, so nothing was hiding, but the properties that separate a polymer knock
+from a glass plink had been unguarded since r8.2: noise-dominated, partials
+below 1500 Hz, inharmonic, dead inside 20 ms. The sound could have been
+retuned back to a plink with the whole chain green. A variable built for an
+assertion and never consumed is a test that cannot fail.
+
+**CI counted nothing.** It ran `--selftest` and trusted the exit code. Exit
+codes are correct, so a genuine failure did fail the build — but a stale or
+truncated file whose remaining assertions all pass exits 0 and turns the
+workflow green, which is precisely how an R7-era file once survived every
+check. The workflow now asserts the assertion count and the cushion-path
+primitive count, both as named environment variables that must be bumped
+deliberately. The upkeep is the guard. Checked against an older build: it
+reports 69 assertions against an expected 72, and is caught.
+
+**And the lint job had been green over a red check.** `isort` was failing and
+`continue-on-error` was hiding it. It is clean now and blocking.
+
+Also: three dead locals and three placeholder-free f-strings removed, the dev
+extras in `setup.py` corrected to the tools actually used, an unreferenced
+104 KB image dropped, and the re-entry prompt in the handoff strengthened to
+quote the file md5s and the assertion count — it had been weaker than the one
+actually in use, and would not have caught the stale copy that the real one
+did.
+
+Validation: 72 assertions, 0 containment escapes over 30 batch strikes, 90
+smoke frames, `--snap` byte-identical, `--aigame 12 --seed 4200` unchanged at
+SHARK 9–3.
+
+---
+
+## r30 — a contact point you can name
 
 Aim got fine adjustment at r10 and power at r29. Spin was the last of the three
 shot parameters still set by eye, and it had the same defect to within a

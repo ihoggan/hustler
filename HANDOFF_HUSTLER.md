@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r30 — playable, validated, no known blocking bugs.
+**Status:** r31 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~6,590 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~6,695 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r30
+## Validation snapshot at r31
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 71 assertions |
+| `--selftest` | ALL PASS — 72 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -59,7 +59,7 @@ them remains accurate as history and the engine facts in §3 are still current
 and still worth reading — but roughly sixteen revisions of work happened
 afterwards. That later work is documented in:
 
-- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r30
+- [CHANGELOG.md](CHANGELOG.md) — plain-language history through r31
 - [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — the three open threads, each with its diagnosis
 - [ROADMAP.md](ROADMAP.md) — what's under discussion and what it depends on
 - [CONTRIBUTING.md](CONTRIBUTING.md) — workflow, standards, and the traps that have cost real time
@@ -163,7 +163,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 71 assertions, all
+  out) rather than the pygame wrapper around it. Currently 72 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -225,6 +225,16 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   than it is. Don't point one at the other without an explicit decision — this
   is why r16's over-harshness went unnoticed for so long, since no human path
   ever touches `pot_estimate`.
+- **A reset inside a nested function needs `nonlocal`, or it resets nothing.**
+  `run_gui` is one long closure and its handlers are nested functions, so
+  `finale = None` inside `do_rack()` silently created a local and left the
+  real `finale` untouched. This has now happened twice — r23's spin values
+  were re-sent every shot for the same reason. Nothing in the validation
+  chain can see it: the code is legal, runs without error, and does nothing.
+  Selftest 72 (`closure_state_leaks`) guards the class by reading the
+  compiled code objects — a leaked name sits in the nested function's
+  `co_varnames` when it belongs in `co_freevars`. If you add a new piece of
+  `run_gui` state that handlers reset, add its name to `RUN_GUI_STATE`.
 - **The spin unit circle IS the miscue limit, and nothing else is.** No tip,
   miscue threshold, squirt or swerve is modelled anywhere — those words appear
   zero times in the source. `spin_pad_map()` divides a pixel offset by the
@@ -917,14 +927,25 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 > than the pygame wrapper. UK spelling. AI behaviour stays emergent —
 > parameters and utility weights, never scripted shots.
 >
-> **Confirm the chain passes on the attached files before proposing anything:**
-> selftest ALL PASS (71 assertions), `--batch 30` with 0 containment escapes,
-> `--smoke` 90 frames, `--snap` md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`
-> byte-identical, `cushion_path.py` standalone green. If a marker is missing or
-> a number is off, say so before editing anything — an earlier session was very
-> nearly built on a stale copy of the file, and a later one found the repo
-> documenting two measurement scripts that had never actually been committed.
-> Check what is in front of you rather than what the docs claim is there.
+> **Confirm the chain before proposing anything, and report the actual
+> numbers rather than "passed":**
+>
+> > `hustler.py` md5 `0e54024f160768985cd11e49334f4bfc`, 6695 lines
+> > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
+> > `py_compile` → `--selftest` ALL PASS, **72 assertions** → `--batch 30`
+> > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
+> > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
+> > standalone, 36 primitives. `setup.py` says 0.31.0.
+>
+> Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
+> passes the whole chain, and one nearly got built on for exactly that reason.
+> A fresh clone should also be COMPLETELY CLEAN; if `git status` shows
+> anything modified, say so before editing. (The old CRLF phantom on
+> `cushion_path.py` was fixed at r30.3, so a dirty tree now means a real
+> change.) If a marker is missing or a number is off, say so before editing
+> anything. Check what is in front of you rather than what the docs claim is
+> there — a session once found the repo documenting two measurement scripts
+> that had never been committed.
 >
 > **Two blind spots the chain cannot cover.** The HUD panel is never built or
 > drawn headlessly (`build_panel_widgets()` runs only in the non-smoke branch),

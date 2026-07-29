@@ -107,13 +107,14 @@ Command line:
 """
 
 import argparse
-import math
-import json
-import os
 import functools
+import json
+import math
 import multiprocessing
+import os
 import random
 import sys
+import types
 
 # ----------------------------------------------------------------------------
 # Configuration — real units (decision 4B: dict + hotkeys)
@@ -669,6 +670,7 @@ def leave_quality(rest, targets, obstacles, r_cue, r_obj, jitter):
 # Simulation layer — pymunk in metres/kg/seconds.
 # ----------------------------------------------------------------------------
 import pymunk  # noqa: E402  (import after geometry so geometry stays pure)
+
 import cushion_path as cushion_geo  # noqa: E402  (R6 tangent-true table geometry)
 
 COLL_CUE, COLL_OBJ, COLL_CUSHION = 1, 2, 3
@@ -2143,6 +2145,48 @@ def slider_value(frac, lo, hi):
     return lo + frac * (hi - lo)
 
 
+def closure_state_leaks(outer_code, state_names):
+    """r31: find nested functions that ASSIGN one of the enclosing scope's
+    mutable state variables without declaring it `nonlocal`. Pure — it reads
+    compiled code objects and needs no pygame, no display and no run.
+
+    This exists because the same bug has now landed twice. At r23 the HUD's
+    spin values were re-sent every shot because `do_shoot()` never reset the
+    closure vars it read. At r31 `do_rack()` carried `finale = None` while
+    omitting `finale` from its `nonlocal` list, so the assignment created a
+    throwaway local and the slow-mo black finale was never cleared -- racking
+    mid-finale left the win animation playing over the fresh rack. Both are
+    the same shape: a reset that reads correctly, runs without error, and
+    does nothing. Neither the selftest suite, `--batch`, `--smoke` nor
+    `--snap` can see it, because nothing is wrong with the code except which
+    variable it wrote to.
+
+    Python makes this silent by design: assigning a name inside a function
+    makes it local for the whole function unless declared otherwise, so the
+    misspelling of intent is legal and quiet. But it is perfectly visible in
+    the bytecode -- a leaked name lands in the nested function's
+    `co_varnames` when it should be in `co_freevars`. That is the check.
+
+    Returns a sorted list of (nested_function_name, leaked_variable_name),
+    empty when clean. Note the deliberate limitation: a nested function with
+    a PARAMETER named the same as a state variable would report as a leak.
+    That is acceptable -- the fix in that case is to rename the parameter,
+    since shadowing enclosing state is exactly what causes this bug.
+    """
+    leaks = []
+
+    def walk(code):
+        for const in code.co_consts:
+            if isinstance(const, types.CodeType):
+                for name in const.co_varnames:
+                    if name in state_names:
+                        leaks.append((const.co_name, name))
+                walk(const)
+
+    walk(outer_code)
+    return sorted(set(leaks))
+
+
 def spin_group_radius(avail_h, half_w, r_max=100, r_min=60, extra=100):
     """r30.2 (Fork C -- strike-point picker on the Shot tab as well): the
     largest picker radius whose WHOLE group (picker + caption + nudge row +
@@ -2979,8 +3023,8 @@ def write_wav(path, samples, sample_rate):
     wrong end. Exporting the buffer straight to disk lets it be auditioned
     for real, independent of pygame's mixer config entirely. Returns the
     number of samples written."""
-    import wave
     import array as _array
+    import wave
     with wave.open(path, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)                       # int16
@@ -3606,7 +3650,14 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 game.last_event = "your break — aim at the pack"
 
     def do_rack():
+        # r31 BUG FIX: `finale` was missing from this list, so the reset below
+        # wrote a throwaway LOCAL and the enclosing finale was never cleared --
+        # racking during the slow-mo black finale left the win animation
+        # playing over the fresh rack until it aged out. Same class as the r23
+        # spin bug: a reset that doesn't reset. Selftest 72 now guards the
+        # whole class rather than this one instance.
         nonlocal sim, game, ais, ai_plan, ai_wait, pending, sandbox_bih
+        nonlocal finale
         trail_history.clear()
         pot_anims.clear()
         finale = None
@@ -3768,7 +3819,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         except FileNotFoundError:
             layout_msg = f"slot {layout_slot + 1} is empty"
             return
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError):
             layout_msg = "load failed: bad file"
             return
         if not balls:
@@ -4684,7 +4735,6 @@ def pot_drill(verbose=False):
     pocket acceptance angle, not cut-error amplification. Gate: >= 90%."""
     x0, y0, x1, y1 = play_rect()
     s2 = math.sqrt(2.0) / 2.0
-    mx = (x0 + x1) / 2.0
     # (capture point, unit axis INTO the pocket)
     axes = [
         (capture_points()[0][0], (-s2, -s2)), (capture_points()[1][0], (s2, -s2)),
@@ -4786,8 +4836,8 @@ def break_analysis(trials_per_config=8, seed=1234):
                 "ctl": sum(ctls) / max(1, len(ctls))}
 
     print(f"HUSTLER break analyser — {n} trials/config, seed {seed}")
-    print(f"  jitter: aim sigma 1.5 mm at pack, power sigma 2%")
-    print(f"\n  Phase 1 — aim offset x power (no spin), R3-comparable grid")
+    print("  jitter: aim sigma 1.5 mm at pack, power sigma 2%")
+    print("\n  Phase 1 — aim offset x power (no spin), R3-comparable grid")
     header = (f"  {'off(mm)':>8} {'pow':>5} | {'pots':>5} {'scr%':>5} "
               f"{'blk%':>5} {'fair%':>6} {'spread':>7} {'ctl(m)':>7}")
     print(header)
@@ -4805,7 +4855,7 @@ def break_analysis(trials_per_config=8, seed=1234):
     print(f"  best pots: aim offset {best[1]*1000:.1f} mm, power {best[2]:.1f} m/s "
           f"({best[3]:.2f} pots/break, {best[4]*100:.0f}% fair)")
 
-    print(f"\n  Phase 2 — spin sweep at 7.0 m/s (follow +ve / draw -ve)")
+    print("\n  Phase 2 — spin sweep at 7.0 m/s (follow +ve / draw -ve)")
     header2 = (f"  {'off(mm)':>8} {'flw':>5} {'side':>5} | {'pots':>5} "
                f"{'scr%':>5} {'fair%':>6} {'ctl(m)':>7}")
     print(header2)
@@ -5076,7 +5126,7 @@ def selftest():
         (pc, _cr) = capture_points()[3]           # a far corner
         din = (math.sqrt(2) / 2, math.sqrt(2) / 2)
         bpos = (pc[0] - din[0] * 0.5, pc[1] - din[1] * 0.5)
-        bid = s._add_ball(s.alloc_id(), bpos, "black")
+        s._add_ball(s.alloc_id(), bpos, "black")
         gg = Game()
         gg.colours = {0: "red", 1: "yellow"}
         if not clear_own_first:
@@ -5462,17 +5512,30 @@ def selftest():
                    and all(-32768 <= v <= 32767 for v in _ia)      # int16-safe
                    and abs(_ia[0]) < 500                           # ramps up, no click
                    and _peak_tail < _peak_body)                    # genuinely decays
+    # r31: ok31i_polymer and ok31i_lp were computed here and then NOT passed
+    # to check() -- the comment above them claimed they were asserted and they
+    # were not. Both passed when finally wired in, so nothing was hiding; but
+    # the polymer-vs-glass properties this rework exists for were unguarded,
+    # and the sound could have been retuned back to a plink with the chain
+    # still green. A variable built for an assertion and never consumed is a
+    # test that cannot fail.
     check("impact model (r8 ball-hit) — harder hits map brighter/shorter/"
           "noisier, hardness+tier clamp at both ends, AD buffer is "
-          "deterministic, int16-safe, click-free at onset, and decays",
-          ok31i_map and ok31i_hard and ok31i_tier and ok31i_synth)
+          "deterministic, int16-safe, click-free at onset, decays, and keeps "
+          "the POLYMER KNOCK properties (noise-dominated, sub-1500Hz "
+          "inharmonic partials, dead inside 20ms) with a lowpass that "
+          "actually attenuates",
+          ok31i_map and ok31i_hard and ok31i_tier and ok31i_synth
+          and ok31i_polymer and ok31i_lp)
 
     # 31j. write_wav (r8.1): the samples we synthesise must be exactly the
     #      samples that land on disk -- mono, 16-bit, at the rate we asked
     #      for, byte-for-byte identical on read-back. This is the probe path
     #      that exists specifically so a sound can be checked independently
     #      of pygame's mixer, so it can't be the thing that lies to us.
-    import tempfile, wave as _wave, array as _arr
+    import array as _arr
+    import tempfile
+    import wave as _wave
     _wsamples = synth_impact_samples(0.5, 44100, seed=11)
     with tempfile.TemporaryDirectory() as _td:
         _wpath = os.path.join(_td, "t.wav")
@@ -5576,8 +5639,6 @@ def selftest():
     #     space, and safety_quality must reward leaving the opponent nothing.
     s34 = Sim(layout="empty")
     s34._respot_cue()
-    ai34 = PoolAI("T", aim_jitter=0.0, threshold=0.05, greed=0.5, caution=0.5,
-                  rng=random.Random(3))
     # Find a genuinely potable (cue, target, pocket) triple rather than assuming
     # one -- pot_estimate legitimately rejects impossible geometry, and a test
     # that hardcodes the wrong pocket tests nothing.
@@ -6509,6 +6570,48 @@ def selftest():
           f"avail 400 -> r{tall63}, avail 88 -> {short63}, "
           f"half_w 80 -> r{narrow63}, half_w 44 -> "
           f"{spin_group_radius(400, 44)}, floor at avail 220 -> r{edge63}")
+
+    # 72. r31: no nested function inside run_gui may assign a piece of the
+    # enclosing scope's mutable state without declaring it `nonlocal`.
+    #
+    # This guards a CLASS, not an instance. Twice now a reset has read
+    # correctly, run without error and done nothing, because the assignment
+    # silently created a local: r23's spin values re-sent every shot, and
+    # r31's `finale` never cleared so racking mid-finale left the win
+    # animation over the fresh rack. Nothing in the chain can see it —
+    # selftest, batch, smoke and snap all pass a reset that resets nothing.
+    # The bytecode can: a leaked name sits in the nested function's
+    # co_varnames when it belongs in co_freevars.
+    RUN_GUI_STATE = {
+        "finale", "sim", "game", "ais", "pending", "sandbox_bih",
+        "ai_plan", "ai_wait", "spin_side", "spin_follow", "panel_tab",
+        "aim_angle", "power", "ball_in_hand", "fullscreen",
+    }
+    leaks72 = closure_state_leaks(run_gui.__code__, RUN_GUI_STATE)
+    # and prove the detector itself can see one, rather than trusting a
+    # clean result from a check that might simply never fire. The canary is
+    # deliberately nested TWO deep: mutation-testing this assertion showed a
+    # one-deep canary still passed when the detector's recursion was removed,
+    # so the recursion was untested. It is exercised now.
+    def _outer72():
+        canary = None
+        def _mid72():
+            def _resets():
+                canary = None      # noqa: F841 — deliberately missing nonlocal
+                return canary
+            return _resets
+        def _proper72():
+            nonlocal canary
+            canary = None
+        return _mid72, _proper72
+    caught72 = closure_state_leaks(_outer72.__code__, {"canary"})
+    check("r31 closure state leaks — no nested function in run_gui assigns "
+          "enclosing state without `nonlocal`, so a reset cannot silently "
+          "write to a throwaway local and do nothing (the r23 spin bug and "
+          "the r31 finale bug were both this, and nothing else in the chain "
+          "can see it); and the detector is shown to catch a planted one",
+          leaks72 == [] and caught72 == [("_resets", "canary")],
+          f"run_gui leaks: {leaks72 or 'none'}; planted canary caught: {caught72}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

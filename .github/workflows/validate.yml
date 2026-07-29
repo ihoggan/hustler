@@ -6,6 +6,15 @@ name: Validate
 # the commit message -- that is the whole point of it living here.
 env:
   SNAP_MD5: 62c87ddb6d1f0ee36f36a71a5000cd5f
+  # r31: the assertion COUNT, not just "did it pass". A stale or truncated
+  # hustler.py whose remaining assertions all pass exits 0 and turns this
+  # workflow green -- which is exactly how an R7-era file once survived every
+  # check. Bump this deliberately when you add an assertion; the upkeep IS
+  # the guard.
+  SELFTEST_COUNT: 72
+  # Likewise: cushion_path.py printing *something* is not the same as it
+  # printing the whole table.
+  CUSHION_PRIMITIVES: 36
 
 on:
   push:
@@ -40,7 +49,12 @@ jobs:
 
     - name: Run selftest suite
       run: |
-        python3 hustler.py --selftest
+        python3 hustler.py --selftest | tee /tmp/selftest.log
+        pass_n=$(grep -c '\[PASS\]' /tmp/selftest.log)
+        fail_n=$(grep -c '\[FAIL\]' /tmp/selftest.log || true)
+        echo "assertions: $pass_n passed, $fail_n failed (expected $SELFTEST_COUNT / 0)"
+        test "$pass_n" -eq "$SELFTEST_COUNT"
+        test "$fail_n" -eq 0
 
     - name: Run batch validation (N=30 strikes)
       run: |
@@ -59,7 +73,10 @@ jobs:
 
     - name: Check cushion_path.py standalone
       run: |
-        python3 cushion_path.py
+        python3 cushion_path.py | tee /tmp/cushion.log
+        prim_n=$(grep -cE '^[[:space:]]*[0-9]+[[:space:]]+(arc|line)' /tmp/cushion.log)
+        echo "primitives: $prim_n (expected $CUSHION_PRIMITIVES)"
+        test "$prim_n" -eq "$CUSHION_PRIMITIVES"
 
     - name: Upload validation artifacts (on failure)
       if: failure()
@@ -93,7 +110,8 @@ jobs:
         black --check hustler.py cushion_path.py
       continue-on-error: true
 
+    # r31: isort is BLOCKING now. It had been failing silently behind
+    # continue-on-error; the file is clean, so this is a real gate.
     - name: Check import sort (isort)
       run: |
         isort --check-only hustler.py cushion_path.py
-      continue-on-error: true

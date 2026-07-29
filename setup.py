@@ -8,7 +8,7 @@ with open("README.md", "r", encoding="utf-8") as f:
 
 setup(
     name="hustler",
-    version="0.30.0",
+    version="0.31.0",
     author="Iain Hoggan",
     description="UK Pool Physics Sandbox — WEPF-compliant real-world pool physics with utility AI",
     long_description=long_description,
@@ -22,8 +22,12 @@ setup(
         "pygame>=2.6.1",
         "pymunk>=7.3.0",
     ],
+    # r31: this listed pytest and pylint, neither of which the project uses
+    # (the assertion suite is built into hustler.py behind --selftest, and CI
+    # installed pylint without ever running it) and omitted isort, which CI
+    # does gate on. These are now the tools actually used.
     extras_require={
-        "dev": ["pytest>=7.0", "black", "pylint"],
+        "dev": ["isort", "pyflakes"],
     },
     entry_points={
         "console_scripts": [
