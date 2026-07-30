@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r34 — playable, validated, no known blocking bugs.
+**Status:** r34.1 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~6,695 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~7,900 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,7 +16,7 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r34
+## Validation snapshot at r34.1
 
 | Check | Result |
 |---|---|
@@ -239,6 +239,21 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   happen — never resolves a shot at all. r33's logging carries its own
   `shot_pending` flag for exactly this reason. Anything that needs to react to
   a human shot finishing must not assume `pending` will fire.
+- **NO CHOICE OF SPIN CAN RESCUE A MISSED DIRECT POT.** Worth stating
+  separately from the no-swerve fact above, because it is the load-bearing
+  consequence for any "why did that miss / what would have worked" analysis.
+  There is no contact throw, no squirt and no swerve: `FOLLOW_KICK` acts on the
+  CUE ball after contact and `SIDE_KICK` acts on the CUE ball's rebound off a
+  cushion. Side spin cannot move the object ball's line at all. So if a player
+  reports that a particular spin "makes a pot work", the mechanism is either
+  the cue ball's own path (a cushion-first line, or a scratch avoided), or it
+  is a selection effect — and the shot log can tell those apart. Do not offer
+  spin as a remedy for a missed pot.
+- **The shot log records the table BEFORE the shot only.** There is no
+  post-shot state: nothing records where the cue came to rest, what it
+  contacted, or which pocket took a potted ball. "Why did the white go down"
+  is therefore unanswerable from the current log, and logging the leave is the
+  first item on the next session's list.
 - **The shot log stores RAW POSITIONS, and angles are derived on read.**
   Every row carries the cue ball, the object ball and the whole table layout
   in metres at the moment of striking. `pocket_geometry()` turns those into
@@ -922,12 +937,12 @@ Current open work now lives in two places, kept up to date:
   under "Recently fixed".
 - **[ROADMAP.md](ROADMAP.md)** — candidates under discussion, with dependencies:
   league mode, the "Grannie" whitewash rule, a possible snooker project, and
-  **the visual training overlay / coach mode**, which is now the largest piece
-  of open work. It was parked behind the cue-ball strike point because coach
-  mode draws spin-dependent predictions and would otherwise have been built
-  twice; **that dependency is discharged — the strike point shipped at r30**,
-  so coach mode is unblocked. Read its entry before proposing anything in its
-  area: it records what has already been settled
+  **the shot-log / profiles / tournament arc**, which is the live direction as
+  of r32-r34. **Coach mode as a live table overlay is SHELVED, and so is AI
+  learning** — do not propose either. Coach mode survives only in the form the
+  Maker approved: post-hoc analysis of shots already played ("Human Learning"),
+  not a prediction drawn on the baize. Its old entry is still worth reading for
+  what was settled about spin dependence, but not as a work item
   (reflect off the real cushion-nose polyline rather than a rectangle; never
   draw a curve, because spin is an impulse at contact only; use
   `pot_assessment()` and not the AI's `pot_estimate()`; cap the prediction at
@@ -969,12 +984,12 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 > **Confirm the chain before proposing anything, and report the actual
 > numbers rather than "passed":**
 >
-> > `hustler.py` md5 `0e54024f160768985cd11e49334f4bfc`, 6695 lines
+> > `hustler.py` md5 `54288b80a6caa9949cb9d1df39b7d948`, 7899 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **72 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **81 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.31.0.
+> > standalone, 36 primitives. `setup.py` says 0.34.1.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

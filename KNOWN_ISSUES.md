@@ -1,6 +1,6 @@
 # Known Issues
 
-The honest state of the open threads as of r34. None of these stop the game
+The honest state of the open threads as of r34.1. None of these stop the game
 being playable. Each is written up with its diagnosis so the next person to
 touch it (quite possibly future me) starts from the answer, not the symptom.
 
@@ -138,6 +138,33 @@ and nowhere else that's been measured so far. Modelling it explicitly in
 edge, not for the floor's general accuracy.
 
 ---
+
+## 4. The shot log records the table before a shot, never after
+
+Every row carries the cue ball, the object ball and the whole layout as they
+stood at the moment of striking. Nothing records the other end: where the cue
+came to rest, what it contacted on the way, or which pocket swallowed a potted
+ball.
+
+That is fine for the questions the log was first built to answer — how hard
+was this shot, and did it drop — and it is the reason a natural follow-up
+cannot be answered at all. "Why did the white go down, and how do I avoid it"
+needs the leave, and the leave is not there. Logging it is the first item on
+the next session's list, and the shot-diagnosis work waits on it.
+
+## 5. A called shot scores on the ball, not the pocket
+
+`shot_accuracy` counts a call as made when the nominated BALL goes down. It
+does not check that the ball went down the nominated POCKET, because the sim
+never records which pocket took which ball — `last_pot_events` is cleared
+every step, and `potted_log` carries ids without destinations.
+
+So a ball called into the top-left and rattled into the middle still scores.
+In practice that is rare enough not to distort a session's figures, but it is
+a real gap and it is recorded here rather than left as a surprise. The fix is
+a shot-scoped list on `Sim` alongside `potted_log`; it is signed off and
+scheduled, and it touches rules-critical bookkeeping so it wants care rather
+than speed.
 
 ## Recently fixed
 

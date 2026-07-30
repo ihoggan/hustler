@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current status: r34 — playable, validated
+## Current status: r34.1 — playable, validated
 
-**Validation snapshot (r34, measured on nix5 and reproduced in a Linux
+**Validation snapshot (r34.1, measured on nix5 and reproduced in a Linux
 container):**
 
 | Check | Result |
@@ -35,7 +35,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~6,695 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~7,900 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -112,16 +112,15 @@ against — it is the most likely route to a sixth bug.
 > And the picker's own layout is only checkable by instrumenting the real panel
 > builder, which is the blind spot below.
 
-**Visual training overlay / coach mode.** Scoped, not built, and **no longer
-blocked.** It was parked behind the cue-ball strike point work for a dependency
-reason rather than a change of mind: coach mode's whole output is
-spin-dependent (the predicted cue rest already moves live with the spin
-control, and cushion rebounds and the tangent line would too), so building it
-first would have meant building it twice. r30 settled that geometry — spin is
-snapped, the unit circle is unchanged, and the drawn rim now means maximum
-usable spin — so the dependency is discharged and this is the largest piece of
-open work. Everything below stays valid and should be read before proposing
-anything in this area.
+**Visual training overlay / coach mode — SHELVED.** Scoped in detail below
+and deliberately set aside. Its dependency was discharged when the strike
+point shipped at r30, but the Maker has since chosen a different form for the
+same idea: rather than drawing predictions on the baize while you play, the
+game records what you actually did and tells you afterwards. Everything below
+this paragraph is still worth reading for what was settled — particularly that
+the overlay must not assert a miscue limit the engine does not model — but it
+is not a work item. **AI learning is shelved too:** the AI stays
+fixed-parameter emergent, and nothing adapts itself between games.
 
 One thing r30 adds to the list of settled constraints: the picker asserts no
 miscue limit, because the engine has none. A coach overlay must not either.
@@ -206,6 +205,48 @@ so a range of opponents is just a range of values.
 **The "Grannie".** A Scottish whitewash: one player clears all their colours and
 the black while the opponent pots nothing. Detect it at frame end and announce
 it. Small once frame tracking is trusted.
+
+### The live direction — shot log, profiles, tournament (r32-r34)
+
+What the Maker actually wants from here, in their words: record every shot;
+give each player a profile that improves over time; let a human's accumulated
+style drive an AI opponent; and build up to a tournament where humans and AIs
+compete to be Hustler Ranked #1.
+
+**Built and shipped.** A per-shot ledger (`~/hustler_shots.jsonl`) carrying
+provenance — human or AI, practice or tournament, called or not, and which of
+the two difficulty models produced the prediction — plus the raw geometry of
+every shot: cue ball, object ball and the whole table layout in metres. Angles
+are derived from those on read, never stored, so a statistic that turns out to
+have been computed wrongly is a function to rewrite rather than data to
+migrate. Called shots are nominated on a scale model of the table in the Spin
+tab, and a lamp in the status strip says whether the call came off. `--stats`
+reports accuracy banded by approach angle, distance and spin family. The solo
+clearance rules are built and tested: any colour in any order, black last,
+fouls cost ten seconds, black-before-the-colours ends the run.
+
+**Two findings that shape what comes next.** A human aiming through the HUD
+has near-zero aim error — measured at 0.14 degrees against the study AI's 0.63
+— because the overlay tells them where to aim. Cloning a style from that would
+produce an AI that never misses. A human's style therefore lives in shot
+SELECTION, not execution, and `PoolAI._search(..., execute=False)` already
+enumerates every shot that was available at each decision point. And no choice
+of spin can rescue a missed direct pot, so "what would have worked" analysis
+must not offer one.
+
+**Next session, in order.** (1) Log the leave — post-shot cue rest, what it
+contacted, which pocket took a potted ball; everything diagnostic depends on
+it. (2) Record which pocket swallowed which ball (signed off; a shot-scoped
+list on `Sim` beside `potted_log`). (3) Finish solo mode — add `SOLO` to
+`MODES`, wire `solo_apply_shot` into the rest block, clock via `format_clock`
+starting on the first shot with an off/reset control, and add `solo` as a
+third shot-log mode tag before frames record under the wrong one. (4) Give the
+aim dial the r30 treatment: it is 38 px, so one pixel of drag is 1.51 degrees
+against a readout showing tenths — the same defect power and spin have already
+had fixed, with accurate points around all 360 degrees. (5) Shot diagnosis and
+scratch diagnosis — "Human Learning". (6) Profile writing, then a ranking
+display carrying its Wilson bounds. (7) The style fit from shot selection.
+(8) Tournament mode.
 
 ### Deferred
 
