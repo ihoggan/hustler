@@ -1,14 +1,14 @@
 # Roadmap
 
-## Current status: r34.1 — playable, validated
+## Current status: r35 — playable, validated
 
-**Validation snapshot (r34.1, measured on nix5 and reproduced in a Linux
+**Validation snapshot (r35, measured on nix5 and reproduced in a Linux
 container):**
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 81 assertions |
+| `--selftest` | ALL PASS — 82 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -35,7 +35,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~7,900 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~8,180 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -234,19 +234,28 @@ enumerates every shot that was available at each decision point. And no choice
 of spin can rescue a missed direct pot, so "what would have worked" analysis
 must not offer one.
 
-**Next session, in order.** (1) Log the leave — post-shot cue rest, what it
-contacted, which pocket took a potted ball; everything diagnostic depends on
-it. (2) Record which pocket swallowed which ball (signed off; a shot-scoped
-list on `Sim` beside `potted_log`). (3) Finish solo mode — add `SOLO` to
+> **Logging the leave (r35) is done, and it absorbed item 2.** Rows now carry
+> `cue_rest`, `leave_layout`, `cue_trail` and `drop_pockets`; the drop pocket
+> is read off the sensor that fired rather than inferred from a last position,
+> so recording which pocket swallowed which ball came with it rather than
+> after it. `STUDY_SCHEMA` is 5. Nothing visible changed — no `--stats`
+> section, deliberately, so the reading is designed against real rows.
+> One residual, tracked at [KNOWN_ISSUES.md](KNOWN_ISSUES.md) #4:
+> `shot_accuracy` still scores on the ball rather than the pocket. The data is
+> now there; tightening it would re-base a figure already read off a real
+> session and would mix schema 4 and schema 5 rows on one scale, so the
+> pocket-accurate number will arrive alongside the existing one.
+
+**Next session, in order.** (1) Finish solo mode — add `SOLO` to
 `MODES`, wire `solo_apply_shot` into the rest block, clock via `format_clock`
 starting on the first shot with an off/reset control, and add `solo` as a
-third shot-log mode tag before frames record under the wrong one. (4) Give the
+third shot-log mode tag before frames record under the wrong one. (2) Give the
 aim dial the r30 treatment: it is 38 px, so one pixel of drag is 1.51 degrees
 against a readout showing tenths — the same defect power and spin have already
-had fixed, with accurate points around all 360 degrees. (5) Shot diagnosis and
-scratch diagnosis — "Human Learning". (6) Profile writing, then a ranking
-display carrying its Wilson bounds. (7) The style fit from shot selection.
-(8) Tournament mode.
+had fixed, with accurate points around all 360 degrees. (3) Shot diagnosis and
+scratch diagnosis — "Human Learning", now unblocked: the leave is in the log.
+(4) Profile writing, then a ranking display carrying its Wilson bounds.
+(5) The style fit from shot selection. (6) Tournament mode.
 
 ### Deferred
 

@@ -11,7 +11,7 @@ workflow and expectations.
 4. **Verify your baseline** before changing anything:
 
 ```bash
-python3 hustler.py --selftest      # expect: ALL PASS (81 assertions at r34)
+python3 hustler.py --selftest      # expect: ALL PASS (82 assertions at r35)
 ```
 
 If that doesn't pass on a clean checkout, stop and work out why before writing
@@ -276,6 +276,25 @@ overlapped the aim row by 10 px, and the probe reported a perfectly sensible
 bottom edge throughout, because an overlap does not change a maximum. Any probe
 of this kind should also compare every pair of widget rectangles for
 intersection. It costs four lines and it catches the whole class.
+
+### A collision handler fires per substep, so anything it accumulates must fold
+
+pymunk calls `post_solve` for as long as two bodies stay in contact, and
+`Sim.step()` runs eight substeps a frame. At r35, before any code was written,
+one ordinary shot was measured producing **fifteen** cue-cushion callbacks for
+what a player would call **four** rebounds — and one of those contacts fired
+eleven times on its own, because a ball sitting in the jaws touches several
+cushion primitives simultaneously and each gets its own arbiter.
+
+The trap is that raw accumulation produces something that looks *more*
+detailed, not obviously broken. A trail of fifteen entries reads like a rich
+record until you ask it how many cushions the white found and it answers four
+times too many. If you add anything that counts, appends or accumulates from a
+collision handler, fold repeats at the point of recording and assert the
+folding — `trail_append()` and self-test 82 are the worked example. And note
+that the existing rules facts sidestep this by being *latches*
+(`first_contact`, `cushion_after_contact` are set once and never counted),
+which is why the problem had not come up before.
 
 ## Getting help
 

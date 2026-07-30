@@ -691,6 +691,53 @@ USE_TANGENT_CUSHIONS = True
 CUSHION_JAW_E  = 0.25   # knuckle arcs + straight jaws (was 0.25 on legacy horns)
 CUSHION_BACK_E = 0.10   # flat pocket backs, entirely behind the mouth (dead)
 
+# r35 (log the leave): the cue ball's contact trail is capped so one
+# pathological shot cannot bloat a log row without bound. Nothing observed
+# comes near it -- a busy shot runs to single figures.
+CUE_TRAIL_MAX = 64
+
+
+def trail_append(trail, kind, ident, pos, tick, gap=2, cap=CUE_TRAIL_MAX):
+    """r35 (log the leave): add one cue-ball contact to this shot's trail, or
+    fold it into the contact already there. Pure -- values in, values out, no
+    pymunk, no sim.
+
+    THIS IS THE WHOLE REASON THE TRAIL IS TRUSTWORTHY, and it is not
+    decoration. pymunk's post_solve callbacks fire once per SUBSTEP for as
+    long as two bodies remain in contact, and this engine runs eight substeps
+    a frame. Measured on one ordinary shot before this was written: fifteen
+    cue-cushion callbacks that a player would describe as four rebounds, with
+    a single contact firing eleven times on its own. Appending raw would have
+    produced a trail that looks detailed and is mostly one cushion repeated,
+    and the first analysis built on it -- "how many cushions did the white
+    find before it went down" -- would have been wrong by a factor of four
+    while looking entirely reasonable.
+
+    Folding rule: a contact of the same KIND against the same IDENT, arriving
+    within `gap` substeps of the last one seen, is the SAME contact continuing.
+    `gap=2` rather than 1 because a contact can miss a substep as the bodies
+    separate and re-touch; it is deliberately tight, since anything larger
+    starts merging genuinely separate cushion hits in a corner.
+
+    `n` counts the folded callbacks and `tick`/`last_tick` bracket the contact
+    in substeps. Those are kept because they are the raw material: whether a
+    cushion contact was a clip or a heavy hit is derivable from them later,
+    and this project's standing rule is to store what was observed and derive
+    the reading afterwards.
+
+    Returns the trail (mutated in place, and returned so a test can read it)."""
+    if trail and trail[-1]["kind"] == kind and trail[-1]["id"] == ident \
+            and tick - trail[-1]["last_tick"] <= gap:
+        trail[-1]["last_tick"] = tick
+        trail[-1]["n"] += 1
+        return trail
+    if len(trail) >= cap:
+        return trail
+    trail.append({"kind": kind, "id": ident,
+                  "x": round(float(pos[0]), 4), "y": round(float(pos[1]), 4),
+                  "tick": tick, "last_tick": tick, "n": 1})
+    return trail
+
 
 class Sim:
     """Owns the pymunk space, balls, cushions, pockets and the rack."""
@@ -771,6 +818,25 @@ class Sim:
                                             # the cue's first object contact?
         self._contact_made = False     # internal latch: has first contact
                                        # happened yet this shot?
+
+        # --- r35 (log the leave): shot-scoped OUTCOME record -------------------
+        # Everything above describes what the rules need. These two describe
+        # what HAPPENED, and exist because the shot log recorded the table
+        # before a shot and never after it -- so "why did the white go down"
+        # had no answer anywhere in the system.
+        #
+        # Like the r9 facts above these are OBSERVATION ONLY: no force is
+        # applied, no trajectory altered, and no rules code reads either of
+        # them. They reset in strike() alongside potted_log, for the same
+        # reason -- step() fires many times per shot and would wipe them.
+        self.cue_trail = []            # ordered, de-duplicated contacts made by
+                                       # the CUE ball this shot: object balls
+                                       # and cushions, in the order it found
+                                       # them (see trail_append)
+        self.drop_log = []             # {"id", "pocket"} per ball potted this
+                                       # shot -- which pocket actually took it
+        self._tick = 0                 # substep counter, shot-relative; the
+                                       # clock trail_append folds against
         self.rebuild(layout=layout)
 
     # -- construction --------------------------------------------------------
@@ -796,11 +862,18 @@ class Sim:
         # to self._pending_pot_ids -- it never mutates the space mid-step
         # (unsafe) -- and _capture_pockets() (called right after space.step(),
         # same cadence as before) does the actual removal/logging.
+        #
+        # r35: it is now a DICT, ball id -> pocket index, not a set. The value
+        # comes from the sensor shape that actually fired (see
+        # _pocket_of_shape), so the pocket is identified by the event rather
+        # than inferred afterwards from where the ball happened to be. A set
+        # de-duplicated by ball id and a dict still does; nothing else about
+        # the r17 path changes.
         self.space.on_collision(collision_type_a=COLL_CUE, collision_type_b=COLL_POCKET_CUE,
                                 begin=self._pocket_sensor_hit)
         self.space.on_collision(collision_type_a=COLL_OBJ, collision_type_b=COLL_POCKET_OBJ,
                                 begin=self._pocket_sensor_hit)
-        self._pending_pot_ids = set()
+        self._pending_pot_ids = {}
         self._build_cushions()
         self._build_pockets()
         old = keep_positions or {}
@@ -935,8 +1008,24 @@ class Sim:
         just tested by pymunk's C broad-phase instead of our own math.dist
         loop. Clamped at a small epsilon in case a live ball-radius slider is
         ever pushed larger than a pocket's own capture radius (not the case
-        at any WEPF-spec default, where cap_r - r is 7-11mm of headroom)."""
-        for (pc, cap_r) in capture_points():
+        at any WEPF-spec default, where cap_r - r is 7-11mm of headroom).
+
+        r35: each sensor also records WHICH pocket it belongs to, in
+        `_pocket_of_shape`. The sensor that fires IS the pocket that took the
+        ball, so the drop pocket is read off the event rather than
+        reconstructed from the ball's last position. A nearest-capture-point
+        lookup would in fact be unambiguous here (the pockets are 924mm apart
+        against a 35mm capture radius), but it would still be an inference
+        where an exact answer is sitting in the arbiter, and this project has
+        already been bitten once by deriving a plausible-looking geometric
+        answer instead of the real one -- see pocket_axis().
+
+        Index order is capture_points()' own and is fixed by construction:
+        0-3 are the corners (bottom-left, bottom-right, top-left, top-right)
+        and 4-5 are the middles (bottom, top). Anything reading a logged drop
+        pocket resolves it through capture_points(), never by hardcoding."""
+        self._pocket_of_shape = {}
+        for i, (pc, cap_r) in enumerate(capture_points()):
             r_cue = max(1e-6, cap_r - CFG["CUE_R_M"])
             s_cue = pymunk.Circle(self.space.static_body, r_cue, pc)
             s_cue.sensor = True
@@ -947,16 +1036,27 @@ class Sim:
             s_obj.sensor = True
             s_obj.collision_type = COLL_POCKET_OBJ
             self.space.add(s_obj)
+            self._pocket_of_shape[s_cue] = i
+            self._pocket_of_shape[s_obj] = i
 
     def _pocket_sensor_hit(self, arbiter, space, data):
         """begin() callback for a ball/pocket-sensor overlap. Queues the ball
         id only -- NEVER mutates self.balls or self.space here (unsafe mid-
         step); _capture_pockets(), called right after space.step() returns,
         does the actual removal at the same cadence pot capture always ran
-        at (every substep, not just once per frame -- see its docstring)."""
+        at (every substep, not just once per frame -- see its docstring).
+
+        r35: also queues WHICH pocket, taken from the sensor shape in this
+        same arbiter. Still queue-only -- no mutation of self.balls or
+        self.space here."""
+        pidx = None
+        for sh in arbiter.shapes:
+            if sh in self._pocket_of_shape:
+                pidx = self._pocket_of_shape[sh]
+                break
         for bid, (body, shape) in self.balls.items():
             if shape in arbiter.shapes:
-                self._pending_pot_ids.add(bid)
+                self._pending_pot_ids[bid] = pidx
                 return
 
     def _default_layout(self):
@@ -1070,6 +1170,10 @@ class Sim:
         """
         self.potted_log = []
         self.potted_all = []
+        # r35: drop_log is shot-scoped and describes a shot on a table that no
+        # longer exists, so it goes with potted_log for the same reason. Inert
+        # in practice -- strike() clears it before anything reads it.
+        self.drop_log = []
 
     def clear_objects(self):
         for bid in [i for i in self.balls if i != self.CUE_ID]:
@@ -1121,6 +1225,12 @@ class Sim:
         self.first_contact = None
         self.cushion_after_contact = False
         self._contact_made = False
+        # r35: the leave record is shot-scoped too, and the substep clock
+        # restarts with it so a trail's ticks read from the moment of striking
+        # rather than from whenever this Sim was built.
+        self.cue_trail = []
+        self.drop_log = []
+        self._tick = 0
 
     def step(self, dt):
         self.last_pot_events = []  # Increment 4b: fresh per step() call
@@ -1130,6 +1240,9 @@ class Sim:
         spin_decay = math.exp(-CFG["SPIN_DECAY"] * h)
         dv = CFG["ROLL_DECEL"] * h
         for _ in range(steps):
+            # r35: the trail's clock. Incremented BEFORE space.step() so every
+            # contact resolved inside that substep is stamped with it.
+            self._tick += 1
             cue = self.cue()
             if cue is not None:
                 self._cue_prev = (cue.velocity.x, cue.velocity.y)
@@ -1168,16 +1281,23 @@ class Sim:
         # once per frame -- same tunnelling protection this always had).
         if not self._pending_pot_ids:
             return
-        hits, self._pending_pot_ids = self._pending_pot_ids, set()
+        hits, self._pending_pot_ids = self._pending_pot_ids, {}
         pots = []
         for bid, (body, shape) in list(self.balls.items()):
             if bid in hits:
-                pots.append((bid, tuple(body.position), shape.radius))
-        for bid, pos, radius in pots:
+                pots.append((bid, tuple(body.position), shape.radius, hits[bid]))
+        for bid, pos, radius, pidx in pots:
             body, shape = self.balls.pop(bid)
             self.space.remove(body, shape)
             self.potted_log.append(bid)
             self.potted_all.append(bid)   # r22: game-scoped, survives strike()
+            # r35: SHOT-SCOPED, and deliberately a separate list rather than a
+            # richer potted_log. potted_log is read by the rules engine and its
+            # exact shape and meaning are load-bearing (r22 split potted_all
+            # off it for precisely this reason -- two features wanting one
+            # variable to mean two things is how the chamber bug happened).
+            # drop_log carries the destination and nothing reads it but the log.
+            self.drop_log.append({"id": bid, "pocket": pidx})
             self.last_pot_events.append((bid, self.colours.get(bid, "red"), pos, radius))
             if bid == self.CUE_ID:
                 # Spin dies with the ball either way.
@@ -1190,20 +1310,30 @@ class Sim:
                     self._respot_cue()
 
 
-    def _record_first_contact(self, arbiter):
-        """Rules (r9): latch the colour of the FIRST object ball the cue ball
-        touched this shot. Pure observation -- applies no force, alters no
-        trajectory. Identifies the ball by matching the arbiter's shapes back
-        to self.balls, since pymunk hands us shapes, not our ids."""
-        if self._contact_made:
-            return
+    def _arbiter_object_id(self, arbiter):
+        """r35: which OBJECT ball this arbiter refers to, or None. pymunk hands
+        us shapes, not our ids, so match back through self.balls.
+
+        Split out of _record_first_contact because two callers now need it: the
+        rules still want only the FIRST contact's colour, while the leave log
+        wants the id of EVERY object ball the cue finds. Resolving it once and
+        passing it down keeps them from drifting apart."""
         for bid, (body, shape) in self.balls.items():
             if bid == self.CUE_ID:
                 continue
             if shape in arbiter.shapes:
-                self.first_contact = self.colours.get(bid)
-                self._contact_made = True
-                return
+                return bid
+        return None
+
+    def _record_first_contact(self, bid):
+        """Rules (r9): latch the colour of the FIRST object ball the cue ball
+        touched this shot. Pure observation -- applies no force, alters no
+        trajectory. r35: takes the already-resolved ball id rather than the
+        arbiter; the latch behaviour is unchanged."""
+        if self._contact_made or bid is None:
+            return
+        self.first_contact = self.colours.get(bid)
+        self._contact_made = True
 
     # -- spin callbacks (pymunk post_solve) -----------------------------------
     def _cue_ball_contact(self, arbiter, space, data):
@@ -1211,7 +1341,14 @@ class Sim:
         # Rules (r9): first-contact latch, unconditional, BEFORE the early
         # return below -- a soft graze that produces no follow-kick is still
         # very much a contact as far as the rules are concerned.
-        self._record_first_contact(arbiter)
+        _bid = self._arbiter_object_id(arbiter)
+        self._record_first_contact(_bid)
+        # r35: and into the leave trail, for the same reason and with the same
+        # care -- before any early return, because a contact too soft to kick
+        # is still part of where the white went.
+        _c = self.cue()
+        if _c is not None:
+            trail_append(self.cue_trail, "ball", _bid, _c.position, self._tick)
         if abs(self._live_follow) < 0.02:
             return
         cue = self.cue()
@@ -1253,6 +1390,12 @@ class Sim:
         # ball satisfies nothing.
         if self._contact_made:
             self.cushion_after_contact = True
+        # r35: the trail records it either way. Unlike the rules fact above, a
+        # cushion the cue found on its way TO the object ball is exactly the
+        # sort of thing "why did the white end up there" needs to know.
+        _c = self.cue()
+        if _c is not None:
+            trail_append(self.cue_trail, "cushion", None, _c.position, self._tick)
         if abs(self._live_side) < 0.02:
             return
         cue = self.cue()
@@ -1835,7 +1978,7 @@ def default_ais(rng=None):
                    caution=0.70, rng=rng)]
 
 
-STUDY_SCHEMA = 4   # bump when the JSONL record shape changes, so old study
+STUDY_SCHEMA = 5   # bump when the JSONL record shape changes, so old study
                    # files can never be silently misread by a newer analysis.
                    # 2 (r19): added cut_deg / t_cue / d_tp -- the pot geometry.
 
@@ -2228,7 +2371,8 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
                      cue_placed, source="ai", mode="tournament",
                      intent="none", called=None, aim_deg=None,
                      p_model="estimate", cue_pos=None, obj_pos=None,
-                     layout=None, potted_ids=None):
+                     layout=None, potted_ids=None, cue_rest=None,
+                     leave_layout=None, cue_trail=None, drop_pockets=None):
     """r15 (study output): one shot -> one plain, JSON-safe dict.
 
     The payload that matters for analysis is `p_pred` (what the AI THOUGHT the
@@ -2286,6 +2430,36 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
     row, which is about 37 MB for five hundred frames. That is not a
     constraint; losing the ability to ask the question later is.
 
+    r35 (log the leave): four fields record the OTHER END of the shot, which
+    nothing recorded until now. Every row above describes the table as it
+    stood at the moment of striking, which answers "how hard was this shot and
+    did it drop" and cannot answer "why did the white go down, and how do I
+    avoid it" -- the question actually being asked at the table.
+
+      cue_rest     -- where the cue ball came to rest, in metres, or None if
+                      it was potted. None is the honest and unambiguous
+                      answer there: auto_respot is False on both logged paths,
+                      so no respot happens before this row is written.
+      leave_layout -- the whole table at rest. Deliberately NOT reconstructed
+                      from the next row's pre-shot layout, which looks like a
+                      free substitute and is not: in sandbox the player moves
+                      the balls between shots, a frame's last shot has no next
+                      row, and a respot moves the cue. A field that is right
+                      most of the time and silently wrong in the practice case
+                      is worse than no field.
+      cue_trail    -- what the cue ball touched, IN ORDER, de-duplicated by
+                      trail_append. The order is the answer: going in off the
+                      object ball and coming back off two cushions are the
+                      same set of contacts and completely different shots.
+      drop_pockets -- which pocket took each ball potted this shot, read off
+                      the sensor that fired rather than inferred from a last
+                      position. Indices are capture_points()' own.
+
+    Note what is deliberately NOT here: no derived leave quality, no scratch
+    reason, no "would a different spin have worked". Those are readings, and
+    the standing rule is to store what was observed and derive the reading
+    later, against real rows rather than against fixtures.
+
     Pure: no sim, no pygame, no file I/O -- just values in, dict out."""
     est = plan.get("est") or {}
     fullness = est.get("fullness")
@@ -2339,6 +2513,17 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
         "potted_ids": (list(potted_ids) if potted_ids is not None else None),
         "first_contact": first_contact,
         "cushion_after": bool(cushion_after),
+        # r35 the leave -- see the docstring. All four are None on a row
+        # written by anything that did not capture them, so an old reader
+        # sees absence rather than a plausible zero.
+        "cue_rest": ([round(float(cue_rest[0]), 4), round(float(cue_rest[1]), 4)]
+                     if cue_rest else None),
+        "leave_layout": ([{"id": b["id"], "c": b["c"],
+                           "x": round(float(b["x"]), 4),
+                           "y": round(float(b["y"]), 4)}
+                          for b in leave_layout] if leave_layout else None),
+        "cue_trail": (list(cue_trail) if cue_trail else None),
+        "drop_pockets": (list(drop_pockets) if drop_pockets else None),
         "foul": foul,
         "event": event,
     }
@@ -2598,6 +2783,18 @@ def play_ai_game(seed=0, max_shots=300, verbose=False, log_shots=False):
         potted_ids = list(sim.potted_log)
         first_contact = sim.first_contact
         cushion_after = sim.cushion_after_contact
+        # r35: the leave, captured at the same point and for the same reason
+        # as the facts above -- before on_rest() gets a chance to respot,
+        # grant ball-in-hand or end the frame.
+        post_cue = post_layout = post_trail = post_drops = None
+        if log_shots:
+            _rc = sim.cue()
+            post_cue = (_rc.position.x, _rc.position.y) if _rc is not None else None
+            post_layout = [{"id": bid, "c": sim.colours.get(bid),
+                            "x": b.position.x, "y": b.position.y}
+                           for bid, (b, _) in sim.balls.items()]
+            post_trail = list(sim.cue_trail)
+            post_drops = list(sim.drop_log)
         fouls_before = game.fouls
         game.on_rest(sim)
         if log_shots:
@@ -2609,6 +2806,8 @@ def play_ai_game(seed=0, max_shots=300, verbose=False, log_shots=False):
                 cushion_after, foul, game.last_event, bih, free, cue_placed,
                 cue_pos=pre_cue, obj_pos=pre_obj, layout=pre_layout,
                 potted_ids=potted_ids,
+                cue_rest=post_cue, leave_layout=post_layout,
+                cue_trail=post_trail, drop_pockets=post_drops,
                 # r32.1: an AI pot IS a called shot -- it names a ball and a
                 # pocket before striking. Safeties nominate nothing.
                 intent=("called" if shot.get("pocket") else "none"),
@@ -5041,7 +5240,19 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     intent=_intent, called=_called, aim_deg=_pre["aim"],
                     p_model="assessment", cue_pos=_pre["cue"],
                     obj_pos=_pre["obj"], layout=_pre["layout"],
-                    potted_ids=list(sim.potted_log)))
+                    potted_ids=list(sim.potted_log),
+                    # r35: the leave. Read straight off the sim at rest --
+                    # this branch runs on all_at_rest() and nothing has
+                    # touched the table since. A potted cue reads as
+                    # cue_rest=None, which is exactly the case the whole
+                    # feature exists to explain.
+                    cue_rest=((sim.cue().position.x, sim.cue().position.y)
+                              if sim.cue() is not None else None),
+                    leave_layout=[{"id": b, "c": sim.colours.get(b),
+                                   "x": bd.position.x, "y": bd.position.y}
+                                  for b, (bd, _) in sim.balls.items()],
+                    cue_trail=list(sim.cue_trail),
+                    drop_pockets=list(sim.drop_log)))
             shot_pre = None
             logged_frame = frames
             logged_made = ((_pre["ball"] in list(sim.potted_log))
@@ -7799,6 +8010,72 @@ def selftest():
           f"(0.7071,0.7071)/(0.71,0.71)/(0.68,0.74) all -> {corners81}; "
           f"pure follow -> {spin_band(0.9, 0.0)!r}; "
           f"dead centre -> {spin_band(0.02, 0.01)!r}")
+
+    # 82. r35: the leave -- the cue ball's contact trail, and the drop pocket.
+    #
+    # The trail half guards the de-duplication, which is the only reason the
+    # trail means anything. post_solve fires once per SUBSTEP for as long as
+    # two bodies stay in contact, and this engine runs eight substeps a frame:
+    # one measured shot produced fifteen cue-cushion callbacks that a player
+    # would call four rebounds, one of them firing eleven times by itself.
+    # Appending raw gives a trail that looks richly detailed and is mostly one
+    # cushion repeated -- and "how many cushions did the white find" would then
+    # be wrong by a factor of four while reading perfectly plausibly. The
+    # ORDER is asserted alongside the count, because order is the whole
+    # diagnostic value: in off the object ball and back off two cushions are
+    # the same set of contacts and completely different shots.
+    #
+    # The pocket half guards attribution. It is asserted against a REAL Sim
+    # rather than a fixture on purpose -- the claim being made is that the
+    # sensor which fired is the pocket that took the ball, and only a real
+    # capture exercises that. One corner and one middle, because pocket_axis
+    # already proved those are the two families that behave differently.
+    trail82 = []
+    trail_append(trail82, "cushion", None, (0.5, 0.1), 100)
+    for _t82 in (101, 102, 103, 104):      # same cushion, still in contact
+        trail_append(trail82, "cushion", None, (0.5, 0.1), _t82)
+    trail_append(trail82, "ball", 7, (0.9, 0.4), 200)
+    trail_append(trail82, "cushion", None, (0.2, 0.8), 260)
+    order82 = [(e["kind"], e["id"]) for e in trail82]
+    gap82 = []
+    trail_append(gap82, "cushion", None, (0.5, 0.1), 10)
+    trail_append(gap82, "cushion", None, (0.5, 0.1), 13)   # 3 apart: NOT a fold
+    cap82 = []
+    for _i82 in range(CUE_TRAIL_MAX + 20):
+        trail_append(cap82, "ball", _i82, (0.0, 0.0), _i82 * 10)
+    drops82 = {}
+    for _p82 in (0, 5):                    # a corner and a middle
+        _s82 = Sim()
+        _s82.clear_objects()
+        _tgt82 = capture_points()[_p82][0]
+        _ax82, _ay82 = pocket_axis(_tgt82, play_rect()[2], play_rect()[3])
+        _ob82 = (_tgt82[0] + _ax82 * 0.25, _tgt82[1] + _ay82 * 0.25)
+        _bid82 = _s82.alloc_id()
+        _s82._add_ball(_bid82, _ob82, "red")
+        _s82.cue().position = (_tgt82[0] + _ax82 * 0.60, _tgt82[1] + _ay82 * 0.60)
+        _s82.strike((_ob82[0] - _s82.cue().position.x,
+                     _ob82[1] - _s82.cue().position.y), 2.2)
+        _s82.run_to_rest()
+        drops82[_p82] = [d["pocket"] for d in _s82.drop_log if d["id"] == _bid82]
+    check("r35 the leave — a contact that keeps firing across substeps folds "
+          "into ONE trail entry carrying the callback count (raw appending "
+          "turns four rebounds into fifteen and every count built on it is "
+          "silently wrong), a contact returning after a real gap is a NEW "
+          "entry rather than a fold, the trail keeps the ORDER the cue found "
+          "things in because that is the whole diagnostic value, it is capped "
+          "so one pathological shot cannot bloat a row without bound, and a "
+          "potted ball's pocket is the one whose SENSOR fired rather than "
+          "whichever pocket it ended up nearest",
+          len(trail82) == 3 and trail82[0]["n"] == 5
+          and trail82[0]["tick"] == 100 and trail82[0]["last_tick"] == 104
+          and order82 == [("cushion", None), ("ball", 7), ("cushion", None)]
+          and len(gap82) == 2
+          and len(cap82) == CUE_TRAIL_MAX
+          and drops82[0] == [0] and drops82[5] == [5],
+          f"5 callbacks -> {len(trail82)} entries (first n={trail82[0]['n']}, "
+          f"ticks {trail82[0]['tick']}-{trail82[0]['last_tick']}); "
+          f"order {order82}; 3-substep gap -> {len(gap82)} entries; "
+          f"cap {len(cap82)}; corner drop {drops82[0]}, middle drop {drops82[5]}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

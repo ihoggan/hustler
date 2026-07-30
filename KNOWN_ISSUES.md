@@ -1,6 +1,6 @@
 # Known Issues
 
-The honest state of the open threads as of r34.1. None of these stop the game
+The honest state of the open threads as of r35. None of these stop the game
 being playable. Each is written up with its diagnosis so the next person to
 touch it (quite possibly future me) starts from the answer, not the symptom.
 
@@ -139,37 +139,38 @@ edge, not for the floor's general accuracy.
 
 ---
 
-## 4. The shot log records the table before a shot, never after
-
-Every row carries the cue ball, the object ball and the whole layout as they
-stood at the moment of striking. Nothing records the other end: where the cue
-came to rest, what it contacted on the way, or which pocket swallowed a potted
-ball.
-
-That is fine for the questions the log was first built to answer — how hard
-was this shot, and did it drop — and it is the reason a natural follow-up
-cannot be answered at all. "Why did the white go down, and how do I avoid it"
-needs the leave, and the leave is not there. Logging it is the first item on
-the next session's list, and the shot-diagnosis work waits on it.
-
-## 5. A called shot scores on the ball, not the pocket
+## 4. A called shot scores on the ball, not the pocket
 
 `shot_accuracy` counts a call as made when the nominated BALL goes down. It
-does not check that the ball went down the nominated POCKET, because the sim
-never records which pocket took which ball — `last_pot_events` is cleared
-every step, and `potted_log` carries ids without destinations.
+does not check that the ball went down the nominated POCKET.
+
+As of r35 the log **does** record the drop pocket, so the information is now
+there — this is a reader that has not been written yet, rather than data that
+does not exist. It was left deliberately: tightening `shot_accuracy` would
+silently re-base a figure already read off a real session, and would put rows
+written under schema 4 (no drop pocket) and schema 5 on the same scale. Pooling
+across a provenance boundary is the exact failure the provenance fields exist
+to prevent.
 
 So a ball called into the top-left and rattled into the middle still scores.
-In practice that is rare enough not to distort a session's figures, but it is
-a real gap and it is recorded here rather than left as a surprise. The fix is
-a shot-scoped list on `Sim` alongside `potted_log`; it is signed off and
-scheduled, and it touches rules-critical bookkeeping so it wants care rather
-than speed.
+The pocket-accurate figure will arrive as its own number alongside the existing
+one, with the shot-diagnosis work, so nothing that exists changes meaning.
 
 ## Recently fixed
 
 Resolved in r23–r27 — kept here briefly because the diagnoses are worth having
 if anything similar shows up again. Full descriptions are in the changelog.
+
+- **The shot log recorded the table before a shot, never after (r35).** Every
+  row carried the cue ball, the object ball and the whole layout as they stood
+  at the moment of striking, and nothing carried the other end — where the cue
+  came to rest, what it touched on the way, or which pocket swallowed a potted
+  ball. "Why did the white go down" was therefore unanswerable from the log,
+  and the shot-diagnosis work was blocked behind it. Rows now carry `cue_rest`,
+  `leave_layout`, `cue_trail` and `drop_pockets`; `STUDY_SCHEMA` is 5. The
+  trail is de-duplicated at source, which is not a detail: post_solve fires
+  once per substep, so an ordinary shot generated fifteen cue-cushion callbacks
+  for four real rebounds. Selftest 82.
 
 - **The potted-ball chamber never cleared in sandbox (r27).** Re-rack (`T`),
   reset (`R`) and clear (`C`) all rebuilt the table but left the previous

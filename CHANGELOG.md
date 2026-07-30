@@ -5,7 +5,73 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r34 — the solo clearance rules (current)
+## r35 — log the leave (current)
+
+Every row in the shot log described the table as it stood at the moment of
+striking, and nothing described the other end. That was fine for the questions
+the log was first built to answer — how hard was this shot, did it drop — and
+it is exactly why the natural follow-up had no answer anywhere in the system.
+"Why did the white go down, and how do I avoid it" needs to know where the cue
+ball finished, what it touched on the way, and which pocket took the ball. None
+of the three was recorded.
+
+All three now are. `cue_rest` is where the white came to rest, or `null` if it
+was potted — which is unambiguous rather than lazy, because `auto_respot` is
+off on both logged paths, so nothing puts the ball back before the row is
+written. `leave_layout` is the whole table at rest. `cue_trail` is what the cue
+ball touched, in order. `drop_pockets` says which pocket took each ball potted
+on that shot.
+
+**The trail's de-duplication is the part that matters.** pymunk calls back once
+per substep for as long as two bodies stay in contact, and this engine runs
+eight substeps a frame. One ordinary shot, measured before any of this was
+written, produced fifteen cue-cushion callbacks that a player would describe as
+four rebounds — with a single contact firing eleven times on its own, because a
+ball sitting in the jaws touches several cushion primitives at once. Appended
+raw, the trail would have looked richly detailed and been mostly one cushion
+repeated, and the first thing anyone asked of it — how many cushions did the
+white find before it dropped — would have come back wrong by a factor of four
+while reading entirely plausibly. `trail_append` folds a contact of the same
+kind against the same thing arriving within two substeps into the entry already
+there, keeping a callback count and the substep span. The order survives,
+because the order is the whole point: going in off the object ball, and coming
+back off two cushions, are the same set of contacts and completely different
+shots.
+
+The drop pocket is read off the sensor shape that actually fired, not inferred
+from where the ball was last seen. A nearest-pocket lookup would in fact have
+been unambiguous here — the pockets sit 924mm apart against a 35mm capture
+radius — but it would still have been a guess standing next to an exact answer,
+and this project has already paid once for deriving a plausible-looking
+geometric result instead of the real one (see `pocket_axis`, r32.1). Each pocket
+sensor now carries its own index, and `_pending_pot_ids` became a map from ball
+to pocket rather than a bare set.
+
+`potted_log` was deliberately left exactly as it was. It is read by the rules
+engine, its shape is load-bearing, and r22 already split `potted_all` off it
+rather than teach one variable to mean two things. The destinations live in a
+separate shot-scoped `drop_log`, which nothing but the logger reads.
+
+Nothing visible changed. There is no new `--stats` section and no widget; the
+file plays exactly as r34.1 did. `shot_accuracy` still scores a called shot on
+whether the nominated BALL went down, deliberately — tightening it to require
+the nominated POCKET would silently re-base a figure already read off a real
+session, and would score rows written under the old schema against rows written
+under the new one on the same scale. That is precisely the pooling the
+provenance fields exist to prevent. The reading comes later, designed against
+real rows.
+
+Row cost, measured rather than estimated: a mean row went from 1,095 bytes to
+1,896. The brief predicted about forty per cent because it costed the second
+layout and forgot the trail; the honest figure is seventy-three.
+
+`STUDY_SCHEMA` is 5. Self-test 82, mutation-tested five ways — de-duplication
+removed, ordering destroyed, the fold window widened, the cap removed, and the
+drop pocket pinned to a constant. All five caught.
+
+---
+
+## r34 — the solo clearance rules
 
 The rules half of a timed solo game, built and tested before anything draws
 it. Pot every colour in any order, the black last, against the clock.

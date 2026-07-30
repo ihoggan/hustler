@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r34.1 — playable, validated, no known blocking bugs.
+**Status:** r35 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~7,900 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~8,180 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r34.1
+## Validation snapshot at r35
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 81 assertions |
+| `--selftest` | ALL PASS — 82 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -172,7 +172,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 81 assertions, all
+  out) rather than the pygame wrapper around it. Currently 82 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -198,6 +198,27 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   whoever CONSTRUCTS the sim — never by the physics layer reading the rules.
 
 ### Critical engine facts (hard-won, do not rediscover)
+
+- **post_solve fires once per SUBSTEP, not once per contact.** pymunk calls
+  the handler for as long as two bodies remain touching, and `step()` runs
+  eight substeps a frame. One ordinary shot, measured: fifteen cue-cushion
+  callbacks for what a player would call four rebounds, one contact firing
+  eleven times by itself — a ball sitting in the jaws is touching several
+  cushion primitives at once, each with its own arbiter. **Anything that
+  counts, records or accumulates from a collision handler must de-duplicate,
+  or it will be wrong by a large factor while looking entirely plausible.**
+  `trail_append()` is the worked example (r35).
+- **The drop pocket is read off the sensor, not the position.** Each pocket
+  sensor shape carries its index in `Sim._pocket_of_shape`, and
+  `_pending_pot_ids` is a map from ball id to pocket index. A nearest-capture-
+  point lookup would be unambiguous (pockets are 924mm apart against a 35mm
+  capture radius) but it is an inference standing next to an exact answer, and
+  `pocket_axis` is the standing reminder of what that costs.
+- **`potted_log` still means exactly what it always meant** — shot-scoped, read
+  by the rules engine, wiped by `strike()`. r22 split `potted_all` off it for
+  the game-scoped chamber; r35 added `drop_log` for destinations. Three
+  narrow records rather than one wide one, because two features wanting one
+  variable to mean two things is how the chamber bug happened.
 
 - **pymunk 7 removed `add_collision_handler`** — use
   `space.on_collision(collision_type_a=, collision_type_b=, post_solve=fn)`.
@@ -984,12 +1005,12 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 > **Confirm the chain before proposing anything, and report the actual
 > numbers rather than "passed":**
 >
-> > `hustler.py` md5 `54288b80a6caa9949cb9d1df39b7d948`, 7899 lines
+> > `hustler.py` md5 `8f08928e6ce03fed6a52f3cde4f663ca`, 8176 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **81 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **82 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.34.1.
+> > standalone, 36 primitives. `setup.py` says 0.35.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.
