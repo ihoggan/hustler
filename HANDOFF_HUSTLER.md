@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r37 — playable, validated, no known blocking bugs.
+**Status:** r37.1 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~8,715 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~8,800 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r37
+## Validation snapshot at r37.1
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 84 assertions |
+| `--selftest` | ALL PASS — 85 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -172,7 +172,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 84 assertions, all
+  out) rather than the pygame wrapper around it. Currently 85 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -198,6 +198,16 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   whoever CONSTRUCTS the sim — never by the physics layer reading the rules.
 
 ### Critical engine facts (hard-won, do not rediscover)
+
+- **THE STATUS STRIP CLIPS SILENTLY.** `STATUS_STRIP_H` is 113px and the draw
+  loop breaks the moment a line will not fit, so an overrun reads as a line
+  that was never written rather than as a bug. At a 15px line height that is
+  SEVEN lines total, four of which the physics fields already take. The
+  widget-overlap probe does NOT cover this — it checks the tabs, and the strip
+  is outside the tab system. Anything added here must earn its line by taking
+  one away; `solo_status_lines()` caps itself at two and self-test 85 pins it.
+  The font is `SysFont("consolas,menlo,monospace", 14)` with fallbacks, so line
+  height is not identical on every machine: leave headroom, do not just fit.
 
 - **NEVER test a mode by its index.** `MODES` is `["SANDBOX", "YOU vs AI",
   "AI vs AI", "SOLO"]` and `mode_intents(mode_name, run_started)` answers the
@@ -1030,12 +1040,12 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 > **Confirm the chain before proposing anything, and report the actual
 > numbers rather than "passed":**
 >
-> > `hustler.py` md5 `e718770f9d2f46c251834710af4cbcd1`, 8713 lines
+> > `hustler.py` md5 `1a9fca69a7eb76688d66160d252f7427`, 8801 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **84 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **85 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.37.0.
+> > standalone, 36 primitives. `setup.py` says 0.37.1.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

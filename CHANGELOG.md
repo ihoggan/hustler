@@ -5,7 +5,48 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r37 — solo mode, finished (current)
+## r37.1 — the readout that was being cut off (current)
+
+Two defects in r37's solo readout, both found by one question: where exactly is
+the clock on screen?
+
+The persistent status strip is a fixed 113px and its draw loop stops the moment
+another line will not fit. **Silent clipping is the dangerous kind** — an
+overrun does not look like a bug, it looks like the line was never written. The
+finished-run readout measured eight lines against a budget of seven, so
+`3 shots, 1 foul — T = rack again` disappeared at precisely the moment it was
+worth reading. The widget-overlap probe could never have caught this: it checks
+the tabs, and the strip sits deliberately outside the tab system.
+
+The readout is now built by a pure helper that caps itself at two lines. The
+ball count goes during a run, because `7 colours + black` already says what is
+left and says it better. The foul tally rides on the clock line rather than
+taking its own, which is also truer — a foul in this mode *is* time, and the
+penalty is already inside the figure shown.
+
+The second defect was worse than cosmetic. **A finished run still accepted
+shots.** `solo_apply_shot` is guarded by `not over`, so those strikes were not
+counted, not clocked and not part of the run: ghost shots after the verdict.
+That is the r23 turn-handover bug in miniature — the state said the visit was
+finished and the input path had not been told. A finished run is no longer your
+turn, which disables the Shoot button and takes the aim overlay down with it.
+T racks a fresh run, as the readout says.
+
+Fixing that is also where the headroom came from: every state now sits at six
+lines against a budget of seven. The margin matters because the panel font is
+resolved by `SysFont` with fallbacks, so line height is not identical on every
+machine, and a layout that merely fits on one is a font substitution away from
+clipping on another.
+
+Self-test 85 caps the readout across every reachable state, mutation-tested six
+ways. One of those mutants survived the first attempt — deleting the clock-off
+branch entirely still returned one line, so a budget-only assertion was blind to
+a readout that showed a clock the player had switched off. The check now asserts
+that switching the clock off actually drops the time.
+
+---
+
+## r37 — solo mode
 
 The rules for a timed solo clearance were written at r34 and then sat there:
 pure, self-tested, and called by nothing. This connects them. `SOLO` is a fourth

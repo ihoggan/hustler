@@ -11,7 +11,7 @@ workflow and expectations.
 4. **Verify your baseline** before changing anything:
 
 ```bash
-python3 hustler.py --selftest      # expect: ALL PASS (84 assertions at r37)
+python3 hustler.py --selftest      # expect: ALL PASS (85 assertions at r37.1)
 ```
 
 If that doesn't pass on a clean checkout, stop and work out why before writing
@@ -324,6 +324,20 @@ When a new case makes an old constant ambiguous, the fix is not a better constan
 It is to name each question and answer them independently — `mode_intents()` is the
 worked example — and then to assert the whole table, so the next case added fails
 the build until somebody classifies it on purpose.
+
+### The panel probe does not cover the status strip
+
+The overlap probe walks `panel_widgets` and compares every pair of rectangles.
+The persistent status strip is not in `panel_widgets` — it is drawn directly,
+above the tabstrip, into a fixed `STATUS_STRIP_H` budget, and its loop `break`s
+rather than overflowing. So a strip that overruns passes the probe, passes the
+chain, and quietly drops its last line.
+
+If you add anything to the strip, count the lines against the budget as well as
+running the probe, and leave a line spare: the panel font comes from `SysFont`
+with fallbacks, so the line height on your machine is not necessarily the line
+height on someone else's. `solo_status_lines()` caps itself and self-test 85
+pins the cap.
 
 ## Getting help
 

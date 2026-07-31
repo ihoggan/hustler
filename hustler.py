@@ -2049,6 +2049,48 @@ def solo_apply_shot(run, potted_colours, cue_potted, first_contact,
     return out
 
 
+def solo_status_lines(run, elapsed_s, colours_left, clock_on):
+    """r37.1: the solo readout for the persistent status strip. Pure -- values
+    in, list of strings out, no pygame and no closure.
+
+    IT RETURNS AT MOST TWO LINES, AND THAT CAP IS THE WHOLE POINT. The strip is
+    a fixed 113px budget and it CLIPS silently -- the draw loop breaks the
+    moment another line would not fit, so an overrun does not look like a bug,
+    it looks like the line was never written. r37 shipped a three-line finished
+    state that measured eight lines against a budget of seven, so `3 shots,
+    1 foul, T = rack again` vanished at exactly the moment it was worth
+    reading. Found by measuring the budget, which the widget-overlap probe does
+    not cover: it checks the TABS, and the strip is deliberately outside the
+    tab system.
+
+    Two more things fold in rather than costing a line. The ball count is
+    dropped while a run is on, because `7 colours + black` already says what is
+    left and says it better. The foul tally rides on the clock line, because a
+    foul in this mode IS time -- the penalty is already inside the elapsed
+    figure, so showing it apart from the clock invited reading them as separate
+    costs.
+
+    A fixed cap is safer than trimming to fit: the panel font is resolved by
+    SysFont with fallbacks, so line height is not identical on every machine,
+    and a layout that only just fits here is one font substitution away from
+    clipping on someone else's."""
+    if run["over"]:
+        verdict = ("CLEARED" if run["reason"] == "cleared"
+                   else "RUN OVER — " + str(run["reason"]))
+        fw = "foul" if run["fouls"] == 1 else "fouls"
+        tail = f"{run['shots']} shots, {run['fouls']} {fw} — T = rack"
+        if clock_on:
+            return [f"{verdict}  {format_clock(elapsed_s)}", tail]
+        return [verdict, tail]
+    if not clock_on:
+        return [f"SOLO (clock off)   {colours_left} colours + black"]
+    line = f"SOLO  {format_clock(elapsed_s)}   {colours_left} colours + black"
+    if run["fouls"]:
+        fw = "foul" if run["fouls"] == 1 else "fouls"
+        line += f"  ({run['fouls']} {fw})"
+    return [line]
+
+
 def mode_intents(mode_name, run_started=False):
     """r37: classify a game mode by the three questions that a single literal,
     `mode == 0`, was standing in for at eighteen sites. Pure -- a name in, a
@@ -4848,6 +4890,15 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                             solo_start_t is not None)["table_editable"]
 
     def my_turn():
+        # r37.1: a FINISHED solo run is not your turn. Found while measuring
+        # the strip: the run ends, and you can carry on striking -- but
+        # `solo_apply_shot` is guarded by `not over`, so those shots are not
+        # counted, not clocked and not part of the run. Ghost shots after the
+        # verdict, which is the r23 turn-handover bug in miniature: the state
+        # says the visit is finished and the input path had not been told.
+        # T racks a fresh run, which the readout says.
+        if solo_active() and solo_run["over"]:
+            return False
         return (human_shooting() or (game is not None and not game.over
                 and game.controllers[game.current] == "human"))
 
@@ -6021,43 +6072,29 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             if game.over:
                 status_lines2.append("T = new game")
         else:
-            status_lines2 = [
+            # r37.1: the ball/potted line is dropped during a solo run --
+            # solo_status_lines() already reports what is left, and the strip
+            # clips silently, so every line has to earn its place.
+            status_lines2 = ([] if solo_active() else [
                 f"balls {len(sim.balls)}  potted {len(sim.potted_log)}"
                 f" [{','.join(sim.potted_colours()) or '-'}]"
-            ]
+            ])
             if human_shooting() and sandbox_bih:
                 status_lines2.append("BALL IN HAND — drag cue in baulk")
             # r37: the solo readout, in the strip so it reads from every tab.
             # Fork 4 as chosen: a finished run FREEZES and shows how it ended
             # rather than auto-racking, so the final time can actually be read.
+            # r37.1: built by a pure helper that caps itself at two lines --
+            # see solo_status_lines() for why the cap is load-bearing.
             if solo_active():
-                _colours = sum(1 for b in sim.balls
-                               if sim.colours.get(b) in ("red", "yellow"))
-                if solo_run["over"]:
-                    _t = solo_elapsed(solo_start_t, solo_stop_t,
-                                      solo_run["penalty_s"])
-                    _verdict = ("CLEARED" if solo_run["reason"] == "cleared"
-                                else "RUN OVER — " + str(solo_run["reason"]))
-                    status_lines2.append(
-                        f"{_verdict}  {format_clock(_t)}" if solo_clock_on
-                        else _verdict)
-                    _fw = "foul" if solo_run["fouls"] == 1 else "fouls"
-                    status_lines2.append(
-                        f"{solo_run['shots']} shots, {solo_run['fouls']} {_fw}"
-                        f" (+{solo_run['penalty_s']:.0f}s)   T = rack again")
-                elif solo_clock_on:
-                    _now = pygame.time.get_ticks() / 1000.0
-                    status_lines2.append(
-                        f"SOLO  {format_clock(solo_elapsed(solo_start_t, _now, solo_run['penalty_s']))}"
-                        f"   {_colours} colours + black")
-                else:
-                    status_lines2.append(
-                        f"SOLO (clock off)   {_colours} colours + black")
-                if solo_run["fouls"] and not solo_run["over"]:
-                    status_lines2.append(
-                        f"{solo_run['fouls']} "
-                        f"{'foul' if solo_run['fouls'] == 1 else 'fouls'}"
-                        f"  +{solo_run['penalty_s']:.0f}s")
+                _end = (solo_stop_t if solo_run["over"]
+                        else pygame.time.get_ticks() / 1000.0)
+                status_lines2.extend(solo_status_lines(
+                    solo_run,
+                    solo_elapsed(solo_start_t, _end, solo_run["penalty_s"]),
+                    sum(1 for b in sim.balls
+                        if sim.colours.get(b) in ("red", "yellow")),
+                    solo_clock_on))
             if aim_txt:
                 status_lines2.append(aim_txt)
         # r12: the spin-position icon is GONE from the frame (Maker's call --
@@ -8613,6 +8650,57 @@ def selftest():
                          "AI vs AI": "tournament", "SOLO": "solo"},
           f"human_shooting {human84}; editable before the run {edit84}; "
           f"editable once started {started84}; log tags {logm84}")
+
+    # 85. r37.1: the solo readout never exceeds its two-line budget.
+    #
+    # The persistent status strip is a FIXED 113px and its draw loop breaks the
+    # moment another line would not fit. Silent clipping is the dangerous part:
+    # an overrun does not look like a bug, it looks like the line was never
+    # written. r37 shipped a three-line finished state that measured EIGHT
+    # lines against a budget of seven, so "3 shots, 1 foul — T = rack" vanished
+    # at exactly the moment it was worth reading, and the widget-overlap probe
+    # could not have caught it -- that probe checks the TABS, and the strip is
+    # deliberately outside the tab system.
+    #
+    # Asserted as a CAP over every reachable state rather than as a spot check
+    # on the longest one, because the font is resolved by SysFont with
+    # fallbacks: line height is not identical on every machine, so a layout
+    # that merely fits here is one font substitution away from clipping
+    # elsewhere. Anything added to this readout later has to earn its line by
+    # taking one away.
+    fresh85 = new_solo_run()
+    foul85 = solo_apply_shot(new_solo_run(), [], True, "red", 7)
+    won85 = solo_apply_shot(foul85, ["black"], False, "black", 0)
+    early85 = solo_apply_shot(foul85, ["black"], False, "black", 5)
+    states85 = []
+    for _run in (fresh85, foul85, won85, early85):
+        for _clock in (True, False):
+            states85.append(solo_status_lines(_run, 137.4, 6, _clock))
+    worst85 = max(len(x) for x in states85)
+    over85 = solo_status_lines(won85, 100.5, 0, True)
+    run85 = solo_status_lines(foul85, 47.4, 6, True)
+    # Switching the clock OFF must actually drop the time from the readout.
+    # Added after a mutant that deleted the clock-off branch entirely SURVIVED:
+    # the fall-through still returned one line, so a budget-only assertion was
+    # blind to a readout that showed a clock the player had switched off.
+    off85 = solo_status_lines(foul85, 47.4, 6, False)
+    offover85 = solo_status_lines(won85, 100.5, 0, False)
+    noclock85 = ("0:47.4" not in "".join(off85)
+                 and "1:40.5" not in "".join(offover85))
+    check("r37.1 solo readout budget — every reachable state fits in two "
+          "lines, because the status strip clips silently and a line that "
+          "overruns looks like a line that was never written rather than like "
+          "a bug; a running clock stays on ONE line by folding the foul tally "
+          "in beside it, and a finished run spends its second line on the "
+          "summary rather than on the ball count",
+          worst85 <= 2 and len(run85) == 1 and len(over85) == 2
+          and noclock85 and "clock off" in off85[0]
+          and "0:47.4" in run85[0] and "1 foul" in run85[0]
+          and "CLEARED" in over85[0] and "1:40.5" in over85[0]
+          and "T = rack" in over85[1],
+          f"worst case {worst85} line(s) across {len(states85)} states; "
+          f"running -> {run85}; finished -> {over85}; "
+          f"clock off -> {off85} / {offover85}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
