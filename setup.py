@@ -8,7 +8,7 @@ with open("README.md", "r", encoding="utf-8") as f:
 
 setup(
     name="hustler",
-    version="0.35.0",
+    version="0.36.0",
     author="Iain Hoggan",
     description="UK Pool Physics Sandbox — WEPF-compliant real-world pool physics with utility AI",
     long_description=long_description,

@@ -5,7 +5,61 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r35 — log the leave (current)
+## r36 — reading the shots you never called (current)
+
+Nominating a shot is optional, and on the first real session with r35 it went
+unused — 55 of 67 rows carried no call, including every shot of the best game in
+the log. Those rows looked thin. `--stats` could say nothing about them, because
+every geometry field it wants hangs off the nominated ball.
+
+They were not thin. Since r35 each row carries the whole pre-shot layout, the
+cue ball's contact trail and the pocket that took each potted ball. Between
+them that is enough to reconstruct what the shot actually was — which ball was
+played, where it stood, and where it was sent. **Nothing new is written to
+disk.** This release adds readers, not fields, which is why it works
+retroactively: shots played weeks ago become analysable without having been
+logged any differently.
+
+Four ways a target gets resolved, and the difference between them is not
+cosmetic. **Called** — the player nominated it; they said so. **Observed** —
+the ball they struck went down and r35 recorded which pocket took it; also a
+fact, and free. **Inferred** — neither, so the line the object ball departed on
+decides. **None** — that line points nowhere near a pocket, so it was not a pot
+attempt and no target is recorded. `--stats` prints the breakdown above the
+percentages, because two of those are facts and two are readings, and a reader
+is entitled to know the mix.
+
+**The refusal is the design.** The obvious way to fill in a missing target is
+to take whichever pocket is best aligned, which is what `pot_assessment` does —
+and it always returns something. Every safety, cannon and deliberate roll-up
+would come back as an attempted pot and be scored as a miss. That is the
+contamination r21 spent five dead hypotheses undoing, wearing new clothes: not
+a broken pot model, a wrongly-chosen population. So the line must pass within
+50mm of a pocket, and a pocket sitting behind the object ball is rejected
+however neatly the infinite line through it fits.
+
+The threshold was measured rather than picked. Across 29 logged shots where the
+ball dropped and the answer is therefore known, the departure line passed within
+28mm at worst and 14mm typically; the two logged shots that were not pot
+attempts passed 100mm and 200mm away. The threshold sits in the gap. On that
+same set of 29 the inference agreed with the recorded pocket every time — which
+is a reason to trust it, not a reason to prefer it, so an observed pocket still
+outranks an inferred one always.
+
+Effect on the session that prompted it: 59 of 67 shots now carry a target, up
+from 12.
+
+`shot_accuracy` is unchanged and still counts called shots only. Tightening it
+would silently re-base a figure already read off a real session. The derived
+numbers are reported separately, under their own heading.
+
+Self-test 83, mutation-tested six ways. One of those mutants initially *crashed*
+the assertion rather than failing it, which is not a test result — the check was
+rebuilt so every mutant now produces a clean failure.
+
+---
+
+## r35 — log the leave
 
 Every row in the shot log described the table as it stood at the moment of
 striking, and nothing described the other end. That was fine for the questions

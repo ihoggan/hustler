@@ -11,7 +11,7 @@ workflow and expectations.
 4. **Verify your baseline** before changing anything:
 
 ```bash
-python3 hustler.py --selftest      # expect: ALL PASS (82 assertions at r35)
+python3 hustler.py --selftest      # expect: ALL PASS (83 assertions at r36)
 ```
 
 If that doesn't pass on a clean checkout, stop and work out why before writing
@@ -295,6 +295,22 @@ folding — `trail_append()` and self-test 82 are the worked example. And note
 that the existing rules facts sidestep this by being *latches*
 (`first_contact`, `cushion_after_contact` are set once and never counted),
 which is why the problem had not come up before.
+
+### A mutant that CRASHES the test has not been caught by it
+
+Mutation testing asks whether an assertion can fail. An assertion that raises
+instead — a `KeyError` because the mutated code returned `None` where the test
+subscripted a dict — makes the build red, so it looks like a catch. It is not
+one. The check never ran, so nothing was measured, and the same assertion would
+sail past a mutant that returned a *wrong* value rather than a missing one.
+
+Found at r36: five of six mutants failed self-test 83 cleanly and the sixth
+blew up in the detail string, which is evaluated eagerly as an argument to
+`check()`. The fix is to make every lookup in an assertion non-raising
+(`.get()` over `[...]`, `x or {}` after anything that can return `None`) so a
+mutant produces a readable failure with the actual values in it. Same family as
+the r30 mutants that silently passed because they could not import
+`cushion_path` — a harness that cannot report has not proved anything.
 
 ## Getting help
 

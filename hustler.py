@@ -2094,7 +2094,11 @@ def summarise_shots(rows, x1, y1):
            and r.get("called_pocket")]
     if not geo:
         out.append("  (no called shots yet -- switch calling on and nominate)")
-        return out
+        # r36: NOT a return. The called-shot sections above have nothing to
+        # say, but the derived section below works from the layout, the trail
+        # and the drop pocket, none of which need a nomination -- and the
+        # session that prompted this had no called shots at all.
+        return out + summarise_derived(rows, x1, y1)
 
     def _rate(sel, label):
         if not sel:
@@ -2151,6 +2155,94 @@ def summarise_shots(rows, x1, y1):
             out.append("  you are %.1fx %s than the study AI on aim"
                        % (max(sd_rad, STUDY_JITTER) / min(sd_rad, STUDY_JITTER),
                           "tighter" if sd_rad < STUDY_JITTER else "looser"))
+    return out + summarise_derived(rows, x1, y1)
+
+
+def summarise_derived(rows, x1, y1):
+    """r36: the same questions as summarise_shots, asked of EVERY shot rather
+    than only the nominated ones. Pure -- rows in, printable lines out.
+
+    Why this exists: nominating is optional, and on the first real session it
+    was not used at all -- 55 of 67 rows carried no call, including every shot
+    of the best game in the log. Those rows were not empty, though. Since r35
+    they carry the whole pre-shot layout, the cue ball's contact trail and the
+    pocket that took each potted ball, and between them that is enough to
+    reconstruct what the shot actually was. Nothing new is written to disk;
+    this reads what is already there, which is why it works retroactively on
+    shots played before it was written.
+
+    THE PROVENANCE LINE IS NOT DECORATION. Two of the four ways a target gets
+    resolved are facts and two are readings, and the reader is entitled to
+    know which mix produced the percentages underneath. Printing the
+    breakdown is what stops this from becoming the sort of number that gets
+    quoted for a year before anyone asks how it was arrived at."""
+    pockets = [c for c, _ in capture_points()]
+    r_cue, r_obj = CFG["CUE_R_M"], ball_r()
+    prov = {"called": 0, "observed": 0, "inferred": 0, "none": 0, "notrail": 0}
+    recs = []
+    for r in rows:
+        t = shot_target(r, pockets, r_cue, r_obj)
+        if t is None:
+            prov["notrail"] += 1
+            continue
+        prov[t["how"]] += 1
+        if t["pocket"] is None:
+            continue
+        g = pocket_geometry(t["obj_pos"], pockets[t["pocket"]], x1, y1)
+        if not g:
+            continue
+        recs.append((r, t, g, t["ball"] in (r.get("potted_ids") or [])))
+    if not recs:
+        return []
+
+    def _rate(sel, label):
+        if not sel:
+            return None
+        m = sum(1 for _r, _t, _g, made in sel if made)
+        return "    %-12s %2d/%2d = %5.1f%%" % (label, m, len(sel),
+                                                100.0 * m / len(sel))
+
+    out = ["", "  ALL SHOTS, target recovered from the log (r36)",
+           "    %d called, %d observed from the drop pocket, %d inferred from "
+           "the line," % (prov["called"], prov["observed"], prov["inferred"]),
+           "    %d not a pot attempt, %d too old to reconstruct"
+           % (prov["none"], prov["notrail"])]
+    made_n = sum(1 for _r, _t, _g, made in recs if made)
+    out.append("    overall  %d/%d = %.1f%%"
+               % (made_n, len(recs), 100.0 * made_n / len(recs)))
+    out.append("")
+    out.append("  by APPROACH ANGLE off the pocket mouth")
+    for lo, hi in ((0, 10), (10, 20), (20, 30), (30, 90)):
+        ln = _rate([x for x in recs if lo <= abs(x[2]["approach_deg"]) < hi],
+                   "%2d-%2d deg" % (lo, hi))
+        if ln:
+            out.append(ln)
+    out.append("")
+    out.append("  by DISTANCE to the pocket")
+    for lo, hi in ((0.0, 0.3), (0.3, 0.6), (0.6, 3.0)):
+        ln = _rate([x for x in recs if lo <= x[2]["dist"] < hi],
+                   "%.1f-%.1fm" % (lo, hi))
+        if ln:
+            out.append(ln)
+    out.append("")
+    out.append("  by POWER")
+    for lo, hi in ((0.0, 2.01), (2.01, 2.6), (2.6, 9.0)):
+        ln = _rate([x for x in recs if lo <= (x[0].get("power") or 0) < hi],
+                   "%.2f-%.2f" % (lo, hi))
+        if ln:
+            out.append(ln)
+    bands = {}
+    for r, _t, _g, made in recs:
+        key = spin_band(r.get("follow"), r.get("side"))
+        hit, tot = bands.get(key, (0, 0))
+        bands[key] = (hit + (1 if made else 0), tot + 1)
+    if bands:
+        out.append("")
+        out.append("  by SPIN used")
+        for key in sorted(bands, key=lambda k: -bands[k][1]):
+            hit, tot = bands[key]
+            out.append("    %-14s %2d/%2d = %5.1f%%"
+                       % (key, hit, tot, 100.0 * hit / tot))
     return out
 
 
@@ -2651,14 +2743,131 @@ def shot_accuracy(records, source=None, mode=None):
         att += 1
         # r32.1: ids, not colours. Note the deliberate limitation: this asks
         # "did the nominated BALL go down", not "did it go down the nominated
-        # POCKET". The sim does not record which pocket swallowed which ball
-        # (`last_pot_events` is cleared every step), so a ball that drops in a
-        # different pocket than called still scores. Recording the drop pocket
-        # means a shot-scoped list on Sim alongside potted_log -- small, but it
-        # touches rules-critical bookkeeping, so it is a separate decision.
+        # POCKET". As of r35 the drop pocket IS recorded, so the tighter
+        # question is now answerable -- but this function deliberately does not
+        # ask it. Tightening it would silently re-base a figure already read
+        # off a real session, and would score schema-4 rows (which carry no
+        # drop pocket) on the same scale as schema-5 ones. The pocket-accurate
+        # number is reported separately instead. See KNOWN_ISSUES #4.
         if r.get("called_ball") is not None and r.get("called_ball") in (r.get("potted_ids") or []):
             made += 1
     return (att, made, (made / att if att else 0.0))
+
+
+# r36: how close the object ball's onward line must pass to a pocket before we
+# will believe that is where it was sent. Matched to the capture radius, and
+# the real data supports it rather than it being a chosen round number: across
+# 29 logged shots where the ball DID drop and the answer is therefore known,
+# the line passed within 28mm at worst and 14mm typically, while the two
+# logged shots that were not pot attempts at all passed 100mm and 200mm away.
+# A clean gap, so the threshold sits in it.
+POCKET_AIM_TOL = 0.05
+
+
+def shot_object(row):
+    """r36: which ball a logged shot was played at, and where it was standing.
+    Returns (ball_id, (x, y)) or None. Pure -- one row in, no sim, no I/O.
+
+    Read from `cue_trail` (r35), NOT re-derived by running ghost_ball over the
+    layout again. The trail records the ball the cue actually touched first;
+    ghost_ball would only predict it. On the first real session those agreed on
+    all 49 rows, which is the point -- nothing in this engine deflects the cue
+    ball between striking and contact, so the prediction is reliable and the
+    OBSERVATION is still the better thing to read, because it cannot be wrong.
+
+    Falls back to the NOMINATED ball where there is no trail, which is what
+    lets pre-r35 called rows still resolve: the player said which ball it was,
+    and that is testimony rather than inference. Uncalled pre-r35 rows have
+    neither, and they have no drop pocket either, so they were never going to
+    yield a full shot geometry."""
+    trail = row.get("cue_trail") or []
+    bid = next((e["id"] for e in trail if e["kind"] == "ball"), None)
+    if bid is None:
+        bid = row.get("called_ball")
+    if bid is None:
+        return None
+    for b in (row.get("layout") or []):
+        if b.get("id") == bid:
+            return (bid, (b["x"], b["y"]))
+    return None
+
+
+def departure_pocket(obj_pos, obj_dir, pockets, tol=POCKET_AIM_TOL):
+    """r36: which pocket an object ball was sent at, from the line it left on.
+    Returns (pocket_index, miss_distance) or None. Pure.
+
+    REFUSING IS THE WHOLE POINT OF THIS FUNCTION. The obvious alternative --
+    take whichever pocket is best aligned, as pot_assessment does -- always
+    returns something, so every safety, cannon and deliberate roll-up would be
+    recorded as an attempted pot and scored as a miss. That is precisely the
+    contamination r21 spent five dead hypotheses undoing, in a new costume: it
+    is not a pot model that is wrong, it is the population being measured.
+
+    Two ways it declines, and both matter. A pocket BEHIND the object ball
+    (t < 0) is not where the ball was sent, however well the infinite line
+    happens to fit. And a line that passes further than `tol` from every pocket
+    means the player was not potting at all, which is an honest answer and a
+    more useful one than a plausible wrong pocket."""
+    best = None
+    for i, c in enumerate(pockets):
+        t = (c[0] - obj_pos[0]) * obj_dir[0] + (c[1] - obj_pos[1]) * obj_dir[1]
+        if t < 0.0:
+            continue
+        px, py = obj_pos[0] + obj_dir[0] * t, obj_pos[1] + obj_dir[1] * t
+        miss = math.hypot(px - c[0], py - c[1])
+        if best is None or miss < best[1]:
+            best = (i, miss)
+    if best is None or best[1] > tol:
+        return None
+    return best
+
+
+def shot_target(row, pockets, r_cue, r_obj, tol=POCKET_AIM_TOL):
+    """r36: which pocket a logged shot was aimed at, and HOW WE KNOW.
+    Returns a dict with `pocket`, `how` and `miss`, or None if there was no
+    object ball at all. Pure.
+
+    `how` is a four-level provenance and it is never collapsed by the caller:
+
+      "called"   -- the player nominated it. Ground truth, they said so.
+      "observed" -- the ball they struck went down, and r35 recorded which
+                    pocket took it. Also ground truth, and free.
+      "inferred" -- neither, so the onward line decides, within `tol`.
+      "none"     -- the line points nowhere near a pocket. Not a pot attempt.
+
+    The order is deliberate: observation before inference, always. Two of these
+    are facts and two are readings, and a reader that pools them is making the
+    same mistake as pooling a human row with an AI row -- it would look like
+    more data and be less trustworthy."""
+    obj = shot_object(row)
+    if obj is None:
+        return None
+    bid, opos = obj
+    drops = {d["id"]: d["pocket"] for d in (row.get("drop_pockets") or [])}
+    if row.get("intent") == "called" and row.get("called_pocket"):
+        cp = tuple(row["called_pocket"])
+        idx = min(range(len(pockets)), key=lambda i: math.dist(pockets[i], cp))
+        return {"pocket": idx, "how": "called", "miss": None, "ball": bid,
+                "obj_pos": opos}
+    if bid in drops and drops[bid] is not None:
+        return {"pocket": drops[bid], "how": "observed", "miss": None,
+                "ball": bid, "obj_pos": opos}
+    cue, aim = row.get("cue_pos"), row.get("aim_deg")
+    if cue is None or aim is None:
+        return {"pocket": None, "how": "none", "miss": None, "ball": bid,
+                "obj_pos": opos}
+    ang = math.radians(aim)
+    gb = ghost_ball(tuple(cue), (math.cos(ang), math.sin(ang)), [opos],
+                    r_cue, r_obj)
+    if gb is None:
+        return {"pocket": None, "how": "none", "miss": None, "ball": bid,
+                "obj_pos": opos}
+    hit = departure_pocket(opos, gb["obj_dir"], pockets, tol)
+    if hit is None:
+        return {"pocket": None, "how": "none", "miss": None, "ball": bid,
+                "obj_pos": opos}
+    return {"pocket": hit[0], "how": "inferred", "miss": hit[1], "ball": bid,
+            "obj_pos": opos}
 
 
 def wilson_interval(wins, n, z=1.96):
@@ -8076,6 +8285,87 @@ def selftest():
           f"ticks {trail82[0]['tick']}-{trail82[0]['last_tick']}); "
           f"order {order82}; 3-substep gap -> {len(gap82)} entries; "
           f"cap {len(cap82)}; corner drop {drops82[0]}, middle drop {drops82[5]}")
+
+    # 83. r36: recovering a shot's target pocket, and REFUSING to invent one.
+    #
+    # The refusal is the assertion that matters. The obvious way to fill in a
+    # missing target -- take the best-aligned pocket, as pot_assessment does --
+    # always succeeds, so a safety, a cannon or a deliberate roll-up would come
+    # back as an attempted pot and be scored as a miss. That is r21's
+    # contamination exactly: not a broken pot model, a wrongly-chosen
+    # population. So a line pointing nowhere near a pocket must yield None,
+    # and a pocket sitting BEHIND the object ball must be rejected however
+    # neatly the infinite line through it happens to fit.
+    #
+    # Provenance ordering is asserted too. Observation outranks inference
+    # always: if r35 recorded which pocket swallowed the ball, that is a fact
+    # and the line is not consulted. Measured on the first real session, the
+    # line agreed with the recorded pocket on all 29 shots where both existed
+    # -- which is a reason to trust the inference, not a reason to prefer it.
+    pk83 = [c for c, _ in capture_points()]
+    rc83, ro83 = CFG["CUE_R_M"], ball_r()
+    # The fixture is CONSTRUCTED from the real pocket, not typed in. Both
+    # halves of this assertion failed on their first run with the code right
+    # and my fixture wrong -- the fourth time in this project (r29 #61,
+    # r30.2 #63, r32 #74). Straight up the table from mid-baulk is aimed
+    # squarely at the top MIDDLE pocket, so resolving it was correct; and
+    # cue/object positions invented without checking sent the ball nowhere
+    # near the pocket I had assumed. Deriving the geometry removes both.
+    obj83 = (1.20, 0.60)
+    d83 = vnorm(pk83[3][0] - obj83[0], pk83[3][1] - obj83[1])
+    cue83 = (obj83[0] - d83[0] * 0.40, obj83[1] - d83[1] * 0.40)
+    aim83 = math.degrees(math.atan2(obj83[1] - cue83[1], obj83[0] - cue83[0]))
+    aimed83 = departure_pocket(obj83, d83, pk83)
+    # a ball sent at the top cushion midway between corner and middle pocket
+    away83 = departure_pocket((0.9, 0.46), vnorm(0.45 - 0.9, 0.94 - 0.46), pk83)
+    behind83 = departure_pocket((0.3, 0.2), vnorm(1.0, 0.6), pk83)
+    behind_ok83 = behind83 is None or behind83[0] != 0   # pocket 0 is behind it
+    row83 = {"cue_trail": [{"kind": "ball", "id": 7, "x": 0.5, "y": 0.5,
+                            "tick": 1, "last_tick": 1, "n": 1}],
+             "layout": [{"id": 7, "c": "red", "x": obj83[0], "y": obj83[1]}],
+             "cue_pos": list(cue83), "aim_deg": aim83,
+             "drop_pockets": [{"id": 7, "pocket": 3}], "intent": "none"}
+    obs83 = shot_target(row83, pk83, rc83, ro83)
+    row83b = dict(row83, drop_pockets=[])
+    inf83 = shot_target(row83b, pk83, rc83, ro83)
+    row83c = dict(row83b, intent="called", called_ball=7,
+                  called_pocket=list(pk83[5]))
+    cal83 = shot_target(row83c, pk83, rc83, ro83)
+    row83d = dict(row83b, aim_deg=90.0)          # sent straight up the table
+    none83 = shot_target(row83d, pk83, rc83, ro83)
+    # Fork 1 made explicit: where the trail and the nomination DISAGREE, the
+    # trail wins, because it records the ball the cue actually touched while
+    # the nomination records the ball the player meant to touch. Added after
+    # a mutant that deleted the trail read CRASHED this assertion instead of
+    # failing it -- an exception is not a test result, and a check that only
+    # explodes has not been shown to measure anything.
+    row83e = dict(row83, intent="called", called_ball=99,
+                  called_pocket=list(pk83[5]))
+    trail83 = shot_object(row83e)
+    obs83 = obs83 or {}
+    inf83 = inf83 or {}
+    cal83 = cal83 or {}
+    none83 = none83 or {}
+    check("r36 target recovery — a ball sent at a pocket resolves to it, a "
+          "ball sent nowhere near one resolves to NOTHING rather than to the "
+          "best-aligned guess (inventing a target turns every safety into a "
+          "missed pot, which is r21's contamination in a new costume), a "
+          "pocket BEHIND the object ball is rejected however well the line "
+          "fits, and a recorded drop pocket outranks the inference because "
+          "one is an observation and the other is a reading",
+          aimed83 is not None and aimed83[0] == 3 and aimed83[1] < 0.01
+          and away83 is None and behind_ok83
+          and obs83.get("how") == "observed" and obs83.get("pocket") == 3
+          and inf83.get("how") == "inferred" and inf83.get("pocket") == 3
+          and cal83.get("how") == "called" and cal83.get("pocket") == 5
+          and none83.get("how") == "none" and none83.get("pocket") is None
+          and trail83 is not None and trail83[0] == 7,
+          f"aimed -> {aimed83}; away -> {away83}; behind -> {behind83}; "
+          f"provenance observed/inferred/called/none -> "
+          f"{obs83.get('how')}/{inf83.get('how')}/{cal83.get('how')}/"
+          f"{none83.get('how')}; "
+          f"pockets {obs83.get('pocket')}/{inf83.get('pocket')}/{cal83.get('pocket')}/"
+          f"{none83.get('pocket')}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
