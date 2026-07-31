@@ -1,14 +1,14 @@
 # Roadmap
 
-## Current status: r37.1 — playable, validated
+## Current status: r38 — playable, validated
 
-**Validation snapshot (r37.1, measured on nix5 and reproduced in a Linux
+**Validation snapshot (r38, measured on nix5 and reproduced in a Linux
 container):**
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 85 assertions |
+| `--selftest` | ALL PASS — 86 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -35,7 +35,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~8,800 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~8,900 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 

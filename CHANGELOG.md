@@ -5,7 +5,42 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r37.1 — the readout that was being cut off (current)
+## r38 — the shot log moves into the repo (current)
+
+The log was written to the home directory and `.gitignore` treated every
+`.jsonl` as runtime state to be thrown away. That was the wrong call. The log is
+not scratch: it is the record of every shot ever played, it is the thing the
+whole stats arc was built to produce, and it grows into the most valuable thing
+the project owns. Nothing that takes months to accumulate should live somewhere
+a fresh clone cannot see.
+
+It now sits beside `hustler.py` — in practice, inside the repo — and it is
+tracked, so it can be committed as it grows. `.gitignore` keeps its blanket
+`*.jsonl` rule and carries one deliberate exception for this file.
+
+The path is resolved from the script's own directory rather than from a fixed
+location, so a second clone logs to itself instead of quietly appending to the
+first one's history. `$HUSTLER_SHOT_LOG` overrides it outright, which is what
+to reach for when running an experiment that should not land in the tracked
+file. The writer and `--stats` call the same resolver, because a log written to
+one path and summarised from another fails silently in the worst possible
+direction: the summary reports an empty file while the real rows pile up
+somewhere else, and nothing anywhere says so.
+
+**Expect `git status` to show the log as modified after playing.** That is real
+data, not a phantom — the distinction r30.3 went to some trouble to restore.
+
+Self-test 86, mutation-tested six ways. Two of those mutants survived the first
+attempt, and both taught the same thing: asserting the resolver in isolation
+proves nothing about whether either END still calls it. One pointed `--stats`
+back at the home directory and one pointed the writer back, and the test passed
+happily through both. Both ends are now checked by code-object introspection —
+the self-test 72 technique — and the writer needs the recursive walk, because a
+flat name check on `run_gui` misses a nested function entirely.
+
+---
+
+## r37.1 — the readout that was being cut off
 
 Two defects in r37's solo readout, both found by one question: where exactly is
 the clock on screen?

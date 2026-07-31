@@ -11,7 +11,7 @@ workflow and expectations.
 4. **Verify your baseline** before changing anything:
 
 ```bash
-python3 hustler.py --selftest      # expect: ALL PASS (85 assertions at r37.1)
+python3 hustler.py --selftest      # expect: ALL PASS (86 assertions at r38)
 ```
 
 If that doesn't pass on a clean checkout, stop and work out why before writing
@@ -338,6 +338,20 @@ running the probe, and leave a line spare: the panel font comes from `SysFont`
 with fallbacks, so the line height on your machine is not necessarily the line
 height on someone else's. `solo_status_lines()` caps itself and self-test 85
 pins the cap.
+
+### Testing a helper is not testing that anything calls it
+
+At r38 the shot log moved into the repo, and one resolver was introduced so the
+writer and `--stats` could not drift onto different paths. Self-test 86 asserted
+the resolver thoroughly — and then two mutants that pointed the writer and the
+reader back at the old location both PASSED it, because the assertion only ever
+exercised the helper in isolation.
+
+Where a function exists specifically to be the single source of a value, assert
+that its CALLERS still use it. `main.__code__.co_names` covers the CLI;
+`run_gui` needs a recursive walk over `co_consts`, since the writer is a nested
+function and a flat name check misses it entirely. Self-test 72 introduced the
+technique for closure state; it applies to any "these two must agree" helper.
 
 ## Getting help
 

@@ -6,3 +6,9 @@ md
 # Runtime state, not source: custom-mode save slots and study logs.
 hustler_layout_*.json
 *.jsonl
+
+# ...except the human shot log, which is tracked ON PURPOSE (r38). It is not
+# scratch: it is the record of every shot played, it grows with every session,
+# and it is committed as it grows. Expect it to show as modified after playing
+# -- that is real data, not a phantom.
+!hustler_shots.jsonl

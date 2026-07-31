@@ -2091,6 +2091,35 @@ def solo_status_lines(run, elapsed_s, colours_left, clock_on):
     return [line]
 
 
+SHOT_LOG_NAME = "hustler_shots.jsonl"
+
+
+def shot_log_path(script_path, env_override=None):
+    """r38: where the human shot log lives. Pure -- paths in, path out, no I/O
+    and nothing touched on disk.
+
+    It sits BESIDE hustler.py, which in practice means inside the repo, and it
+    is tracked rather than ignored. That is a deliberate reversal: until r38 it
+    was written to the home directory and `.gitignore` treated every .jsonl as
+    runtime state. The Maker's reason is the better one -- the log is not
+    scratch, it is the record of every shot ever played, and it grows into the
+    most valuable thing the project owns. Nothing that took months to
+    accumulate should live somewhere a fresh clone cannot see.
+
+    Resolved from the SCRIPT's own directory rather than from a hardcoded path,
+    so a second clone logs to itself instead of quietly appending to the first
+    one's history. `$HUSTLER_SHOT_LOG` overrides it outright, which is what to
+    use when running experiments that should not land in the tracked file.
+
+    Note for anything that shoots headlessly in future: it will append here.
+    Nothing on the --batch/--smoke/--snap path strikes a ball, so the chain
+    does not touch it, but a scripted play-through would."""
+    if env_override:
+        return env_override
+    return os.path.join(os.path.dirname(os.path.abspath(script_path)),
+                        SHOT_LOG_NAME)
+
+
 def mode_intents(mode_name, run_started=False):
     """r37: classify a game mode by the three questions that a single literal,
     `mode == 0`, was standing in for at eighteen sites. Pure -- a name in, a
@@ -4784,13 +4813,16 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     def log_human_shot(rec):
         """r33: append one shot to the ledger. Best-effort by design -- a
         failed write must never cost the player their shot, so an unwritable
-        or full disk loses a row and nothing else. The log is runtime state,
-        not source; .gitignore already covers *.jsonl."""
+        or full disk loses a row and nothing else.
+
+        r38: writes into the REPO, beside hustler.py, and the file is tracked
+        -- see shot_log_path(). It is no longer runtime state to be discarded;
+        it is the accumulated record of every shot played."""
         rec["schema"] = STUDY_SCHEMA
         rec["player"] = profile_name
         try:
-            with open(os.path.join(os.path.expanduser("~"),
-                                   "hustler_shots.jsonl"), "a",
+            with open(shot_log_path(__file__,
+                                    os.environ.get("HUSTLER_SHOT_LOG")), "a",
                       encoding="utf-8") as fh:
                 fh.write(json.dumps(rec) + "\n")
         except OSError:
@@ -8702,6 +8734,68 @@ def selftest():
           f"running -> {run85}; finished -> {over85}; "
           f"clock off -> {off85} / {offover85}")
 
+    # 86. r38: the shot log resolves beside the script, not to the home
+    # directory, and the writer and the reader resolve it the SAME way.
+    #
+    # The second half is the one worth a test. A log written to one path and
+    # summarised from another fails silently in the worst possible direction:
+    # --stats reports an empty or stale file while the real rows accumulate
+    # somewhere else, and nothing anywhere says so. One resolver, used by both,
+    # is what makes that impossible -- so this asserts they agree rather than
+    # merely that each looks sensible on its own.
+    #
+    # Resolved from the SCRIPT's directory rather than a fixed path so a second
+    # clone logs to itself instead of appending to the first one's history.
+    # The env override exists so an experiment can be pointed elsewhere without
+    # polluting the tracked file.
+    # main() is checked by CODE-OBJECT INTROSPECTION, the selftest-72
+    # technique, because --stats resolves its default inside the CLI and a
+    # plain call cannot reach it. Added after a mutant that pointed --stats
+    # back at the home directory SURVIVED: asserting the resolver in isolation
+    # proved nothing about whether the reader still used it, which is exactly
+    # the drift the resolver exists to prevent.
+    # BOTH ends checked by CODE-OBJECT INTROSPECTION, the selftest-72
+    # technique, because neither resolves its path anywhere a plain call can
+    # reach: --stats does it inside the CLI, and the writer is a nested
+    # function inside run_gui. Added after two mutants SURVIVED -- one pointing
+    # --stats back at the home directory, one pointing the WRITER back --
+    # because asserting the resolver in isolation proved nothing about whether
+    # either end still used it, which is exactly the drift it exists to
+    # prevent. The writer needs the recursive walk; a flat co_names on run_gui
+    # misses a nested def entirely.
+    def names86(code, out=None):
+        out = set() if out is None else out
+        out.update(code.co_names)
+        for c in code.co_consts:
+            if isinstance(c, types.CodeType):
+                names86(c, out)
+        return out
+    cli86 = set(main.__code__.co_names)
+    gui86 = names86(run_gui.__code__)
+    uses86 = "shot_log_path" in cli86 and "shot_log_path" in gui86
+    home86 = "expanduser" in cli86 or "expanduser" in gui86
+    here86 = "/somewhere/clone-a/hustler.py"
+    other86 = "/somewhere/clone-b/hustler.py"
+    p86 = shot_log_path(here86)
+    check("r38 shot log path — the log resolves beside hustler.py rather than "
+          "to the home directory, so it lands in the repo and is committed as "
+          "it grows; a second clone logs to ITSELF instead of appending to the "
+          "first one's history; the env override wins outright; and the writer "
+          "and --stats share one resolver, because a log written to one path "
+          "and read from another fails silently in the worst direction",
+          p86 == os.path.join("/somewhere/clone-a", SHOT_LOG_NAME)
+          and shot_log_path(other86) != p86
+          and os.path.dirname(p86) != os.path.expanduser("~")
+          and shot_log_path(here86, "/tmp/elsewhere.jsonl") == "/tmp/elsewhere.jsonl"
+          and shot_log_path(here86, None) == p86
+          and shot_log_path(here86, "") == p86
+          and uses86 and not home86,
+          f"clone-a -> {p86}; clone-b -> {shot_log_path(other86)}; "
+          f"override -> {shot_log_path(here86, '/tmp/elsewhere.jsonl')}; "
+          f"empty override falls back -> {shot_log_path(here86, '')}; "
+          f"both ends call the resolver: {uses86}, "
+          f"either still expands home: {home86}")
+
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
 
@@ -8745,7 +8839,8 @@ def main():
     ap.add_argument("--breaks", type=int, metavar="N", help="break analyser, N trials per config")
     ap.add_argument("--aigame", type=int, metavar="N", help="run N headless AI vs AI games")
     ap.add_argument("--stats", nargs="?", const="", metavar="FILE",
-                    help="summarise a shot log (default ~/hustler_shots.jsonl)")
+                    help="summarise a shot log (default: hustler_shots.jsonl "
+                         "beside hustler.py; $HUSTLER_SHOT_LOG overrides)")
     ap.add_argument("--jsonl", metavar="FILE",
                     help="with --aigame: write a per-shot study log, one game "
                          "per line, for external analysis")
@@ -8760,8 +8855,10 @@ def main():
     args = ap.parse_args()
 
     if args.stats is not None:
-        path = args.stats or os.path.join(os.path.expanduser("~"),
-                                          "hustler_shots.jsonl")
+        # r38: same resolver as the writer, so the two cannot drift apart and
+        # leave --stats reading a file nothing writes to.
+        path = args.stats or shot_log_path(__file__,
+                                           os.environ.get("HUSTLER_SHOT_LOG"))
         try:
             with open(path, encoding="utf-8") as fh:
                 rows = [json.loads(ln) for ln in fh if ln.strip()]
