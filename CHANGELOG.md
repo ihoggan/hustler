@@ -5,7 +5,61 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r36 — reading the shots you never called (current)
+## r37 — solo mode, finished (current)
+
+The rules for a timed solo clearance were written at r34 and then sat there:
+pure, self-tested, and called by nothing. This connects them. `SOLO` is a fourth
+mode — deliberately a mode rather than a switch inside SANDBOX, because free
+practice is what actually gets played here and a stopwatch must not displace it.
+
+Rack up, study the table as long as you like, and the clock starts on your first
+strike. Pot the colours in any order, black last. A foul — potting the white, or
+failing to hit anything — costs ten seconds rather than a turn, because with no
+opponent to hand the table to, time is the only currency the game has. Black down
+before the colours are cleared and the run is over. The clock can be switched off
+at any point, which drops the timing and keeps the rules, and a run can be reset
+without re-racking.
+
+**The interesting part was not the feature.** `MODES` had three entries and
+eighteen places in the code tested `mode == 0`. That single literal was answering
+three different questions which had only ever agreed because SANDBOX was the one
+Game-less mode:
+
+- *is the human the one shooting?* — SANDBOX yes, SOLO yes
+- *may the player edit the table?* — SANDBOX yes, SOLO only before the run starts
+- *is this practice, for the shot log?* — SANDBOX yes, SOLO neither
+
+SOLO answers them differently, so every one of those eighteen sites was a bug
+waiting for a fourth mode to exist. It is precisely the shape of `custom_active()`
+testing `panel_tab == 3` for years, at nine times the scale — and that one was
+caught by luck rather than by design.
+
+So none of them test a mode index any more. `mode_intents()` answers the three
+questions from a mode's NAME, once, out where it can be asserted; the closures
+inside `run_gui` delegate to it. Self-test 84 checks the whole table across all
+four modes and both run states, which means a fifth mode cannot be added without
+failing the build until somebody has classified it deliberately.
+
+The table locks on the first strike rather than when the shot comes to rest. That
+sounds like a detail and is not: run state advances at rest, so gating on it would
+have left the table editable for the entire flight of the opening shot.
+
+The clock's readout sits in the persistent status strip, because a clock you have
+to change tabs to read is not a clock. Its two controls sit on the Game tab, because
+a switch pressed twice a session does not need that real estate. A finished run
+freezes and shows how it ended, its final time, shots and fouls, rather than
+auto-racking away the number you wanted to see.
+
+`solo` joins `practice` and `tournament` as a shot-log tag, and `--stats` reports it
+on its own line. A timed clearance you racked yourself is a third population: no
+opponent, no fouls that hand over the table, and the balls set out by the player.
+
+Self-test 84, mutation-tested five ways. The panel was probed at three window sizes
+for pairwise widget overlap — zero everywhere, Game tab now five widgets deep.
+
+---
+
+## r36 — reading the shots you never called
 
 Nominating a shot is optional, and on the first real session with r35 it went
 unused — 55 of 67 rows carried no call, including every shot of the best game in

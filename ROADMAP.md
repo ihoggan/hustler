@@ -1,14 +1,14 @@
 # Roadmap
 
-## Current status: r36 — playable, validated
+## Current status: r37 — playable, validated
 
-**Validation snapshot (r36, measured on nix5 and reproduced in a Linux
+**Validation snapshot (r37, measured on nix5 and reproduced in a Linux
 container):**
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 83 assertions |
+| `--selftest` | ALL PASS — 84 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -35,7 +35,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~8,470 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~8,715 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -253,16 +253,21 @@ must not offer one.
 > a plausible wrong one. Derived on read, so it works on shots already logged:
 > 59 of the 67 rows in the first real session now carry a target, up from 12.
 
-**Next session, in order.** (1) Finish solo mode — add `SOLO` to
-`MODES`, wire `solo_apply_shot` into the rest block, clock via `format_clock`
-starting on the first shot with an off/reset control, and add `solo` as a
-third shot-log mode tag before frames record under the wrong one. (2) Give the
+> **Solo mode (r37) is done.** A fourth mode: rack, study the table, and the
+> clock starts on the first strike. Any colour in any order, black last; fouls
+> cost ten seconds; an early black ends the run. The clock switches off and the
+> run resets without re-racking. `solo` is a third shot-log tag. The eighteen
+> `mode == 0` tests are gone — `mode_intents()` answers from a mode's name and
+> self-test 84 pins the whole table, so a fifth mode fails the build until it is
+> classified.
+
+**Next session, in order.** (1) Give the
 aim dial the r30 treatment: it is 38 px, so one pixel of drag is 1.51 degrees
 against a readout showing tenths — the same defect power and spin have already
-had fixed, with accurate points around all 360 degrees. (3) Shot diagnosis and
+had fixed, with accurate points around all 360 degrees. (2) Shot diagnosis and
 scratch diagnosis — "Human Learning", now unblocked: the leave is in the log.
-(4) Profile writing, then a ranking display carrying its Wilson bounds.
-(5) The style fit from shot selection. (6) Tournament mode.
+(3) Profile writing, then a ranking display carrying its Wilson bounds.
+(4) The style fit from shot selection. (5) Tournament mode.
 
 ### Deferred
 

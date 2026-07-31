@@ -11,7 +11,7 @@ workflow and expectations.
 4. **Verify your baseline** before changing anything:
 
 ```bash
-python3 hustler.py --selftest      # expect: ALL PASS (83 assertions at r36)
+python3 hustler.py --selftest      # expect: ALL PASS (84 assertions at r37)
 ```
 
 If that doesn't pass on a clean checkout, stop and work out why before writing
@@ -311,6 +311,19 @@ blew up in the detail string, which is evaluated eagerly as an argument to
 mutant produces a readable failure with the actual values in it. Same family as
 the r30 mutants that silently passed because they could not import
 `cushion_path` — a harness that cannot report has not proved anything.
+
+### One literal answering several questions is the bug, not the literal
+
+`custom_active()` tested `panel_tab == 3` for years and adding a fifth tab moved
+`Cust` to 4. The obvious lesson — resolve by name, not by index — is right and
+insufficient. At r37 eighteen sites tested `mode == 0`, and renaming the constant
+would have fixed none of them, because that one test was answering three separate
+questions that agreed only by accident of there being a single Game-less mode.
+
+When a new case makes an old constant ambiguous, the fix is not a better constant.
+It is to name each question and answer them independently — `mode_intents()` is the
+worked example — and then to assert the whole table, so the next case added fails
+the build until somebody classifies it on purpose.
 
 ## Getting help
 

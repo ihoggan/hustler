@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r36 — playable, validated, no known blocking bugs.
+**Status:** r37 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~8,470 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~8,715 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r36
+## Validation snapshot at r37
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 83 assertions |
+| `--selftest` | ALL PASS — 84 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -172,7 +172,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 83 assertions, all
+  out) rather than the pygame wrapper around it. Currently 84 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -198,6 +198,19 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   whoever CONSTRUCTS the sim — never by the physics layer reading the rules.
 
 ### Critical engine facts (hard-won, do not rediscover)
+
+- **NEVER test a mode by its index.** `MODES` is `["SANDBOX", "YOU vs AI",
+  "AI vs AI", "SOLO"]` and `mode_intents(mode_name, run_started)` answers the
+  three questions a mode index used to stand in for: is the human shooting,
+  may the table be edited, and what does the shot log call this. Before r37,
+  eighteen sites tested `mode == 0` and that literal was answering all three —
+  which worked only while SANDBOX was the sole Game-less mode. Self-test 84
+  pins the full table, so a fifth mode fails the build until it is classified.
+  Same defect as `custom_active()` testing `panel_tab == 3`, nine times over.
+- **SOLO locks the table on the first STRIKE, not at rest.** `table_is_editable()`
+  keys off the clock's start stamp, which is set in `do_shoot()`. Run state is
+  advanced when the balls stop, so gating on `solo_run["started"]` would leave
+  the table editable for the whole flight of the opening shot.
 
 - **A missing target must be refused, not guessed.** `pot_assessment()` returns
   the best-aligned pocket and ALWAYS returns one, so using it to fill in what a
@@ -1017,12 +1030,12 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 > **Confirm the chain before proposing anything, and report the actual
 > numbers rather than "passed":**
 >
-> > `hustler.py` md5 `ba291ed999d033ffec92d8169af343b3`, 8466 lines
+> > `hustler.py` md5 `e718770f9d2f46c251834710af4cbcd1`, 8713 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **83 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **84 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.36.0.
+> > standalone, 36 primitives. `setup.py` says 0.37.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

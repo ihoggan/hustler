@@ -2049,6 +2049,42 @@ def solo_apply_shot(run, potted_colours, cue_potted, first_contact,
     return out
 
 
+def mode_intents(mode_name, run_started=False):
+    """r37: classify a game mode by the three questions that a single literal,
+    `mode == 0`, was standing in for at eighteen sites. Pure -- a name in, a
+    dict of answers out, no closure and no pygame.
+
+    Those three questions shared an answer only because SANDBOX was the sole
+    Game-less mode. SOLO is Game-less and human-only as well, and it answers
+    them differently:
+
+      human_shooting -- the human is the player, with no opponent to hand the
+                        table to. SANDBOX and SOLO.
+      table_editable -- balls may be added, cleared, placed, resized, loaded
+                        or re-racked. SANDBOX always; SOLO only until the run
+                        has started, which is Fork 2 as the Maker chose it:
+                        set up freely, then the table locks on the first
+                        strike. A timed clearance where an awkward red can be
+                        lifted off is not a clearance.
+      log_mode       -- the shot log's `mode` tag. THREE values, because a
+                        timed clearance you racked yourself is neither free
+                        practice nor a frame against an opponent, and pooling
+                        populations measured under different conditions is
+                        the one thing the provenance fields exist to prevent.
+
+    It lives out here, rather than as three closures inside run_gui, so that
+    it can be asserted. A fifth mode added later gets classified here once
+    instead of being guessed at eighteen call sites."""
+    return {
+        "human_shooting": mode_name in ("SANDBOX", "SOLO"),
+        "table_editable": (mode_name == "SANDBOX"
+                           or (mode_name == "SOLO" and not run_started)),
+        "log_mode": ("practice" if mode_name == "SANDBOX"
+                     else "solo" if mode_name == "SOLO"
+                     else "tournament"),
+    }
+
+
 def solo_elapsed(start_t, now_t, penalty_s):
     """r34: wall time since the first strike plus accumulated penalties. Pure.
 
@@ -2082,7 +2118,11 @@ def summarise_shots(rows, x1, y1):
     quantity as the AI's aim_jitter, measured rather than assumed, and it is
     what a human profile would eventually be cloned from."""
     out = ["%d shots logged" % len(rows)]
-    for md in ("practice", "tournament"):
+    # r37: "solo" joins the tags. A timed clearance you racked yourself is a
+    # third population -- no opponent, no fouls that hand over the table, and
+    # the balls set out by the player -- so it gets its own line rather than
+    # being folded into practice.
+    for md in ("practice", "solo", "tournament"):
         att, made, rate = shot_accuracy(rows, source="human", mode=md)
         if att:
             out.append("  %-11s called %3d  potted %3d  = %5.1f%%"
@@ -4258,7 +4298,14 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     def s2w(p):
         return ((p[0] - M) / S, (p[1] - M) / S)
 
-    MODES = ["SANDBOX", "YOU vs AI", "AI vs AI"]
+    # r37: SOLO is a fourth mode, and it is deliberately NOT a toggle inside
+    # SANDBOX -- free practice is what the Maker actually plays and must not be
+    # displaced by a timed run. It is Game-less and human-only, exactly like
+    # SANDBOX, which is precisely what makes it dangerous: eighteen sites tested
+    # `mode == 0` before this was added. Resolve modes through the predicates
+    # below, NEVER through a literal index -- see the note on them.
+    MODES = ["SANDBOX", "YOU vs AI", "AI vs AI", "SOLO"]
+    SOLO = MODES.index("SOLO")   # resolve by NAME, never by a literal (r30)
     # Shaded ball sprites (cached per colour and radius): radial gradient
     # stepped toward a top-left light source, specular highlight, soft cloth
     # shadow. Highlights are pre-blended opaque colours — pygame.draw writes
@@ -4665,6 +4712,14 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # white is potted, spent by taking a shot.
     sim.auto_respot = False
     sandbox_bih = True
+    # r37 (solo clearance). `solo_run` is the pure state from r34; the wall
+    # clock and the on/off switch live out here because the core deliberately
+    # knows nothing about time -- solo_elapsed() is handed both ends.
+    solo_run = new_solo_run()
+    solo_start_t = None     # stamped when the run's first strike lands
+    solo_stop_t = None      # frozen the moment the run ends, so the final
+                            # time stops climbing while it is being read
+    solo_clock_on = True    # the Maker asked to be able to switch it off
     game = None
     ais = None
     ai_plan = None
@@ -4746,16 +4801,69 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # the lesson from finding 6.15 (glue bugs hiding behind a correct-looking
     # value) applied to controls, not just resize maths.
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # r37: MODE PREDICATES. Read this before adding a fifth mode.
+    #
+    # Until r37 a single literal, `mode == 0`, appeared at eighteen sites and
+    # was standing in for THREE different questions that happened to share an
+    # answer while SANDBOX was the only Game-less mode:
+    #
+    #   "is the human the one shooting?"      -> SANDBOX yes, SOLO yes
+    #   "may the player edit the table?"      -> SANDBOX yes, SOLO only
+    #                                            before the clock starts
+    #   "is this practice for the shot log?"  -> SANDBOX yes, SOLO neither;
+    #                                            solo rows are their own tag
+    #
+    # SOLO answers them differently, so no single renamed constant fixes it and
+    # each site had to be read once and classified. This is the same defect as
+    # `custom_active()` testing `panel_tab == 3` for years, at nine times the
+    # scale -- and that one was caught by luck rather than by design. Express
+    # the INTENT here; never test a mode index at the call site.
+    # ------------------------------------------------------------------
+    def solo_active():
+        """This is a timed solo clearance run."""
+        return mode == SOLO
+
+    def human_shooting():
+        """The human is the player at the table, with no opponent to hand it
+        to. True in SANDBOX and SOLO; in the AI modes it depends on whose
+        visit it is, which my_turn() resolves."""
+        return mode_intents(MODES[mode])["human_shooting"]
+
+    def table_is_editable():
+        """The player may add, remove, place or resize balls, load a layout or
+        re-rack. Always in SANDBOX. In SOLO only until the run starts -- Fork 2
+        as the Maker chose it: set up freely, then the table locks on the first
+        strike. A timed clearance where an awkward red can be lifted off is not
+        a clearance, and gating on `started` rather than on a separate arm
+        button means solo needs no setup step of its own."""
+        # Keyed on the START STAMP, not on solo_run["started"]. The run state
+        # is advanced when the table comes to REST, so gating on it would leave
+        # the table editable for the whole flight of the first shot. The stamp
+        # is set the instant the cue is struck, which is what "locks on the
+        # first strike" actually means. It is also set whether or not the clock
+        # is switched on -- switching the clock off drops the timing, not the
+        # rules.
+        return mode_intents(MODES[mode],
+                            solo_start_t is not None)["table_editable"]
+
     def my_turn():
-        return (mode == 0 or (game is not None and not game.over
+        return (human_shooting() or (game is not None and not game.over
                 and game.controllers[game.current] == "human"))
 
     def do_shoot():
         nonlocal pending, spin_side, spin_follow, sandbox_bih
-        nonlocal shot_pending, shot_pre
+        nonlocal shot_pending, shot_pre, solo_start_t
         cue = sim.cue()
         if not shoot_enabled(cue is not None, sim.all_at_rest(), my_turn()):
             return
+        # r37: the solo clock starts on the FIRST STRIKE, never on the rack --
+        # so a player can study the table for as long as they like before
+        # committing. pygame's own tick counter rather than wall time: it is
+        # monotonic, it needs no new import, and nothing here should be
+        # affected by the machine's clock being adjusted mid-run.
+        if solo_active() and solo_start_t is None:
+            solo_start_t = pygame.time.get_ticks() / 1000.0
         dx, dy = rotate_vector(1.0, 0.0, aim_angle)
         # r23 (BUG 2): apply the chosen spin, then immediately clear the HUD's
         # copy of it. Without the clear, the same spin was silently re-applied
@@ -4812,11 +4920,16 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
 
     def do_cycle_mode():
         nonlocal mode, sim, game, ais, ai_plan, ai_wait, pending, sandbox_bih
+        nonlocal solo_run, solo_start_t, solo_stop_t
         mode = (mode + 1) % len(MODES)
         ai_plan, ai_wait, pending = None, 0, False
         trail_history.clear()
         pot_anims.clear()
-        if mode == 0:
+        # r37: a mode change always abandons any run in progress. Carrying a
+        # half-finished clearance across into another mode and back would show
+        # a clock that had been stopped for minutes.
+        solo_run, solo_start_t, solo_stop_t = new_solo_run(), None, None
+        if human_shooting():
             sim, game, ais = Sim(), None, None
             sim.auto_respot = False       # r23: sandbox places its own cue
             sandbox_bih = True
@@ -4836,11 +4949,16 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # spin bug: a reset that doesn't reset. Selftest 72 now guards the
         # whole class rather than this one instance.
         nonlocal sim, game, ais, ai_plan, ai_wait, pending, sandbox_bih
-        nonlocal finale
+        nonlocal finale, solo_run, solo_start_t, solo_stop_t
         trail_history.clear()
         pot_anims.clear()
         finale = None
-        if mode == 0:
+        # r37: racking is how a solo run is restarted, so the run state and the
+        # clock reset with it. `start_t = None` rather than "now" -- the clock
+        # starts on the first STRIKE, not on the rack, so a player can study
+        # the table for as long as they like before committing.
+        solo_run, solo_start_t, solo_stop_t = new_solo_run(), None, None
+        if human_shooting():
             sim.rack()
             sandbox_bih = True   # r23: a fresh rack means a fresh placement
         else:
@@ -4855,6 +4973,23 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     def do_reset_spin():
         nonlocal spin_side, spin_follow
         spin_side, spin_follow = 0.0, 0.0
+
+    def do_toggle_solo_clock():
+        """r37: the Maker asked to be able to switch the clock off at any
+        point. It drops the TIMING, not the rules -- the run still locks the
+        table and still ends on the black. Deliberately does not clear the
+        start stamp, so switching it back on resumes rather than restarting;
+        `do_reset_solo` is the one that starts again."""
+        nonlocal solo_clock_on
+        solo_clock_on = not solo_clock_on
+
+    def do_reset_solo():
+        """r37: abandon this run and start again, without re-racking. Resets
+        to `start_t = None` rather than to now, so the clock waits for the
+        next strike exactly as it does after a rack -- and the table unlocks
+        again, since table_is_editable() keys off that same stamp."""
+        nonlocal solo_run, solo_start_t, solo_stop_t
+        solo_run, solo_start_t, solo_stop_t = new_solo_run(), None, None
 
     def do_toggle_overlay():
         nonlocal show_overlay
@@ -4897,7 +5032,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         SANDBOX mode, with the table at rest. Everywhere else R6.6 still holds:
         the table is not clickable."""
         return (panel_tab == TAB_LABELS.index("Cust")
-                and mode == 0 and sim.all_at_rest())
+                and table_is_editable() and sim.all_at_rest())
 
     def set_place_kind(i):
         nonlocal place_kind
@@ -5208,7 +5343,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         y2 += 42
         table.append(Slider((px, y2, pw, 34), 0.015, 0.035,
                              lambda: CFG["BALL_R_M"], set_ball_radius,
-                             "ball radius", "{:.4f} m", enabled=lambda: mode == 0))
+                             "ball radius", "{:.4f} m",
+                                 enabled=table_is_editable))
         y2 += 42
         table.append(Button((px, y2, pw, 28),
                              lambda: ("Cue: 1-7/8\" 94g" if CFG["CUE_R_M"] < 0.025
@@ -5228,6 +5364,19 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         game_w.append(Button((px, y3, pw, 28), "Rack up (T)", do_rack))
         y3 += 36
         game_w.append(Button((px, y3, pw, 28), "Toggle overlay (G)", do_toggle_overlay))
+        # r37: the solo clock's controls. Fork 3 as the Maker chose it -- the
+        # READOUT lives in the persistent status strip, because a clock you
+        # have to change tabs to read is not a clock, while a switch pressed
+        # twice a session does not need that real estate. Both are inert
+        # outside SOLO and say so by greying out.
+        y3 += 36
+        game_w.append(Button((px, y3, pw, 28),
+                              lambda: ("Clock: ON" if solo_clock_on
+                                       else "Clock: OFF"),
+                              do_toggle_solo_clock, enabled=solo_active))
+        y3 += 36
+        game_w.append(Button((px, y3, pw, 28), "Reset run", do_reset_solo,
+                              enabled=solo_active))
         panel_widgets["Game"] = game_w
 
         # r10 Custom tab -- trick-shot / practice editor. All of this is inert
@@ -5239,16 +5388,16 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                 lambda: place_kind, set_place_kind))
         y4 += 34
         custom.append(Button((px, y4, pw, 26), "Clear table", do_clear_table,
-                              enabled=lambda: mode == 0))
+                              enabled=table_is_editable))
         y4 += 34
         custom.append(TabStrip((px, y4, pw, 26), ["1", "2", "3", "4"],
                                 lambda: layout_slot, set_layout_slot))
         y4 += 34
         half = pw // 2 - 4
         custom.append(Button((px, y4, half, 26), "Save", do_save_layout,
-                              enabled=lambda: mode == 0))
+                              enabled=table_is_editable))
         custom.append(Button((px + pw // 2 + 4, y4, half, 26), "Load",
-                              do_load_layout, enabled=lambda: mode == 0))
+                              do_load_layout, enabled=table_is_editable))
         panel_widgets["Cust"] = custom   # key MUST match TAB_LABELS (r12.1)
 
     if smoke:
@@ -5282,13 +5431,13 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 elif ev.key == pygame.K_f:
                     CFG["ROLL_DECEL"] = max(0.02, min(0.5,
                         CFG["ROLL_DECEL"] + (-0.02 if shift else 0.02)))
-                elif ev.key == pygame.K_b and mode == 0:
+                elif ev.key == pygame.K_b and table_is_editable():
                     sim.set_ball_radius(CFG["BALL_R_M"] + (-0.001 if shift else 0.001))
-                elif ev.key == pygame.K_n and mode == 0:
+                elif ev.key == pygame.K_n and table_is_editable():
                     sim.add_random_ball()
-                elif ev.key == pygame.K_c and mode == 0:
+                elif ev.key == pygame.K_c and table_is_editable():
                     sim.clear_objects()
-                elif ev.key == pygame.K_r and mode == 0:
+                elif ev.key == pygame.K_r and table_is_editable():
                     CFG["BALL_R_M"] = 0.0254
                     sim.rebuild()
                     trail_history.clear()
@@ -5368,7 +5517,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 # ball in hand, on a table at rest, and the cue ball ONLY -- no
                 # other ball is touchable, and aiming remains HUD-only always.
                 elif (((game is not None and game.ball_in_hand)
-                       or (mode == 0 and sandbox_bih))
+                       or (human_shooting() and sandbox_bih))
                       and my_turn() and sim.all_at_rest()):
                     on_panel = (ev.__dict__.get("pos", (0, 0))[0]
                                 >= win_w - PANEL_W)
@@ -5405,7 +5554,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # deliberately NOT `not smoke` gated -- it is game state, not an
         # overlay, and gating state behind the render flag is exactly how the
         # smoke path and the real path drift apart.
-        if mode == 0 and cue_was_potted(sim.last_pot_events, Sim.CUE_ID):
+        if human_shooting() and cue_was_potted(sim.last_pot_events, Sim.CUE_ID):
             sandbox_bih = True
 
         # ---- r33: log the human's shot once the table settles ----
@@ -5445,7 +5594,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     (game.last_event if game is not None else None),
                     _pre["bih"], _pre["free"], None,
                     source="human",
-                    mode=("practice" if mode == 0 else "tournament"),
+                    # r37: THREE values now. A timed clearance you racked
+                    # yourself is neither free practice nor a frame against an
+                    # opponent, and pooling populations measured under
+                    # different conditions is the one thing the provenance
+                    # fields exist to prevent.
+                    mode=mode_intents(MODES[mode])["log_mode"],
                     intent=_intent, called=_called, aim_deg=_pre["aim"],
                     p_model="assessment", cue_pos=_pre["cue"],
                     obj_pos=_pre["obj"], layout=_pre["layout"],
@@ -5468,6 +5622,23 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                            if (_pre["ball"] is not None
                                and _pre["pocket"] is not None) else None)
             call_ball, call_pocket = None, None
+
+            # ---- r37: advance the solo run, on the same at-rest edge ----
+            # Inside the `shot_pending` branch on purpose. That flag is the
+            # only shot-completed edge a Game-less mode has (r33 found sandbox
+            # never resolved a shot at all), and it fires exactly once per
+            # shot. Putting this in the render block or polling all_at_rest()
+            # directly would advance the run every frame the table sat still.
+            if solo_active() and not solo_run["over"]:
+                _colours_left = sum(1 for b in sim.balls
+                                    if sim.colours.get(b) in ("red", "yellow"))
+                solo_run = solo_apply_shot(
+                    solo_run, sim.potted_colours(),
+                    cue_was_potted(sim.last_pot_events, Sim.CUE_ID)
+                    or sim.cue() is None,
+                    sim.first_contact, _colours_left)
+                if solo_run["over"] and solo_stop_t is None:
+                    solo_stop_t = pygame.time.get_ticks() / 1000.0
 
         # ---- game logic (modes 1 and 2) ----
         if game is not None and sim.all_at_rest():
@@ -5541,8 +5712,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
 
         cue = sim.cue()
         aim_txt = ""
-        human_turn = (mode == 0 or (game is not None and not game.over
-                      and game.controllers[game.current] == "human"))
+        # r37: this was a second, hand-copied copy of my_turn(). One
+        # definition, so the two cannot drift apart when a mode is added.
+        human_turn = my_turn()
         # AI shot preview while it 'considers'
         if game is not None and ai_plan is not None and sim.all_at_rest():
             cp = w2s(cue.position) if cue is not None else None
@@ -5853,8 +6025,39 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 f"balls {len(sim.balls)}  potted {len(sim.potted_log)}"
                 f" [{','.join(sim.potted_colours()) or '-'}]"
             ]
-            if mode == 0 and sandbox_bih:
+            if human_shooting() and sandbox_bih:
                 status_lines2.append("BALL IN HAND — drag cue in baulk")
+            # r37: the solo readout, in the strip so it reads from every tab.
+            # Fork 4 as chosen: a finished run FREEZES and shows how it ended
+            # rather than auto-racking, so the final time can actually be read.
+            if solo_active():
+                _colours = sum(1 for b in sim.balls
+                               if sim.colours.get(b) in ("red", "yellow"))
+                if solo_run["over"]:
+                    _t = solo_elapsed(solo_start_t, solo_stop_t,
+                                      solo_run["penalty_s"])
+                    _verdict = ("CLEARED" if solo_run["reason"] == "cleared"
+                                else "RUN OVER — " + str(solo_run["reason"]))
+                    status_lines2.append(
+                        f"{_verdict}  {format_clock(_t)}" if solo_clock_on
+                        else _verdict)
+                    _fw = "foul" if solo_run["fouls"] == 1 else "fouls"
+                    status_lines2.append(
+                        f"{solo_run['shots']} shots, {solo_run['fouls']} {_fw}"
+                        f" (+{solo_run['penalty_s']:.0f}s)   T = rack again")
+                elif solo_clock_on:
+                    _now = pygame.time.get_ticks() / 1000.0
+                    status_lines2.append(
+                        f"SOLO  {format_clock(solo_elapsed(solo_start_t, _now, solo_run['penalty_s']))}"
+                        f"   {_colours} colours + black")
+                else:
+                    status_lines2.append(
+                        f"SOLO (clock off)   {_colours} colours + black")
+                if solo_run["fouls"] and not solo_run["over"]:
+                    status_lines2.append(
+                        f"{solo_run['fouls']} "
+                        f"{'foul' if solo_run['fouls'] == 1 else 'fouls'}"
+                        f"  +{solo_run['penalty_s']:.0f}s")
             if aim_txt:
                 status_lines2.append(aim_txt)
         # r12: the spin-position icon is GONE from the frame (Maker's call --
@@ -5885,7 +6088,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             # The controller values are "human" and "ai".
             if (((game is not None and game.ball_in_hand
                   and game.controllers[game.current] == "human")
-                 or (mode == 0 and sandbox_bih))
+                 or (human_shooting() and sandbox_bih))
                     and sim.all_at_rest()):
                 bx0, by0, bx1, by1 = baulk_rect()
                 tl = w2s((bx0, by0))
@@ -7856,6 +8059,11 @@ def selftest():
         # doing nothing -- which is how the r31 finale bug reached main.
         "call_on", "call_ball", "call_pocket", "shot_pending", "shot_pre",
         "logged_frame", "logged_made",
+        # r37: the solo run and its clock. do_rack() and do_cycle_mode() both
+        # reset these, and a reset that silently writes a local is exactly the
+        # r23/r31 bug -- a run that looks restarted and is not, with a clock
+        # still counting from the previous attempt.
+        "solo_run", "solo_start_t", "solo_stop_t", "solo_clock_on",
     }
     leaks72 = closure_state_leaks(run_gui.__code__, RUN_GUI_STATE)
     # and prove the detector itself can see one, rather than trusting a
@@ -8366,6 +8574,45 @@ def selftest():
           f"{none83.get('how')}; "
           f"pockets {obs83.get('pocket')}/{inf83.get('pocket')}/{cal83.get('pocket')}/"
           f"{none83.get('pocket')}")
+
+    # 84. r37: the mode classification, across every mode at once.
+    #
+    # This is the assertion the whole revision needed. Eighteen sites tested
+    # `mode == 0`, and that ONE literal was answering THREE different
+    # questions which happened to agree while SANDBOX was the only Game-less
+    # mode. SOLO is Game-less and human-only too, and it answers them
+    # differently -- so every one of those sites was a bug waiting for a
+    # fourth mode to exist. Exactly the shape of `custom_active()` testing
+    # `panel_tab == 3` for years, at nine times the scale, and that one was
+    # caught by luck.
+    #
+    # Asserted as a TABLE over all four modes rather than as three separate
+    # spot checks, so a fifth mode cannot be added without this failing until
+    # it has been classified deliberately. The `run_started` axis is the other
+    # half: SOLO must stop being editable once the run is under way, or a
+    # timed clearance can have an awkward ball lifted off it.
+    intents84 = {m: mode_intents(m) for m in
+                 ("SANDBOX", "YOU vs AI", "AI vs AI", "SOLO")}
+    human84 = {m: v["human_shooting"] for m, v in intents84.items()}
+    edit84 = {m: v["table_editable"] for m, v in intents84.items()}
+    logm84 = {m: v["log_mode"] for m, v in intents84.items()}
+    started84 = {m: mode_intents(m, True)["table_editable"]
+                 for m in intents84}
+    check("r37 mode intents — SOLO shoots like SANDBOX but does NOT edit like "
+          "it once the run is under way, and it logs under its own tag rather "
+          "than as practice; the AI modes do none of the three. One literal "
+          "was answering all three questions at eighteen sites, which only "
+          "worked while SANDBOX was the only Game-less mode",
+          human84 == {"SANDBOX": True, "YOU vs AI": False,
+                      "AI vs AI": False, "SOLO": True}
+          and edit84 == {"SANDBOX": True, "YOU vs AI": False,
+                         "AI vs AI": False, "SOLO": True}
+          and started84 == {"SANDBOX": True, "YOU vs AI": False,
+                            "AI vs AI": False, "SOLO": False}
+          and logm84 == {"SANDBOX": "practice", "YOU vs AI": "tournament",
+                         "AI vs AI": "tournament", "SOLO": "solo"},
+          f"human_shooting {human84}; editable before the run {edit84}; "
+          f"editable once started {started84}; log tags {logm84}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
