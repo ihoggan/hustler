@@ -156,6 +156,25 @@ So a ball called into the top-left and rattled into the middle still scores.
 The pocket-accurate figure will arrive as its own number alongside the existing
 one, with the shot-diagnosis work, so nothing that exists changes meaning.
 
+## 5. A shot played without a call carries no pot geometry
+
+`shot_pre["obj"]` is resolved by the *nominated* ball, so if you shoot without
+switching calling on, the row has no object position — and with it goes the cut
+angle, the cue-to-object distance, the distance to the pocket and the approach
+angle off the pocket mouth. The shot is still logged: power, spin, aim, the
+whole pre-shot layout, and since r35 the leave as well. What is missing is the
+geometry of the pot itself.
+
+Measured on the first real r35 session: 55 of 67 rows had no `obj_pos`,
+including every shot of a 17-shot, 15-pot game. So the analysis that most wants
+real data is blind to the play that best demonstrates it.
+
+The fix looks small — the rest block already calls `ghost_ball()` on an uncalled
+shot to work out `p_pred`, and discards the target it found. But it needs a
+decision first, because an inferred target must not masquerade as a nominated
+one: a ball the player was never aiming at, scored as a missed pot, is the r21
+free-shot contamination in a new costume. Tracked as item 1 on the roadmap.
+
 ## Recently fixed
 
 Resolved in r23–r27 — kept here briefly because the diagnoses are worth having

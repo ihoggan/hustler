@@ -246,16 +246,30 @@ must not offer one.
 > session and would mix schema 4 and schema 5 rows on one scale, so the
 > pocket-accurate number will arrive alongside the existing one.
 
-**Next session, in order.** (1) Finish solo mode — add `SOLO` to
+**Next session, in order.** (1) **Geometry on uncalled shots.** `shot_pre["obj"]`
+is looked up by the *nominated* ball, so a shot played without a call carries no
+object position at all — and therefore no cut angle, no cue-to-object distance,
+no distance to pocket and no approach angle. Measured on the first real r35
+session: 55 of 67 rows had no `obj_pos`, including every shot of an 88% game.
+The fix looks small, because the rest block already calls `ghost_ball()` on
+uncalled shots to compute `p_pred` and then discards the target it found. It is
+first on the list rather than further down because every session played without
+it loses that geometry permanently — the same reasoning as tagging the solo mode
+before frames record under the wrong one, except this one is costing data now.
+**It needs a decision before it is built:** an inferred target must not
+masquerade as a nominated one. That is the r21 free-shot contamination in a new
+costume — a ball the player was never aiming at, scored as a missed pot — so the
+row has to distinguish "you called this" from "we worked out what you hit".
+(2) Finish solo mode — add `SOLO` to
 `MODES`, wire `solo_apply_shot` into the rest block, clock via `format_clock`
 starting on the first shot with an off/reset control, and add `solo` as a
-third shot-log mode tag before frames record under the wrong one. (2) Give the
+third shot-log mode tag before frames record under the wrong one. (3) Give the
 aim dial the r30 treatment: it is 38 px, so one pixel of drag is 1.51 degrees
 against a readout showing tenths — the same defect power and spin have already
-had fixed, with accurate points around all 360 degrees. (3) Shot diagnosis and
+had fixed, with accurate points around all 360 degrees. (4) Shot diagnosis and
 scratch diagnosis — "Human Learning", now unblocked: the leave is in the log.
-(4) Profile writing, then a ranking display carrying its Wilson bounds.
-(5) The style fit from shot selection. (6) Tournament mode.
+(5) Profile writing, then a ranking display carrying its Wilson bounds.
+(6) The style fit from shot selection. (7) Tournament mode.
 
 ### Deferred
 
