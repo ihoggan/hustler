@@ -3593,6 +3593,141 @@ def panel_scale(win_h, base_h=900, cap=1.5, step=0.25):
     return round(max(1.0, min(cap, snapped)), 6)
 
 
+# r42: tip radius / ball radius, measured off a real training cue ball (r30).
+# Hoisted to module scope here so the Table tab's glyph row draws the SAME tip
+# the strike-point cursor draws, rather than a second literal that can drift.
+TIP_FRAC = 0.200
+
+# r42: what each physics constant is measured AGAINST -- and the two kinds are
+# NOT interchangeable, which is the whole point of the block.
+#
+# Ball and cue are WEPF Annexe A: legal equipment, a single discrete value, so
+# a TICK is the honest marker and anything else is off spec. Cushion and roll
+# are literature MEASUREMENTS with a spread, so a tick would invent a precision
+# nobody has -- they get a BAND.
+#
+# THE CUSHION TRAP, READ BEFORE TOUCHING THIS: CFG["CUSHION_ELASTICITY"] is
+# 0.77, but the measured 0.6-0.9 range is for the ball-rail PAIR value, which
+# is BALL_ELASTICITY * CUSHION_ELASTICITY ~= 0.75. Plotting the raw 0.77
+# against the pair band compares two different quantities and would look
+# perfectly plausible doing it. The row plots the pair value and says so.
+SPEC_BANDS = {
+    "cushion": (0.60, 0.90),    # ball-rail PAIR restitution, measured range
+    "roll": (0.049, 0.147),     # mu_r 0.005-0.015 x g, so we sit at the top
+}                               # of the band -- the slow end, napped UK cloth
+SPEC_TICKS = {
+    "ball": 50.8,               # mm, WEPF Annexe A 2" object ball
+    "cue": 47.6,                # mm, WEPF Annexe A 1-7/8" cue ball
+}
+
+
+def spec_rows(cfg=None):
+    """r42 (Fork 1B/2): the four physics constants as drawable rows, each
+    carrying where it sits on its axis and what it should be measured against.
+    Pure -- a dict in, a list of dicts out, no pygame.
+
+    Why this is a function and not four draw calls: the interesting part is not
+    the number, it is whether the number is where it belongs. "cushion e 0.77"
+    told the reader nothing, because 0.77 is only meaningful next to the range
+    it came from. Each row therefore carries a marker (`tick` for a spec value,
+    `band` for a measured range) and an `on_spec` verdict, and the renderer is
+    left with nothing to decide.
+
+    Fractions are along the row's own axis, not a shared one -- the four
+    quantities have no common units and forcing them onto one axis would be
+    decoration rather than information.
+    """
+    cfg = CFG if cfg is None else cfg
+    rows = []
+
+    # Cushion: the PAIR value, per the trap documented at SPEC_BANDS.
+    pair_e = cfg["BALL_ELASTICITY"] * cfg["CUSHION_ELASTICITY"]
+    lo, hi = SPEC_BANDS["cushion"]
+    rows.append({
+        "key": "cushion", "label": "cushion e (pair)",
+        "text": f"{pair_e:.2f}", "axis": (0.5, 1.0),
+        "frac": slider_frac(pair_e, 0.5, 1.0), "kind": "band",
+        "marker": (slider_frac(lo, 0.5, 1.0), slider_frac(hi, 0.5, 1.0)),
+        "on_spec": lo <= pair_e <= hi, "note": f"measured {lo:.2f}-{hi:.2f}",
+    })
+
+    roll = cfg["ROLL_DECEL"]
+    lo, hi = SPEC_BANDS["roll"]
+    rows.append({
+        "key": "roll", "label": "roll decel",
+        "text": f"{roll:.3f} m/s2", "axis": (0.0, 0.2),
+        "frac": slider_frac(roll, 0.0, 0.2), "kind": "band",
+        "marker": (slider_frac(lo, 0.0, 0.2), slider_frac(hi, 0.0, 0.2)),
+        "on_spec": lo <= roll <= hi, "note": f"measured {lo:.3f}-{hi:.3f}",
+    })
+
+    for key, label, r_m, mass in (
+            ("ball", "object ball", cfg["BALL_R_M"], cfg["BALL_MASS_KG"]),
+            ("cue", "cue ball", cfg["CUE_R_M"], cfg["CUE_MASS_KG"])):
+        mm = r_m * 2000.0
+        tick = SPEC_TICKS[key]
+        rows.append({
+            "key": key, "label": label,
+            "text": f"{mm:.1f}mm {mass * 1000:.0f}g", "axis": (30.0, 70.0),
+            "frac": slider_frac(mm, 30.0, 70.0), "kind": "tick",
+            "marker": slider_frac(tick, 30.0, 70.0),
+            # 0.05mm, i.e. tighter than the readout -- a value that PRINTS as
+            # 50.8 must not be able to read "on spec" while being 50.84.
+            "on_spec": abs(mm - tick) < 0.05, "note": f"WEPF {tick:.1f}mm",
+        })
+    return rows
+
+
+def glyph_radii(px_across, r_obj_m, r_cue_m, tip_frac=TIP_FRAC):
+    """r42 (Fork 2): pixel radii for the object ball, cue ball and cue tip,
+    drawn at TRUE RELATIVE SCALE. Pure.
+
+    The blackball cue ball is 47.6mm against a 50.8mm object ball -- a 6%
+    difference that is easy to state and impossible to feel from two numbers in
+    a status strip. Drawn side by side it is immediately visible, which is the
+    entire justification for the glyph row.
+
+    The larger ball spans `px_across`; everything else follows from the real
+    ratio, so the picture cannot drift from the physics. The tip uses the same
+    TIP_FRAC the strike-point cursor uses.
+    """
+    big = max(r_obj_m, r_cue_m)
+    if px_across <= 0 or big <= 0:
+        return (0.0, 0.0, 0.0)
+    unit = (px_across / 2.0) / big
+    return (r_obj_m * unit, r_cue_m * unit, r_cue_m * unit * tip_frac)
+
+
+def strip_leading(n_lines, font_h, strip_h, top=6, reserve=0, lo=1, hi=6):
+    """r42 (Fork 3B): how much air to put between status-strip lines, given how
+    many lines there actually are. Pure, and unit-free -- callers pass already
+    scaled pixel values.
+
+    The strip had a FIXED `font.get_height() + 1`, and that +1 never scaled, so
+    lines sat one pixel apart at every size. On a 1.5x panel that reads as a
+    solid block of text, which is exactly what the Maker reported. But simply
+    raising the leading is not available either: in a full game with ball in
+    hand the strip already wants more lines than it has room for, and a bigger
+    fixed gap would clip a line rather than space one out.
+
+    So the gap is computed rather than chosen. Few lines -- a solo run, the
+    sandbox -- and the spare height is shared out between them up to `hi`. A
+    busy game and it tightens back towards `lo`, which is the old behaviour and
+    the floor. It cannot clip anything that did not already clip, because `lo`
+    is what the strip used before.
+
+    `reserve` is the call indicator's row: it is drawn BELOW the last line and
+    was previously clamped on top of it (see the r42 note at the draw site), so
+    it has to be paid for here rather than discovered afterwards.
+    """
+    if n_lines <= 0:
+        return lo
+    spare = strip_h - top - reserve - n_lines * font_h
+    if spare <= 0:
+        return lo
+    return int(max(lo, min(hi, spare // n_lines)))
+
+
 def snap_aim(deg, step=0.01):
     """r40: put an aim angle on the same 0.01 grid the nudge buttons use, then
     wrap into [0, 360). Pure.
@@ -4595,6 +4730,98 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             txt = f"{self.label}: {self.fmt.format(self.get())}"
             surf.blit(font.render(txt, True, txt_col), (self.rect.x, self.rect.y))
 
+    class SpecBlock:
+        """r42 (Fork 1B): the four physics constants, each shown against what it
+        is actually measured against, sitting on the TABLE TAB directly beneath
+        the sliders that change them.
+
+        It used to be four text fields in the persistent status strip. Two
+        measurements moved it. First, the strip already clips: a game with ball
+        in hand wants nine lines against a budget of seven, so the strip was
+        losing information before anything was added to it. Second, the block
+        only fits in the strip at 1.5x -- below that the panel is too short --
+        and a readout that exists on one monitor size is worse than one that
+        lives somewhere with room. The Table tab ends at y=341 on a 1080-tall
+        window and has hundreds of spare pixels at every size.
+
+        Putting it beside the sliders is not a consolation prize: the marker is
+        most useful at the moment you are dragging the value away from it.
+
+        All layout arithmetic is in scaled units -- this is built inside
+        build_panel_widgets, so it gets U() like everything else since r41.
+        """
+
+        # r42: the convention is explained ONCE, here, rather than repeated as
+        # a note on all four rows. The first layout did repeat it, and measuring
+        # the strings showed every row overflowing the 232px panel by 17-104px
+        # at 1.0x -- the r41 lesson exactly, and invisible to an overlap check
+        # because text spills straight over a widget boundary without moving it.
+        LEGEND = "| spec   band = measured"
+        GLYPH_CAP = "true scale"
+
+        def __init__(self, rect, row_h, bar_h, glyph_h, gap, head_h):
+            self.rect = pygame.Rect(rect)
+            self.row_h, self.bar_h = row_h, bar_h
+            self.glyph_h, self.gap, self.head_h = glyph_h, gap, head_h
+
+        def handle_event(self, ev):
+            return          # a readout: nothing to click, nothing to drag
+
+        def _bar(self, surf, x, y, w, row):
+            track = pygame.Rect(x, y, w, self.bar_h)
+            pygame.draw.rect(surf, (60, 64, 72), track, border_radius=3)
+            good = row["on_spec"]
+            if row["kind"] == "band":
+                f0, f1 = row["marker"]
+                bx0, bx1 = x + int(w * f0), x + int(w * f1)
+                # The band is drawn UNDER the value, wide and dim, so the eye
+                # reads "is it inside" rather than trying to read a number off
+                # a scale that has no ticks.
+                pygame.draw.rect(surf, (78, 96, 84) if good else (96, 84, 70),
+                                  (bx0, y, max(1, bx1 - bx0), self.bar_h),
+                                  border_radius=3)
+            val_x = x + int(w * row["frac"])
+            col = (150, 205, 160) if good else (232, 172, 92)
+            pygame.draw.circle(surf, col, (val_x, y + self.bar_h // 2),
+                                max(3, self.bar_h // 2 + 1))
+            if row["kind"] == "tick":
+                # A spec value is a POINT, not a range, so it gets a hard tick
+                # that sits proud of the track -- the difference between
+                # "legal equipment" and "within a measured spread" should be
+                # visible without reading the caption.
+                tx = x + int(w * row["marker"])
+                pygame.draw.line(surf, (225, 230, 238),
+                                  (tx, y - 3), (tx, y + self.bar_h + 3), 2)
+
+        def draw(self, surf, font):
+            x, w = self.rect.x, self.rect.w
+            y = self.rect.y
+            surf.blit(font.render(self.LEGEND, True, (150, 154, 162)), (x, y))
+            y += self.head_h
+            for row in spec_rows():
+                col = (150, 205, 160) if row["on_spec"] else (232, 172, 92)
+                surf.blit(font.render(row["label"], True, COL["hud"]), (x, y))
+                val = font.render(row["text"], True, col)
+                surf.blit(val, (x + w - val.get_width(), y))
+                self._bar(surf, x, y + self.row_h - self.bar_h - 2, w, row)
+                y += self.row_h
+            y += self.gap
+            # The glyph row: 47.6mm against 50.8mm is a 6% difference nobody
+            # can feel from two numbers, and obvious once drawn side by side.
+            r_obj, r_cue, r_tip = glyph_radii(self.glyph_h,
+                                              CFG["BALL_R_M"], CFG["CUE_R_M"])
+            cy = y + self.glyph_h // 2
+            ox = x + int(r_obj) + 2
+            pygame.draw.circle(surf, (214, 60, 60), (ox, cy), int(r_obj))
+            cx = ox + int(r_obj) + int(r_cue) + self.gap
+            pygame.draw.circle(surf, (238, 238, 232), (cx, cy), int(r_cue))
+            pygame.draw.circle(surf, (70, 74, 82), (cx, cy), int(r_cue), 1)
+            pygame.draw.circle(surf, (90, 96, 108), (cx, cy), max(2, int(r_tip)),
+                                1)
+            cap = font.render(self.GLYPH_CAP, True, (150, 154, 162))
+            surf.blit(cap, (cx + int(r_cue) + self.gap,
+                             cy - cap.get_height() // 2))
+
     class Button:
         def __init__(self, rect, label, on_click, enabled=lambda: True):
             self.rect = pygame.Rect(rect)
@@ -4734,7 +4961,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         hard in reality. It is an outline, not a disc, so it cannot hide the
         guide it is sitting on.
         """
-        TIP_FRAC = 0.200      # tip radius / ball radius, measured (r30)
+        # r42: the tip fraction was a second literal 0.200 here. It now lives
+        # at module scope as TIP_FRAC, so the Table tab's glyph row and this
+        # cursor cannot drift apart -- they draw the same tip on the same ball.
         ADVISORY_FRAC = 0.75  # where a real cue starts to miscue -- drawn only
         INNER_FRAC = 0.5      # inner named ring (the 17 guide points)
 
@@ -4819,7 +5048,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             follow, side = self.get()
             px, py = cx + side * R, cy - follow * R
             # True-scale tip outline + the exact contact point inside it.
-            tip_r = max(3, int(round(R * self.TIP_FRAC)))
+            tip_r = max(3, int(round(R * TIP_FRAC)))
             pygame.draw.circle(surf, (206, 58, 54), (int(px), int(py)), tip_r, 2)
             pygame.draw.circle(surf, (206, 58, 54), (int(px), int(py)), 2)
 
@@ -5640,6 +5869,14 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         table.append(TabStrip((px, y2, pw, U(26)),
                                [g[0] for g in GRADE_DEFS],
                                lambda: grade_idx, set_grade))
+        # r42 Fork 1B: the constants readout, directly under the controls that
+        # move them. Sized in scaled units; the Table tab has the headroom for
+        # it at every window size we probe (it ended at y=341 on 1920x1080,
+        # against a Shot tab that ended at 1055 with 25px to spare).
+        y2 += U(34)
+        table.append(SpecBlock((px, y2, pw, U(18 + 4 * 28 + 6 + 30)),
+                                row_h=U(28), bar_h=U(6), glyph_h=U(30),
+                                gap=U(6), head_h=U(18)))
         panel_widgets["Table"] = table
 
         game_w = []
@@ -6286,13 +6523,19 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # STATUS_STRIP_H below). It is NOT drawn over the baize any more --
         # which is why the --snap baseline changed with this pass, deliberately
         # and with sign-off. Only the aim icon remains on the frame.
-        cue_lbl = "1-7/8\" 94g" if CFG["CUE_R_M"] < 0.025 else "2\" 116g"
+        # r42 Fork 1B: the four PHYSICS CONSTANTS (cushion, roll, ball, cue)
+        # have left this strip for the Table tab's SpecBlock, where they sit
+        # beside the sliders that change them and next to the range each one
+        # is measured against. What stays here is what changes SHOT TO SHOT and
+        # therefore has to be readable while aiming.
+        #
+        # Measured, not assumed: those four fields packed into three lines at
+        # 1.5x and two at 1.0x (wrap_fields packs greedily, so four fields were
+        # never four lines). Reclaiming them is what pays for Fork 3B's
+        # leading, and it takes a full game with ball in hand from nine lines
+        # against a budget of seven -- silently clipping two -- down to six.
         status_fields = [
             f"power {power:4.2f} m/s",
-            f"cushion e {CFG['CUSHION_ELASTICITY']:.2f}",
-            f"roll {CFG['ROLL_DECEL']:.3f} m/s2",
-            f"ball {CFG['BALL_R_M']*2000:.1f}mm",
-            f"cue {cue_lbl}",
             f"spin s{spin_side:+.2f} f{spin_follow:+.2f}",
         ]
         if game is not None:
@@ -6427,8 +6670,23 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             measure = lambda s: panel_font.size(s)[0]
             strip_lines = (wrap_fields(status_fields, sw, measure)
                            + wrap_fields(status_lines2, sw, measure))
-            line_h = panel_font.get_height() + 1
-            sy = 6
+            # r42 Fork 3B: the leading is COMPUTED, not chosen. It was
+            # `get_height() + 1` and that +1 never scaled, so at 1.5x the lines
+            # sat one pixel apart and read as a solid block -- which is what
+            # the Maker reported. Raising it to a bigger fixed number is not
+            # available: a full game with ball in hand fills the strip, and a
+            # wider fixed gap would clip a line rather than space one out. So
+            # few lines share out the spare height, many lines tighten back to
+            # the old 1px floor, and the call row below is paid for up front
+            # instead of being clamped on top of the last line afterwards.
+            _fh = panel_font.get_height()
+            _top = int(round(6 * UI_S))
+            _led_h = _fh + int(round(4 * UI_S))
+            line_h = _fh + strip_leading(len(strip_lines), _fh,
+                                         STATUS_STRIP_H, top=_top,
+                                         reserve=_led_h, lo=1,
+                                         hi=int(round(6 * UI_S)))
+            sy = _top
             for ln in strip_lines:
                 if sy + line_h > STATUS_STRIP_H:
                     break                      # clip; never spill onto the tabs
@@ -6441,10 +6699,21 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                 (frames - logged_frame)
                                 if logged_frame is not None else None,
                                 made=logged_made)
-            _ly = min(sy + 2, STATUS_STRIP_H - 14)
-            pygame.draw.circle(display, _lc, (sx + 5, _ly + 5), 5)
-            pygame.draw.circle(display, (20, 22, 26), (sx + 5, _ly + 5), 5, 1)
-            display.blit(panel_font.render(_lt, True, _lc), (sx + 16, _ly - 1))
+            # r42: this clamp was `STATUS_STRIP_H - 14`, an UNSCALED literal
+            # inside a strip that scales. Measured before the fix: the call row
+            # overlapped the last line's ink by 4px at 1.5x and 12px at 1.25x
+            # and 1.0x, and spilled past the strip's own rule onto the tabstrip
+            # at every scale. It is the same defect as the +1 leading above and
+            # the same one r41 found in the button rects -- a fixed pixel
+            # inside a scaled layout, which looks correct at exactly one size.
+            _lr = max(3, int(round(5 * UI_S)))
+            _ly = min(sy + int(round(2 * UI_S)),
+                      STATUS_STRIP_H - _fh - int(round(3 * UI_S)))
+            _lcx, _lcy = sx + _lr, _ly + _fh // 2
+            pygame.draw.circle(display, _lc, (_lcx, _lcy), _lr)
+            pygame.draw.circle(display, (20, 22, 26), (_lcx, _lcy), _lr, 1)
+            display.blit(panel_font.render(_lt, True, _lc),
+                          (sx + 2 * _lr + int(round(6 * UI_S)), _ly))
             pygame.draw.line(display, (68, 72, 80),
                               (win_w - PANEL_W, STATUS_STRIP_H - 3),
                               (win_w - 1, STATUS_STRIP_H - 3), 1)
@@ -9115,6 +9384,103 @@ def selftest():
           and all(abs((v / 0.25) - round(v / 0.25)) < 1e-9
                   for v in scales89.values()),
           f"by window height {scales89}; degenerate 0 -> {panel_scale(0)}")
+
+    # 90. r42: a constant is shown against the RIGHT kind of reference.
+    #
+    # The four numbers have two different provenances and conflating them would
+    # be the most plausible-looking way to get this wrong. Ball and cue are
+    # WEPF Annexe A: legal equipment, one discrete value, so a tick is honest
+    # and 2" casual cue ball must read OFF SPEC. Cushion and roll are measured
+    # literature ranges -- a tick there would invent a precision nobody has.
+    #
+    # THE PART THAT WOULD HAVE SHIPPED WRONG: the measured 0.6-0.9 cushion band
+    # is for the ball-rail PAIR value, while CFG carries the rail component
+    # 0.77. Plotting 0.77 against a pair band compares two different quantities
+    # and looks entirely reasonable on screen. This pins the pair arithmetic,
+    # so a future edit that "simplifies" it to the raw constant fails here
+    # rather than in a screenshot nobody re-measures.
+    rows90 = {r["key"]: r for r in spec_rows()}
+    pair90 = CFG["BALL_ELASTICITY"] * CFG["CUSHION_ELASTICITY"]
+    casual90 = dict(CFG)
+    casual90["CUE_R_M"] = CFG["CUE_CASUAL_R_M"]
+    casual90["CUE_MASS_KG"] = CFG["CUE_CASUAL_MASS_KG"]
+    cue90 = {r["key"]: r for r in spec_rows(casual90)}["cue"]
+    # true relative scale: the drawn ratio must be the physical ratio
+    ro90, rc90, rt90 = glyph_radii(40, CFG["BALL_R_M"], CFG["CUE_R_M"])
+    ratio90 = abs((rc90 / ro90) - (CFG["CUE_R_M"] / CFG["BALL_R_M"])) < 1e-9
+    check("r42 constants block — the two WEPF equipment values get a point "
+          "tick and read off spec the moment the casual 2\" cue ball is "
+          "toggled in, while the two measured constants get a band because a "
+          "tick would invent a precision the measurements do not have; and "
+          "cushion is plotted as the ball-rail PAIR value, not the raw rail "
+          "constant, because the band it is judged against is a pair band",
+          rows90["ball"]["kind"] == "tick"
+          and rows90["cue"]["kind"] == "tick"
+          and rows90["cushion"]["kind"] == "band"
+          and rows90["roll"]["kind"] == "band"
+          and rows90["ball"]["on_spec"] and rows90["cue"]["on_spec"]
+          and not cue90["on_spec"]
+          and abs(float(rows90["cushion"]["text"]) - pair90) < 5e-3
+          and abs(pair90 - CFG["CUSHION_ELASTICITY"]) > 1e-3
+          and rows90["cushion"]["on_spec"] and rows90["roll"]["on_spec"]
+          and ratio90 and rt90 < rc90 < ro90,
+          f"cushion pair {pair90:.4f} vs raw {CFG['CUSHION_ELASTICITY']}; "
+          f"casual cue on_spec {cue90['on_spec']}; "
+          f"glyph radii obj {ro90:.2f} cue {rc90:.2f} tip {rt90:.2f}")
+
+    # 91. r42: the status strip's leading adapts instead of clipping.
+    #
+    # The old `+ 1` never scaled, so every line sat a pixel from its neighbour
+    # at every size. The fix cannot simply be a bigger gap: the strip is a
+    # fixed budget that CLIPS SILENTLY (see assertion 85), so a wider fixed
+    # leading would delete a line rather than space one out. What this pins is
+    # the two-sided behaviour -- generous when there is room, back to the old
+    # 1px floor when there is not -- plus the property that actually protects
+    # the reader: for every line count the strip can reach, the lines AND the
+    # call row below them still fit inside the strip.
+    # The loop below MIRRORS the draw site exactly -- same leading call, same
+    # break test, same clamp. Two properties are checked, and the split between
+    # them is the honest part. The call row landing inside the strip is
+    # UNCONDITIONAL: that is the measured bug (it overlapped the last line by
+    # 4-12px and spilled onto the tabstrip at every scale) and nothing may
+    # reintroduce it. A clean, non-overlapping row is only promised when the
+    # lines actually leave room for one -- when the strip is over-subscribed it
+    # was already clipping, and this pass does not pretend to fix that.
+    inside91, clean91 = [], []
+    for _s in (1.0, 1.25, 1.5):
+        _h, _sh = int(round(14 * _s)), int(round(113 * _s))
+        _top = int(round(6 * _s))
+        _u2, _u3, _u4 = (int(round(2 * _s)), int(round(3 * _s)),
+                         int(round(4 * _s)))
+        _res = _h + _u4
+        for _n in range(1, 10):
+            _ld = strip_leading(_n, _h, _sh, top=_top, reserve=_res, lo=1,
+                                hi=int(round(6 * _s)))
+            _lh = _h + _ld
+            _sy, _drawn = _top, 0
+            while _drawn < _n and _sy + _lh <= _sh:
+                _sy += _lh
+                _drawn += 1
+            _ly = min(_sy + _u2, _sh - _h - _u3)
+            inside91.append(_ld >= 1 and _ly + _h <= _sh)
+            if _drawn == _n and _top + _n * _lh + _res <= _sh:
+                clean91.append(_ly >= _top + (_n - 1) * _lh + _h)
+    roomy91 = strip_leading(4, 21, 170, top=9, reserve=27, lo=1, hi=9)
+    busy91 = strip_leading(7, 21, 170, top=9, reserve=27, lo=1, hi=9)
+    check("r42 strip leading — spare height is shared out between the lines "
+          "when there are few, so a solo run is not a wall of text, and it "
+          "tightens back to the old 1px floor when a full game fills the "
+          "strip rather than clipping a line to buy the gap; the call row "
+          "lands inside the strip at every scale and line count instead of "
+          "being clamped on top of the last line and spilling onto the tabs, "
+          "and gets a clean line of its own whenever the lines leave room",
+          roomy91 == 9 and busy91 == 1
+          and strip_leading(0, 21, 170) == 1
+          and strip_leading(3, 21, 0) == 1
+          and all(inside91) and all(clean91) and len(clean91) >= 12,
+          f"4 lines at 1.5x -> {roomy91}px, 7 lines -> {busy91}px; "
+          f"call row inside {sum(inside91)}/{len(inside91)}, "
+          f"clean {sum(clean91)}/{len(clean91)}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

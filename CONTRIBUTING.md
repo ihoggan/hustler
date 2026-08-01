@@ -228,6 +228,24 @@ Collected from real time lost. Each of these cost somebody a session.
   `panel_tab == 3` for years. Adding the Spin tab at r30 moved Custom to 4, and
   mouse-table ball placement would have started firing on the wrong tab with
   every automated check still green. It now reads `TAB_LABELS.index("Cust")`.
+- **A fixed pixel inside a scaled layout is a bug waiting for a bigger screen.**
+  This has now been found three times: r41's button rects, and at r42 both the
+  status strip's `+ 1` leading and the call indicator's `STATUS_STRIP_H - 14`
+  clamp. Each looked correct at exactly one window size. When you add a literal
+  to anything inside the panel, put it through `U()` or explain in a comment why
+  it must not scale.
+- **Overlap checks cannot see text spilling out of a widget.** Rects can pass
+  every containment and collision test while the label rendered into them runs
+  off the panel — r41 found six such overflows, and r42's first constants layout
+  reproduced it immediately, overflowing the 232px panel by up to 104px at 1.0x.
+  Measure rendered string widths with `font.size()` against the space you have,
+  at every scale, before believing a layout fits.
+- **A silent clip is worse than a visible one.** The status strip breaks its
+  draw loop rather than spilling onto the tabs, so an over-subscribed strip does
+  not look like a bug — it looks like the line was never written. r42 found a
+  full game quietly losing two lines this way. Anything added to the strip has
+  to take a line away, and `strip_leading()` is what pays for the spacing.
+
 - **Write git command blocks with no globs.** The maintainer's shell is zsh,
   where an unmatched glob raises `no matches found` and abandons the *entire*
   command line — so a defensive `for f in files*/thing.py` silently prevents

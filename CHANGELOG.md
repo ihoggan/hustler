@@ -5,7 +5,66 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r41 — the HUD grows with the screen (current)
+## r42 — the constants get a reference, and the strip gets its air back (current)
+
+Four numbers had been sitting in the persistent status strip since r11:
+cushion elasticity, roll deceleration, ball size, cue size. They were honest
+and they were useless. `cushion e 0.77` tells a reader nothing, because 0.77
+only means something next to the range it came from.
+
+They now live on the **Table tab**, directly beneath the sliders that change
+them, each drawn against what it is actually measured against. The two kinds of
+reference are deliberately different, because the underlying numbers are:
+
+* **Ball and cue are WEPF Annexe A** — legal equipment, one discrete value.
+  They get a hard tick, and toggling the casual 2" cue ball in reads *off spec*
+  immediately.
+* **Cushion and roll are measured literature ranges** — a tick there would
+  invent a precision nobody has, so they get a band. Roll sits at the top of
+  its band, which is the correct picture: 0.015 is the slow end of the measured
+  range for napped UK cloth.
+
+One trap is worth recording because it would have shipped looking perfectly
+reasonable. The measured 0.6–0.9 cushion range is for the **pair** value, while
+`CFG` carries the rail component 0.77. Plotting 0.77 against a pair band
+compares two different quantities. The row plots the pair value (0.98 × 0.77 ≈
+0.75) and says so, and assertion 90 pins the arithmetic so a later
+"simplification" back to the raw constant fails here rather than in a
+screenshot nobody re-measures.
+
+The cue ball and object ball are also drawn side by side at true relative
+scale. 47.6mm against 50.8mm is a six per cent difference that is impossible to
+feel from two numbers and obvious once you see it, and the tip circle uses the
+same `TIP_FRAC` the strike-point cursor uses — the literal is now defined once.
+
+### Why they left the strip
+
+The Maker reported the strip text looking squashed at 1.5x. Measuring it turned
+up two faults rather than one, and neither was the leading alone.
+
+The strip was **already clipping**. A game with ball in hand wanted nine lines
+against a budget of seven, so the last event and the ball-in-hand prompt were
+both silently vanishing — assertion 85's failure mode, in the game path this
+time. And the call indicator's clamp was `STATUS_STRIP_H - 14`, an unscaled
+literal inside a strip that scales: it overlapped the last line's ink by 4px at
+1.5x and 12px at 1.25x and 1.0x, and spilled past the strip's own rule onto the
+tabstrip at every scale. The same defect r41 found in the button rects.
+
+Moving the four constants out takes the worst case from nine lines to six, so
+nothing clips any more. The leading is now **computed rather than chosen**:
+`strip_leading()` shares out the spare height when there are few lines — a solo
+run gets 9px of air at 1.5x instead of 1px — and tightens back to the old
+one-pixel floor when a full game fills the strip, because a wider fixed gap
+would have deleted a line rather than spaced one out. The call row is paid for
+up front instead of being clamped on top of the text.
+
+Measured after the change: no clipping in any case at any scale, the call row
+inside the strip everywhere, and a clean gap below the last line in every case
+but one — a full game at 1.25x still touches it by 2px, down from 12.
+
+---
+
+## r41 — the HUD grows with the screen
 
 The panel was drawn in fixed pixels — 260 wide, 14pt type, 22px buttons — while
 the table scaled through `RSF`. On the screen it was designed for that looked
