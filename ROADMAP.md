@@ -1,14 +1,14 @@
 # Roadmap
 
-## Current status: r38 — playable, validated
+## Current status: r39 — playable, validated
 
-**Validation snapshot (r38, measured on nix5 and reproduced in a Linux
+**Validation snapshot (r39, measured on nix5 and reproduced in a Linux
 container):**
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 86 assertions |
+| `--selftest` | ALL PASS — 87 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -35,7 +35,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~8,900 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~8,985 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -260,6 +260,14 @@ must not offer one.
 > `mode == 0` tests are gone — `mode_intents()` answers from a mode's name and
 > self-test 84 pins the whole table, so a fifth mode fails the build until it is
 > classified.
+
+> **The break is marked (r39).** Rows carry `break_shot`, observed at the
+> table rather than inferred from a full rack. A `--stats` break section —
+> pot rate, scratch rate and how far the pack spread, split by power — is
+> deliberately NOT built yet: on the day it shipped there were zero flagged
+> breaks, and a table built on the nine inferred ones would have looked
+> authoritative and been partly guesswork. It goes in once real breaks have
+> accumulated.
 
 **Next session, in order.** (1) Give the
 aim dial the r30 treatment: it is 38 px, so one pixel of drag is 1.51 degrees

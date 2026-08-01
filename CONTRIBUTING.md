@@ -11,7 +11,7 @@ workflow and expectations.
 4. **Verify your baseline** before changing anything:
 
 ```bash
-python3 hustler.py --selftest      # expect: ALL PASS (86 assertions at r38)
+python3 hustler.py --selftest      # expect: ALL PASS (87 assertions at r39)
 ```
 
 If that doesn't pass on a clean checkout, stop and work out why before writing

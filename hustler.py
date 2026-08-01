@@ -1978,7 +1978,7 @@ def default_ais(rng=None):
                    caution=0.70, rng=rng)]
 
 
-STUDY_SCHEMA = 5   # bump when the JSONL record shape changes, so old study
+STUDY_SCHEMA = 6   # bump when the JSONL record shape changes, so old study
                    # files can never be silently misread by a newer analysis.
                    # 2 (r19): added cut_deg / t_cue / d_tp -- the pot geometry.
 
@@ -2118,6 +2118,35 @@ def shot_log_path(script_path, env_override=None):
         return env_override
     return os.path.join(os.path.dirname(os.path.abspath(script_path)),
                         SHOT_LOG_NAME)
+
+
+def break_shot(row):
+    """r39: was this logged shot the break? True, False, or **None meaning we
+    cannot know**. Pure -- one row in, no sim, no I/O.
+
+    The three-valued answer is the entire point and it must not be collapsed to
+    a bool. Rows written before schema 6 carry no break flag, and there is no
+    honest way to recover one: a full rack in the log is not proof of a break,
+    because in sandbox the player sets the balls out by hand and may re-rack
+    mid-session. Guessing from the layout would produce a table of break
+    statistics that looked authoritative and was partly invented -- which is
+    the r21 contamination pattern and the reason r36's target recovery refuses
+    rather than picks a best-aligned pocket.
+
+    So a reader must treat None as "excluded from the break sample", never as
+    False. Nine breaks were identified by inference while this was being
+    scoped, and that inference is exactly what the flag replaces.
+
+    Keyed on the PRESENCE OF THE FIELD, not on the schema number. The first
+    version tested `schema < 6` and self-test 87 failed it immediately: the
+    schema is stamped by the writer, so a record that has not yet been written
+    carries no version and every row read as unknowable. Presence is the better
+    key anyway -- it asks the row what it actually contains rather than trusting
+    a version number to imply it, which survives a hand-edited file, a renamed
+    field, or a future schema that drops it."""
+    if "break_shot" not in row:
+        return None
+    return bool(row["break_shot"])
 
 
 def mode_intents(mode_name, run_started=False):
@@ -2575,7 +2604,8 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
                      intent="none", called=None, aim_deg=None,
                      p_model="estimate", cue_pos=None, obj_pos=None,
                      layout=None, potted_ids=None, cue_rest=None,
-                     leave_layout=None, cue_trail=None, drop_pockets=None):
+                     leave_layout=None, cue_trail=None, drop_pockets=None,
+                     is_break=False):
     """r15 (study output): one shot -> one plain, JSON-safe dict.
 
     The payload that matters for analysis is `p_pred` (what the AI THOUGHT the
@@ -2725,6 +2755,11 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
                            "x": round(float(b["x"]), 4),
                            "y": round(float(b["y"]), 4)}
                           for b in leave_layout] if leave_layout else None),
+        # r39: OBSERVED at the table, not inferred afterwards from a full
+        # rack -- see break_shot(). The break is the one shot whose job is
+        # position rather than potting, and it could not be told apart from
+        # any other shot in the log.
+        "break_shot": bool(is_break),
         "cue_trail": (list(cue_trail) if cue_trail else None),
         "drop_pockets": (list(drop_pockets) if drop_pockets else None),
         "foul": foul,
@@ -4786,6 +4821,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # r37 (solo clearance). `solo_run` is the pure state from r34; the wall
     # clock and the on/off switch live out here because the core deliberately
     # knows nothing about time -- solo_elapsed() is handed both ends.
+    # r39: True while the next shot would be the break -- set on any fresh
+    # rack or mode change, spent by firing. A flag rather than a shot counter
+    # because "the first shot at a full rack" is the thing being recorded, and
+    # a counter would need resetting in exactly the same three places anyway.
+    next_is_break = True
     solo_run = new_solo_run()
     solo_start_t = None     # stamped when the run's first strike lands
     solo_stop_t = None      # frozen the moment the run ends, so the final
@@ -4936,7 +4976,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
 
     def do_shoot():
         nonlocal pending, spin_side, spin_follow, sandbox_bih
-        nonlocal shot_pending, shot_pre, solo_start_t
+        nonlocal shot_pending, shot_pre, solo_start_t, next_is_break
         cue = sim.cue()
         if not shoot_enabled(cue is not None, sim.all_at_rest(), my_turn()):
             return
@@ -4967,12 +5007,14 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             "ball": call_ball, "pocket": call_pocket,
             "obj": next((tuple(bd.position) for b, (bd, _) in sim.balls.items()
                          if b == call_ball), None),
+            "brk": next_is_break,
             "bih": (game.ball_in_hand if game is not None else sandbox_bih),
             "free": (game.free_shot if game is not None else False),
         }
         shot_pending = True
         sim.strike((dx, dy), power, side=use_side, follow=use_follow)
         sandbox_bih = False   # r23: placement is spent by playing the shot
+        next_is_break = False  # r39: and so is the break
         if not smoke:
             play_sound("cue_strike", power / CFG["POWER_MAX"])
         if game is not None:
@@ -5003,7 +5045,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
 
     def do_cycle_mode():
         nonlocal mode, sim, game, ais, ai_plan, ai_wait, pending, sandbox_bih
-        nonlocal solo_run, solo_start_t, solo_stop_t
+        nonlocal solo_run, solo_start_t, solo_stop_t, next_is_break
         mode = (mode + 1) % len(MODES)
         ai_plan, ai_wait, pending = None, 0, False
         trail_history.clear()
@@ -5012,6 +5054,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # half-finished clearance across into another mode and back would show
         # a clock that had been stopped for minutes.
         solo_run, solo_start_t, solo_stop_t = new_solo_run(), None, None
+        next_is_break = True          # r39: a new mode starts from a rack
         if human_shooting():
             sim, game, ais = Sim(), None, None
             sim.auto_respot = False       # r23: sandbox places its own cue
@@ -5032,7 +5075,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # spin bug: a reset that doesn't reset. Selftest 72 now guards the
         # whole class rather than this one instance.
         nonlocal sim, game, ais, ai_plan, ai_wait, pending, sandbox_bih
-        nonlocal finale, solo_run, solo_start_t, solo_stop_t
+        nonlocal finale, solo_run, solo_start_t, solo_stop_t, next_is_break
         trail_history.clear()
         pot_anims.clear()
         finale = None
@@ -5041,6 +5084,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # starts on the first STRIKE, not on the rack, so a player can study
         # the table for as long as they like before committing.
         solo_run, solo_start_t, solo_stop_t = new_solo_run(), None, None
+        next_is_break = True          # r39: a fresh rack means a fresh break
         if human_shooting():
             sim.rack()
             sandbox_bih = True   # r23: a fresh rack means a fresh placement
@@ -5071,8 +5115,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         to `start_t = None` rather than to now, so the clock waits for the
         next strike exactly as it does after a rack -- and the table unlocks
         again, since table_is_editable() keys off that same stamp."""
-        nonlocal solo_run, solo_start_t, solo_stop_t
+        nonlocal solo_run, solo_start_t, solo_stop_t, next_is_break
         solo_run, solo_start_t, solo_stop_t = new_solo_run(), None, None
+        next_is_break = True          # r39: resetting a run restores its break
 
     def do_toggle_overlay():
         nonlocal show_overlay
@@ -5698,7 +5743,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                    "x": bd.position.x, "y": bd.position.y}
                                   for b, (bd, _) in sim.balls.items()],
                     cue_trail=list(sim.cue_trail),
-                    drop_pockets=list(sim.drop_log)))
+                    drop_pockets=list(sim.drop_log),
+                    is_break=_pre.get("brk", False)))
             shot_pre = None
             logged_frame = frames
             logged_made = ((_pre["ball"] in list(sim.potted_log))
@@ -8133,6 +8179,9 @@ def selftest():
         # r23/r31 bug -- a run that looks restarted and is not, with a clock
         # still counting from the previous attempt.
         "solo_run", "solo_start_t", "solo_stop_t", "solo_clock_on",
+        # r39: reset in do_rack, do_cycle_mode and do_reset_solo -- three
+        # places, which is exactly the shape of the r31 finale bug.
+        "next_is_break",
     }
     leaks72 = closure_state_leaks(run_gui.__code__, RUN_GUI_STATE)
     # and prove the detector itself can see one, rather than trusting a
@@ -8795,6 +8844,45 @@ def selftest():
           f"empty override falls back -> {shot_log_path(here86, '')}; "
           f"both ends call the resolver: {uses86}, "
           f"either still expands home: {home86}")
+
+    # 87. r39: the break is OBSERVED, and an unknowable break stays unknown.
+    #
+    # The three-valued answer is the assertion. A row written before schema 6
+    # carries no flag, and there is no honest way to recover one -- a full rack
+    # is not proof of a break, because in sandbox the balls are set out by hand
+    # and can be re-racked mid-session. Returning False for those rows would
+    # quietly fold every old shot into the "not a break" pile and produce a
+    # break table that looked authoritative and was partly invented. That is
+    # the r21 contamination pattern, and the same reason r36's target recovery
+    # refuses rather than picking a best-aligned pocket.
+    #
+    # Nine breaks were identified by INFERENCE while this was being scoped,
+    # from 179 logged shots. The flag exists so that number is never guessed
+    # again; None is what stops the guess creeping back in as a default.
+    # `schema` is stamped by the WRITER, not by make_shot_record -- my first
+    # version of this assertion read new87["schema"] and raised a KeyError
+    # instead of failing. An exception is not a test result (see CONTRIBUTING).
+    old87 = {"schema": 5, "layout": [{"id": i, "c": "red", "x": 0.9, "y": 0.4}
+                                     for i in range(15)]}
+    new87 = make_shot_record(1, 0, "P", "red", {"type": "pot"}, [], "red",
+                             False, False, "", False, False, False,
+                             is_break=True)
+    not87 = make_shot_record(2, 0, "P", "red", {"type": "pot"}, [], "red",
+                             False, False, "", False, False, False)
+    check("r39 break flag — the break is recorded at the table rather than "
+          "inferred later from a full rack (a full rack is not proof of a "
+          "break: in sandbox the balls are placed by hand and can be re-racked "
+          "mid-session), and a row from before the flag existed reports None "
+          "rather than False, so old shots are EXCLUDED from a break sample "
+          "instead of silently counted as non-breaks",
+          break_shot(old87) is None
+          and new87.get("break_shot") is True and break_shot(new87) is True
+          and not87.get("break_shot") is False and break_shot(not87) is False
+          and STUDY_SCHEMA == 6,
+          f"pre-schema-6 row -> {break_shot(old87)}; flagged -> "
+          f"{break_shot(new87)}; unflagged -> {break_shot(not87)}; "
+          f"STUDY_SCHEMA {STUDY_SCHEMA}; "
+          f"field present in the record: {'break_shot' in new87}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

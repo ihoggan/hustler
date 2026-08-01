@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r38 — playable, validated, no known blocking bugs.
+**Status:** r39 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~8,900 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~8,985 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r38
+## Validation snapshot at r39
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 86 assertions |
+| `--selftest` | ALL PASS — 87 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -172,7 +172,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 86 assertions, all
+  out) rather than the pygame wrapper around it. Currently 87 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -198,6 +198,15 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   whoever CONSTRUCTS the sim — never by the physics layer reading the rules.
 
 ### Critical engine facts (hard-won, do not rediscover)
+
+- **A LOG READER THAT CANNOT KNOW MUST RETURN None, NOT A DEFAULT.**
+  `break_shot()` is the pattern: rows predating the flag report None so they are
+  EXCLUDED from a break sample, never counted as non-breaks. The same discipline
+  as r36's `departure_pocket()` refusing rather than picking a best-aligned
+  pocket. Defaulting an unknowable to False is how a table becomes partly
+  invented while looking authoritative. Key such readers on the PRESENCE OF THE
+  FIELD, not on the schema number — the schema is stamped by the writer, so a
+  record that has not been written carries no version.
 
 - **THE SHOT LOG IS TRACKED, AND LIVES IN THE REPO (r38).** `hustler_shots.jsonl`
   sits beside `hustler.py`, resolved by `shot_log_path()` from the script's own
@@ -1048,12 +1057,12 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 > **Confirm the chain before proposing anything, and report the actual
 > numbers rather than "passed":**
 >
-> > `hustler.py` md5 `5a5c33f73b35902d22f75a2c09fffff4`, 8898 lines
+> > `hustler.py` md5 `97f30d5b0e38464e5e40ad0f3489309c`, 8986 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **86 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **87 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.38.0.
+> > standalone, 36 primitives. `setup.py` says 0.39.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

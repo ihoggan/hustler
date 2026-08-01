@@ -5,7 +5,43 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r38 — the shot log moves into the repo (current)
+## r39 — marking the break (current)
+
+The break is the one shot whose job is position rather than potting, and
+nothing in the log told it apart from any other shot. Asked for a break
+analysis, the best that could be done was to infer it — find the rows played at
+a full rack and assume. That produced nine breaks out of 179 shots, and the
+assumption is not safe: in sandbox the balls are set out by hand and can be
+re-racked mid-session, so a full rack is not proof of a break.
+
+So the break is now recorded at the table. A flag is set on any fresh rack or
+mode change and spent by firing, and the row carries `break_shot`. No inference,
+no reconstruction.
+
+`break_shot(row)` reads it back and returns **True, False, or None** — and the
+third value is the point. Rows written before this carry no flag, and there is
+no honest way to recover one, so they report None and a reader must exclude them
+from a break sample rather than counting them as non-breaks. Folding 179 old
+rows into the "not a break" pile would produce a table that looked authoritative
+and was partly invented, which is the contamination pattern r21 spent five dead
+hypotheses undoing and the same reason r36's target recovery refuses rather than
+guessing a best-aligned pocket.
+
+It keys on the presence of the field rather than on the schema number, which
+self-test 87 forced: the first version tested `schema < 6` and failed
+immediately, because the schema is stamped by the writer and a record that has
+not been written yet carries no version. Presence is the better key regardless —
+it asks the row what it contains instead of trusting a version number to imply
+it.
+
+`STUDY_SCHEMA` is 6. Nothing else changes; the file plays exactly as r38 did,
+and the break statistics arrive once there are real breaks to report.
+
+Self-test 87, mutation-tested six ways.
+
+---
+
+## r38 — the shot log moves into the repo
 
 The log was written to the home directory and `.gitignore` treated every
 `.jsonl` as runtime state to be thrown away. That was the wrong call. The log is
