@@ -3559,6 +3559,49 @@ def nudge_power(value, delta, lo, hi, step=0.01):
     return max(lo, min(hi, round(snapped, 6)))
 
 
+def snap_aim(deg, step=0.01):
+    """r40: put an aim angle on the same 0.01 grid the nudge buttons use, then
+    wrap into [0, 360). Pure.
+
+    SNAP THEN WRAP, not the reverse, and it is the same lesson as r30's
+    snap-then-clamp: snapping a value that is already wrapped can push it back
+    over the boundary. 359.999 snaps to 360.00, which is not a legal angle;
+    wrapping afterwards returns it to 0.0. Doing it the other way round leaves
+    360.0 sitting in a variable documented as [0, 360).
+
+    Uses `nudge_power`'s exact snap idiom rather than a second one, so all
+    three shot controls -- power (r29), spin (r30), aim (r40) -- round
+    identically. The grid is FINER than a drag can reach: at radius 100 one
+    pixel is 0.573 degrees. It exists so the dial and the buttons share one
+    value space, not to make dragging more precise."""
+    return (round(round(deg / step) * step, 6)) % 360.0
+
+
+def dial_ticks(minor_deg=10, label_deg=30):
+    """r40: the marks around the aim dial. Returns a list of
+    (degrees, is_major, label_or_None), one entry per tick, starting at 0.
+    Pure -- no pygame, no radius, no pixels.
+
+    Plain degree ticks, which is what the Maker chose over compass points,
+    clock positions or pocket-relative marks. The reason that choice is the
+    safe one: a compass rose or a clock face asserts a frame of reference, and
+    this table's angles are measured from the x-axis with y increasing DOWN the
+    screen, so "north" would be a lie in one direction or the other. Degrees
+    say exactly what the readout says.
+
+    `label_deg` must be a multiple of `minor_deg` or the labelled marks would
+    not land on ticks -- asserted rather than assumed, because a caller passing
+    (10, 25) would silently get labels floating between marks."""
+    if minor_deg <= 0 or label_deg <= 0 or label_deg % minor_deg:
+        raise ValueError("label_deg must be a positive multiple of minor_deg")
+    out = []
+    for i in range(int(round(360 / minor_deg))):
+        d = i * minor_deg
+        major = (d % label_deg) == 0
+        out.append((float(d), major, f"{d}" if major else None))
+    return out
+
+
 def snap_spin(follow, side, step=0.01):
     """r30 (strike point): snap a spin contact point to the `step` grid on each
     axis, then re-clamp to the UNIT CIRCLE. Pure, no pygame.
@@ -4775,15 +4818,39 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
 
         def draw(self, surf, font):
             cx, cy = self.centre
-            pygame.draw.circle(surf, (60, 64, 72), (cx, cy), self.radius)
-            pygame.draw.circle(surf, (150, 150, 150), (cx, cy), self.radius, 1)
+            r = self.radius
+            pygame.draw.circle(surf, (60, 64, 72), (cx, cy), r)
+            pygame.draw.circle(surf, (150, 150, 150), (cx, cy), r, 1)
+            # r40: plain degree ticks -- the Maker's choice over a compass rose
+            # or clock face, both of which would assert a frame of reference
+            # this table does not have (angles run from the x-axis with y
+            # increasing DOWN the screen). Labels only on a dial big enough to
+            # carry them; below that the marks still orient the eye.
+            if r >= 60:
+                for deg, major, lbl_ in dial_ticks():
+                    ux, uy = rotate_vector(1.0, 0.0, deg)
+                    inner = r - (9 if major else 5)
+                    pygame.draw.aaline(
+                        surf, (150, 154, 162) if major else (96, 100, 108),
+                        (cx + ux * inner, cy + uy * inner),
+                        (cx + ux * (r - 1), cy + uy * (r - 1)))
+                    if major and lbl_ and r >= 80:
+                        t = font.render(lbl_, True, (130, 134, 142))
+                        tx = cx + ux * (r - 20) - t.get_width() / 2
+                        ty = cy + uy * (r - 20) - t.get_height() / 2
+                        surf.blit(t, (int(tx), int(ty)))
             ang = self.get()
             hx, hy = rotate_vector(1.0, 0.0, ang)
-            ex, ey = cx + hx * self.radius, cy + hy * self.radius
+            ex, ey = cx + hx * r, cy + hy * r
             pygame.draw.aaline(surf, (200, 200, 200), (cx, cy), (ex, ey))
-            pygame.draw.circle(surf, (255, 90, 90), (int(ex), int(ey)), 6)
-            lbl = font.render(f"aim angle  {ang:5.1f} deg", True, COL["hud"])
-            surf.blit(lbl, (cx - self.radius, cy - self.radius - 18))
+            # r40: the handle scales with the dial and is drawn as an OUTLINE
+            # plus a centre dot, so it cannot hide the tick underneath it --
+            # the r30.1 lesson about a cursor obscuring its own guide.
+            hr = max(6, int(r * 0.09))
+            pygame.draw.circle(surf, (255, 90, 90), (int(ex), int(ey)), hr, 2)
+            pygame.draw.circle(surf, (255, 90, 90), (int(ex), int(ey)), 2)
+            lbl = font.render(f"aim angle  {ang:6.2f} deg", True, COL["hud"])
+            surf.blit(lbl, (cx - r, cy - r - 18))
 
     class TabStrip:
 
@@ -5136,12 +5203,19 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         power = nudge_power(power, delta, CFG["POWER_MIN"], CFG["POWER_MAX"])
 
     def set_aim_angle(v):
+        # r40: snapped, so the dial and the nudge buttons share ONE value
+        # space. Without this the dial hands back arbitrary floats and the
+        # buttons walk them off the grid forever -- exactly what SpinPad._apply
+        # had to fix at r30.
         nonlocal aim_angle
-        aim_angle = v % 360.0
+        aim_angle = snap_aim(v)
 
     def nudge_aim_angle(delta):
+        # r40: delta FIRST, then snap -- r29's order lesson. Snapping the
+        # current value before adding would make a 0.01 nudge a no-op whenever
+        # the value was already off-grid.
         nonlocal aim_angle
-        aim_angle = (aim_angle + delta) % 360.0
+        aim_angle = snap_aim(aim_angle + delta)
 
     def set_spin(follow, side):
         nonlocal spin_follow, spin_side
@@ -5305,7 +5379,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # this font size, and the full word was clipped mid-glyph at the panel edge.
     # NB this is the LABEL only: panel_widgets is keyed by these strings, so the
     # Custom tab's widget list is registered under "Cust" too.
-    TAB_LABELS = ["Shot", "Spin", "Table", "Game", "Cust"]
+    # r40: "Aim" is the sixth tab. RESOLVE TABS BY NAME, NEVER BY INDEX --
+    # inserting this moves every label after it, which is the r30 trap
+    # (custom_active() tested `panel_tab == 3` for years) and the r37 trap
+    # (eighteen sites testing `mode == 0`) in the same family.
+    TAB_LABELS = ["Shot", "Aim", "Spin", "Table", "Game", "Cust"]
     # r11: reserved height for the persistent status strip above the tabs. This
     # is where the old bottom-of-table HUD now lives (Maker's call), and unlike
     # the tab contents it is drawn on EVERY tab -- the readout has to be visible
@@ -5361,6 +5439,25 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             target.append(Button((px, yy, pw, 26), "Reset spin", do_reset_spin))
             return yy + 26   # r33: the caller stacks below this
 
+        def add_aim_group(target, y_top, radius):
+            """r40: the aim dial plus its three nudge rows. ONE builder called
+            by both the Aim tab and the Shot tab, so the two copies cannot
+            drift apart, and both are views onto the same `aim_angle` closure
+            var so they cannot disagree on state -- event dispatch only ever
+            reaches the visible tab's widget list. Exactly the r30.2 shape."""
+            cx_, cy_ = px + pw // 2, y_top + radius + 20
+            target.append(Dial((cx_, cy_), radius, lambda: aim_angle,
+                                set_aim_angle))
+            yy = cy_ + radius + 8
+            nw = (pw - 8) // 2
+            for step, lab in ((1.0, "1 deg"), (0.1, "0.1 deg"), (0.01, "0.01 deg")):
+                target.append(Button((px, yy, nw, 22), f"-{lab}",
+                                      (lambda d: lambda: nudge_aim_angle(-d))(step)))
+                target.append(Button((px + nw + 8, yy, nw, 22), f"+{lab}",
+                                      (lambda d: lambda: nudge_aim_angle(d))(step)))
+                yy += 25
+            return yy
+
         # Radius 100 is chosen, not spare: 1/100 = 0.0100 of spin per pixel,
         # exactly the snap step, so every value on the 0.01 grid is reachable
         # by dragging and no pixel of the picker is wasted.
@@ -5394,30 +5491,36 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                             lambda: nudge_power_by(0.1)))
         y += 29
 
-        # r11: dial/pad shrunk (48->38, 46->36) to pay for the taller status
-        # strip. The aim/spin SEPARATION GAP below is deliberately NOT shrunk --
-        # that gap is the r10 fix for aim buttons stealing clicks from the pad.
-        dial_r = min(38, pw // 2 - 8)
-        dial_cx, dial_cy = px + pw // 2, y + dial_r + 14
-        shot.append(Dial((dial_cx, dial_cy), dial_r, lambda: aim_angle, set_aim_angle))
-        y = dial_cy + dial_r + 8
-        nudge_w = (pw - 8) // 2
-        shot.append(Button((px, y, nudge_w, 22), "-1 deg",
-                            lambda: nudge_aim_angle(-1.0)))
-        shot.append(Button((px + nudge_w + 8, y, nudge_w, 22), "+1 deg",
-                            lambda: nudge_aim_angle(1.0)))
-        y += 25
-        shot.append(Button((px, y, nudge_w, 22), "-0.1 deg",
-                            lambda: nudge_aim_angle(-0.1)))
-        shot.append(Button((px + nudge_w + 8, y, nudge_w, 22), "+0.1 deg",
-                            lambda: nudge_aim_angle(0.1)))
-        y += 25
-        # r10: 0.01 deg -- Maker's finding that 0.1 deg still isn't fine enough
-        # to land a dead-true angle on long/thin cuts.
-        shot.append(Button((px, y, nudge_w, 22), "-0.01 deg",
-                            lambda: nudge_aim_angle(-0.01)))
-        shot.append(Button((px + nudge_w + 8, y, nudge_w, 22), "+0.01 deg",
-                            lambda: nudge_aim_angle(0.01)))
+        # r40: the aim group is now built by the shared add_aim_group() and
+        # sized by the same fit-or-omit rule the Shot-tab spin picker uses. The
+        # old radius was 38, which is 1.51 degrees per pixel of drag against a
+        # readout showing hundredths -- the control could not reach the
+        # precision it displayed, the third and last instance of the defect
+        # power (r29) and spin (r30) already had fixed.
+        #
+        # `extra=104` is everything in the group that is not the diameter:
+        # 20 above the dial to clear its readout label, 8 below it, then three
+        # 25px nudge rows plus a 1px allowance. If it will not fit the Shot tab
+        # honestly, it is OMITTED here -- the Aim tab always carries the full
+        # size one, so that costs a tab click, not a capability.
+        # `extra` is EVERYTHING on this tab that is not the dial's diameter,
+        # counted rather than estimated -- my first attempt used 104 and the
+        # Shot tab ran 19px off the bottom of a 548-tall window, because I had
+        # costed the group and forgotten what sits BELOW it:
+        #   20  above the dial, to clear its readout label
+        #    8  below the dial
+        #   75  three 25px nudge rows
+        #   34  the r10 separation gap (see the r30.1 note below)
+        #   30  the Shoot button
+        #   23  headroom, deliberately spare
+        # = 190. The headroom is not padding for its own sake: r37.1 clipped a
+        # status line because a layout that merely fitted here met a taller
+        # font fallback elsewhere.
+        aim_r = spin_group_radius(win_h - y, pw // 2 - 4, extra=190)
+        if aim_r:
+            y = add_aim_group(shot, y, aim_r)
+        else:
+            y = add_aim_group(shot, y, 38)
         # r30.1 BUG FIX: this was `y += 12` and Shoot overlapped the 0.01 deg
         # row by 10px. The 34 it replaced was never "the separation gap" -- it
         # was the 0.01 deg row's own 22px height PLUS a 12px gap, and I read
@@ -5438,6 +5541,10 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         if shot_spin_r is not None:
             add_spin_group(shot, y + 32, shot_spin_r)
         panel_widgets["Shot"] = shot
+
+        aim_tab = []
+        add_aim_group(aim_tab, STATUS_STRIP_H + 34, min(100, pw // 2 - 4))
+        panel_widgets["Aim"] = aim_tab   # key MUST match TAB_LABELS (r12.1)
 
         spin_tab = []
         y6 = add_spin_group(spin_tab, STATUS_STRIP_H + 34,
@@ -8883,6 +8990,47 @@ def selftest():
           f"{break_shot(new87)}; unflagged -> {break_shot(not87)}; "
           f"STUDY_SCHEMA {STUDY_SCHEMA}; "
           f"field present in the record: {'break_shot' in new87}")
+
+    # 88. r40: the aim dial's ticks, and its snap.
+    #
+    # Plain degree ticks were the Maker's choice over a compass rose or clock
+    # face. Worth recording WHY that is the safe one: this table measures
+    # angles from the x-axis with y increasing DOWN the screen, so a compass
+    # would be reversed in one direction and a clock face would have to pick a
+    # handedness. Degrees say exactly what the readout says.
+    #
+    # The label interval must be a multiple of the tick interval or labels
+    # float between marks -- asserted rather than trusted, because a caller
+    # passing (10, 25) would otherwise get a plausible-looking dial with its
+    # numbers in the wrong places.
+    #
+    # SNAP THEN WRAP is the other half, and it is r30's snap-then-clamp lesson
+    # in a new costume: 359.999 snaps UP to 360.00, which is not a legal angle
+    # for a variable documented as [0, 360). Wrapping afterwards returns 0.0;
+    # wrapping first leaves 360.0 sitting in the state.
+    t88 = dial_ticks()
+    maj88 = [d for d, m, _ in t88 if m]
+    lbl88 = [x for _, m, x in t88 if m and x]
+    bad88 = False
+    try:
+        dial_ticks(10, 25)          # 25 is not a multiple of 10
+    except ValueError:
+        bad88 = True
+    check("r40 aim dial — 36 ticks at 10 degrees with every third labelled, "
+          "labels landing ON marks rather than floating between them (a label "
+          "interval that is not a multiple of the tick interval is rejected "
+          "rather than drawn), and the aim angle snaps to the same 0.01 grid "
+          "the nudge buttons use, SNAPPED THEN WRAPPED so 359.999 becomes 0.0 "
+          "instead of an illegal 360.0",
+          len(t88) == 36 and len(maj88) == 12
+          and maj88[:4] == [0.0, 30.0, 60.0, 90.0]
+          and lbl88[:3] == ["0", "30", "60"] and bad88
+          and all(any(abs(d - m) < 1e-9 for d, _, _ in t88) for m in maj88)
+          and snap_aim(123.456) == 123.46 and snap_aim(359.999) == 0.0
+          and snap_aim(-0.004) == 0.0 and 0.0 <= snap_aim(720.5) < 360.0,
+          f"{len(t88)} ticks, {len(maj88)} major, labels {lbl88[:3]}...; "
+          f"bad interval rejected: {bad88}; 123.456 -> {snap_aim(123.456)}; "
+          f"359.999 -> {snap_aim(359.999)}; 720.5 -> {snap_aim(720.5)}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

@@ -1,14 +1,14 @@
 # Roadmap
 
-## Current status: r39 — playable, validated
+## Current status: r40 — playable, validated
 
-**Validation snapshot (r39, measured on nix5 and reproduced in a Linux
+**Validation snapshot (r40, measured on nix5 and reproduced in a Linux
 container):**
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 87 assertions |
+| `--selftest` | ALL PASS — 88 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -35,7 +35,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~8,985 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~9,135 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -269,13 +269,15 @@ must not offer one.
 > authoritative and been partly guesswork. It goes in once real breaks have
 > accumulated.
 
-**Next session, in order.** (1) Give the
-aim dial the r30 treatment: it is 38 px, so one pixel of drag is 1.51 degrees
-against a readout showing tenths — the same defect power and spin have already
-had fixed, with accurate points around all 360 degrees. (2) Shot diagnosis and
+> **The aim dial (r40) is done.** Radius 100 where it fits (0.573 deg/px,
+> against 1.51 before), its own Aim tab plus a Shot-tab copy, plain degree
+> ticks every 10 with every third labelled, and a 0.01 snap shared with the
+> nudge buttons. All three shot controls now reach the precision they display.
+
+**Next session, in order.** (1) Shot diagnosis and
 scratch diagnosis — "Human Learning", now unblocked: the leave is in the log.
-(3) Profile writing, then a ranking display carrying its Wilson bounds.
-(4) The style fit from shot selection. (5) Tournament mode.
+(2) Profile writing, then a ranking display carrying its Wilson bounds.
+(3) The style fit from shot selection. (4) Tournament mode.
 
 ### Deferred
 

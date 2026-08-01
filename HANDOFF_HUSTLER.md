@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r39 — playable, validated, no known blocking bugs.
+**Status:** r40 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~8,985 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~9,135 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r39
+## Validation snapshot at r40
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 87 assertions |
+| `--selftest` | ALL PASS — 88 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -172,7 +172,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 87 assertions, all
+  out) rather than the pygame wrapper around it. Currently 88 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -198,6 +198,19 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   whoever CONSTRUCTS the sim — never by the physics layer reading the rules.
 
 ### Critical engine facts (hard-won, do not rediscover)
+
+- **SIX TABS NOW: `["Shot", "Aim", "Spin", "Table", "Game", "Cust"]`.** Adding
+  "Aim" at index 1 moved every label after it. Resolve tabs BY NAME, always;
+  `panel_widgets` keys must match `TAB_LABELS` exactly or a click KErrors.
+- **ALL THREE SHOT CONTROLS SNAP TO 0.01 AND SHARE ONE IDIOM**
+  (`round(round(v/step)*step, 6)`): power r29, spin r30, aim r40. Aim is
+  SNAP-THEN-WRAP for the same reason spin is snap-then-clamp — snapping 359.999
+  yields 360.00, which is not a legal angle.
+- **WHEN SIZING A PANEL GROUP, COUNT WHAT SITS BELOW IT TOO.** r40's first
+  attempt reserved only the group's own height and ran the Shot tab 19px off a
+  548-tall window, having forgotten the separation gap and the Shoot button.
+  The `extra` term in `spin_group_radius()` must cover everything that is not
+  the diameter, with headroom left spare.
 
 - **A LOG READER THAT CANNOT KNOW MUST RETURN None, NOT A DEFAULT.**
   `break_shot()` is the pattern: rows predating the flag report None so they are
@@ -1057,12 +1070,12 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 > **Confirm the chain before proposing anything, and report the actual
 > numbers rather than "passed":**
 >
-> > `hustler.py` md5 `97f30d5b0e38464e5e40ad0f3489309c`, 8986 lines
+> > `hustler.py` md5 `12a1bc4fc5c1503130bafb5babc68a01`, 9134 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **87 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **88 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.39.0.
+> > standalone, 36 primitives. `setup.py` says 0.40.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

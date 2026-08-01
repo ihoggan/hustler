@@ -5,7 +5,57 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r39 — marking the break (current)
+## r40 — the aim dial (current)
+
+The last of the three shot controls that could not reach the precision it
+displayed. The dial was 38px, which is 238 pixels of circumference for a full
+turn: **1.51 degrees per pixel of drag**, against a readout showing tenths and
+nudge buttons offering hundredths. Power had this fixed at r29 and spin at r30;
+aim had been outstanding since.
+
+It is now sized like the strike-point picker — radius 100 where there is room,
+which is 0.573 degrees per pixel, nearly three times finer — and it gets an
+**Aim tab** of its own alongside a Shot-tab copy, the arrangement the spin
+picker settled on and the Maker judged to have earned its place. One builder
+makes both, so they cannot drift, and both are views onto the same `aim_angle`,
+so they cannot disagree.
+
+Around the rim: **plain degree ticks**, every 10 degrees with every third
+labelled. A compass rose and a clock face were both considered and both
+rejected — this table measures angles from the x-axis with y increasing down
+the screen, so a compass would be reversed in one direction and a clock would
+have to pick a handedness. Degrees say exactly what the readout says.
+
+The angle now snaps to 0.01, the same grid the buttons use, so the dial and the
+buttons finally live in one value space. **Snap then wrap**, not the reverse:
+359.999 snaps up to 360.00, which is not a legal angle, and wrapping afterwards
+returns it to 0.0. That is r30's snap-then-clamp lesson wearing new clothes.
+The grid is finer than a drag can reach even at radius 100, which is the point —
+it exists so the two controls agree, not to make dragging more precise.
+
+The handle scales with the dial and is drawn as an outline plus a centre dot,
+so it cannot hide the tick underneath it — the r30.1 lesson about a cursor
+obscuring its own guide.
+
+**A note on what the extra size costs.** The Shot tab is the deepest in the
+panel, and the dial only grows there when it honestly fits; below a floor it
+falls back rather than degrading into something unusable. My first attempt at
+that arithmetic ran the tab 19 pixels off the bottom of a 548-tall window,
+because I costed the dial group and forgot the separation gap and the Shoot
+button below it. The reserve is now counted line by line in the source with
+headroom deliberately left over, for the same reason r37.1 gave: a layout that
+merely fits here meets a taller font fallback somewhere else.
+
+One consequence worth knowing: at 1024x768 the Shot tab now carries the big aim
+dial and **omits** its copy of the spin picker. The Spin tab still has the
+full-size picker, so that costs a tab click rather than a capability — but it is
+a trade, and on a 1080-tall desktop both fit together.
+
+Self-test 88, mutation-tested six ways.
+
+---
+
+## r39 — marking the break
 
 The break is the one shot whose job is position rather than potting, and
 nothing in the log told it apart from any other shot. Asked for a break
