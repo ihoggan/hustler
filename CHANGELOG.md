@@ -5,7 +5,53 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r40 — the aim dial (current)
+## r41 — the HUD grows with the screen (current)
+
+The panel was drawn in fixed pixels — 260 wide, 14pt type, 22px buttons — while
+the table scaled through `RSF`. On the screen it was designed for that looked
+right. On a 2160x1350 high-DPI panel the table grows to fill the space and the
+HUD does not, so the type ends up physically tiny beside it.
+
+Worth recording that nothing was broken. Measured off the Maker's screenshot,
+a nudge button really was 115 pixels wide against the 116 the code asks for.
+The panel was doing exactly what it was told; the screen had moved on.
+
+`panel_scale()` now derives a factor from the window height and everything in
+the panel is expressed through it: width, font, button heights, row pitches,
+the dial and picker radii, and the status strip's budget. The layout literals
+are deliberately left recognisable and passed through a `U()` helper rather
+than rewritten, so 34 is still visibly the r10 separation gap and the comments
+explaining them stay true.
+
+**The cap of 1.5 is a trade, not a limit, and it is the Maker's to make.** On
+this layout the scene is width-limited, so every pixel the panel gains comes
+straight out of the playing area: at 2160 wide, doubling the panel to 520 would
+shrink the table from 1852x926 to 1592x796 — fourteen per cent of the baize
+gone. 1.5 costs seven per cent and roughly doubles the apparent type size. The
+self-test pins that number so a future reader raising it has to notice they are
+spending table to buy panel.
+
+**The probe gained the check that would have caught this class of bug, and it
+earned its keep immediately.** Nothing existing verifies that a label actually
+FITS inside its own button — overlap and extent checks both pass straight over
+text spilling out of a widget. The new check found six overflows on its first
+run, all at 1.5 and none at any smaller scale: four button heights had been
+missed by the transform because their rectangles start with an expression
+rather than a bare `px`, so the font grew and the buttons did not.
+
+The strip keeps its seven-line budget at every scale, checked rather than
+assumed — a fixed 113px height would have clipped at 1.5 exactly as it clipped
+at r37.1, the same bug arrived at from the other direction.
+
+Self-test 89, mutation-tested six ways. One mutant deliberately survived and
+was then made impossible: it deleted a `win_h <= 0` guard and the test still
+passed, which was the correct result — the `max(1.0, ...)` below already
+handled zero and negatives, so the guard could never change an answer. It was
+removed rather than tested. Dead code that looks defensive is worse than none.
+
+---
+
+## r40 — the aim dial
 
 The last of the three shot controls that could not reach the precision it
 displayed. The dial was 38px, which is 238 pixels of circumference for a full

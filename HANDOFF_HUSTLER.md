@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r40 — playable, validated, no known blocking bugs.
+**Status:** r41 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~9,135 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r40
+## Validation snapshot at r41
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 88 assertions |
+| `--selftest` | ALL PASS — 89 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -172,7 +172,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 88 assertions, all
+  out) rather than the pygame wrapper around it. Currently 89 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -198,6 +198,19 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
   whoever CONSTRUCTS the sim — never by the physics layer reading the rules.
 
 ### Critical engine facts (hard-won, do not rediscover)
+
+- **THE PANEL SCALES; EVERY DIMENSION GOES THROUGH `U()`.** `panel_scale(win_h)`
+  gives 1.0 / 1.25 / 1.5 by window height. Any new panel dimension MUST be
+  written as `U(n)` with `n` at the 1.0 size, or it will be right on one screen
+  and wrong on another. Four button heights were missed on the first pass
+  because their rects begin with an expression rather than a bare `px`.
+- **PANEL PIXELS COME OUT OF THE TABLE.** The scene is width-limited on this
+  layout: PANEL_W 260 -> 520 costs 14% of the playing area at 2160 wide. The
+  1.5 cap is a deliberate trade signed off by the Maker, not a technical limit.
+- **THE PROBE NOW CHECKS LABEL-FITS-BUTTON.** Overlap and extent checks cannot
+  see text spilling out of a widget. Run the probe after ANY font or layout
+  change, at 2160x1350 as well as the smaller sizes — the six overflows r41
+  found appeared only at 1.5.
 
 - **SIX TABS NOW: `["Shot", "Aim", "Spin", "Table", "Game", "Cust"]`.** Adding
   "Aim" at index 1 moved every label after it. Resolve tabs BY NAME, always;
@@ -1070,12 +1083,12 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 > **Confirm the chain before proposing anything, and report the actual
 > numbers rather than "passed":**
 >
-> > `hustler.py` md5 `12a1bc4fc5c1503130bafb5babc68a01`, 9134 lines
+> > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **88 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **89 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.40.0.
+> > standalone, 36 primitives. `setup.py` says 0.41.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

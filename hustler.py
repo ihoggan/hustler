@@ -3559,6 +3559,40 @@ def nudge_power(value, delta, lo, hi, step=0.01):
     return max(lo, min(hi, round(snapped, 6)))
 
 
+def panel_scale(win_h, base_h=900, cap=1.5, step=0.25):
+    """r41: how much to enlarge the HUD, from the window height. Pure.
+
+    The panel is drawn in FIXED PIXELS -- 260 wide, 14pt type, 22px buttons --
+    while the table scales through RSF. That was invisible for years because
+    the reference screen was about 900 tall. On a 1350-tall high-DPI panel the
+    table grows to fill it and the HUD does not, so the type ends up physically
+    tiny next to it. Measured on the Maker's 2160x1350: the buttons really are
+    115px wide, exactly as coded -- nothing was shrinking, the screen had
+    simply moved on.
+
+    **THE CAP IS THE LOAD-BEARING PART, AND IT IS A TRADE RATHER THAN A LIMIT.**
+    On this table layout the scene is WIDTH-limited, so every pixel the panel
+    gains the table loses: at 2160x1350, PANEL_W 260 -> 520 shrinks the table
+    from 1852x926 to 1592x796, which is 14% of the playing area gone. 1.5 costs
+    7% and roughly doubles the apparent type size, and the Maker chose that
+    trade explicitly. Raising the cap is a one-line change and a re-probe; it
+    is not a decision to make on someone's behalf.
+
+    Snapped to `step` so the scale takes a handful of predictable values rather
+    than a different fractional pixel size on every machine -- the same reason
+    power, spin and aim all snap. Never below 1.0: shrinking the HUD on a small
+    screen would make the thing it is trying to fix worse."""
+    # No explicit guard for a zero or negative height: the max(1.0, ...) below
+    # already returns 1.0 for both. A guard was written here first and a mutant
+    # that deleted it PASSED, which is the correct result -- it proved the
+    # branch could never change an answer. Dead code that looks defensive is
+    # worse than none; it invites the next reader to trust a check that is not
+    # doing anything.
+    raw = win_h / float(base_h)
+    snapped = round(raw / step) * step
+    return round(max(1.0, min(cap, snapped)), 6)
+
+
 def snap_aim(deg, step=0.01):
     """r40: put an aim angle on the same 0.01 grid the nudge buttons use, then
     wrap into [0, 360). Pure.
@@ -4373,7 +4407,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # byte-identical invariant is untouched.
     BASE_W1 = int(x1 * PXM + 2 * MG)
     BASE_H1 = int(y1 * PXM + 2 * MG + 46)
-    PANEL_W = CFG["PANEL_W_PX"]
+    # r41: the whole HUD scales with the window, not just the type. Set once
+    # here from the desktop height so PANEL_W is known before the first
+    # set_mode; UI_S is used for every panel dimension below.
+    UI_S = panel_scale(DESKTOP_H)
+    PANEL_W = int(round(CFG["PANEL_W_PX"] * UI_S))
     fullscreen = False
 
     if smoke:
@@ -4430,9 +4468,10 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             # through the scene surface -- fixed size, independent of scene
             # scaling.
             try:
-                panel_font = pygame.font.SysFont("consolas,menlo,monospace", 14)
+                panel_font = pygame.font.SysFont("consolas,menlo,monospace",
+                                                 int(round(14 * UI_S)))
             except Exception:
-                panel_font = pygame.font.Font(None, 16)
+                panel_font = pygame.font.Font(None, int(round(16 * UI_S)))
 
     rebuild_render_targets()
 
@@ -5397,12 +5436,23 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # important thing on screen during a game. The dial and spin pad were
     # shrunk slightly to pay for this; the aim/spin separation gap was NOT
     # touched, because that gap is the r10 fix.
-    STATUS_STRIP_H = 113
+    # r41: scales with the HUD. It is a LINE budget, and the line height grows
+    # with the font, so a fixed 113 would clip at 1.5x exactly as it clipped at
+    # r37.1 -- the same bug, arrived at from the other direction.
+    STATUS_STRIP_H = int(round(113 * UI_S))
     panel_widgets = {"tabstrip": None, "Shot": [], "Table": [], "Game": []}
 
     def build_panel_widgets():
-        px = win_w - PANEL_W + 14           # inner-panel left margin
-        pw = PANEL_W - 28                   # inner-panel usable width
+        # r41: every layout dimension below is expressed at the ORIGINAL 1.0
+        # scale and passed through U(). Keeping the literals recognisable
+        # matters -- 34 is still the r10 separation gap and 22 is still a
+        # button, so the comments explaining them stay true and a future reader
+        # can still match them against the notes in CONTRIBUTING.
+        def U(v):
+            return int(round(v * UI_S))
+
+        px = win_w - PANEL_W + U(14)        # inner-panel left margin
+        pw = PANEL_W - U(28)                # inner-panel usable width
         # r11: the persistent status strip lives ABOVE the tabs and is drawn on
         # EVERY tab -- that's the whole point of moving the bottom HUD here. A
         # tabbed panel can't show an always-visible readout, so the strip is
@@ -5427,16 +5477,16 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                    lambda: (spin_follow, spin_side), set_spin))
             yy = cy_ + radius + 22        # clears the advisory-ring caption
             qq = (pw - 12) // 4
-            target.append(Button((px, yy, qq, 22), "draw",
+            target.append(Button((px, yy, qq, U(22)), "draw",
                                   lambda: nudge_spin_by(-0.01, 0.0)))
-            target.append(Button((px + qq + 4, yy, qq, 22), "foll",
+            target.append(Button((px + qq + U(4), yy, qq, U(22)), "foll",
                                   lambda: nudge_spin_by(0.01, 0.0)))
-            target.append(Button((px + 2 * (qq + 4), yy, qq, 22), "left",
+            target.append(Button((px + 2 * (qq + 4), yy, qq, U(22)), "left",
                                   lambda: nudge_spin_by(0.0, -0.01)))
-            target.append(Button((px + 3 * (qq + 4), yy, qq, 22), "right",
+            target.append(Button((px + 3 * (qq + 4), yy, qq, U(22)), "right",
                                   lambda: nudge_spin_by(0.0, 0.01)))
-            yy += 28
-            target.append(Button((px, yy, pw, 26), "Reset spin", do_reset_spin))
+            yy += U(28)
+            target.append(Button((px, yy, pw, U(26)), "Reset spin", do_reset_spin))
             return yy + 26   # r33: the caller stacks below this
 
         def add_aim_group(target, y_top, radius):
@@ -5451,11 +5501,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             yy = cy_ + radius + 8
             nw = (pw - 8) // 2
             for step, lab in ((1.0, "1 deg"), (0.1, "0.1 deg"), (0.01, "0.01 deg")):
-                target.append(Button((px, yy, nw, 22), f"-{lab}",
+                target.append(Button((px, yy, nw, U(22)), f"-{lab}",
                                       (lambda d: lambda: nudge_aim_angle(-d))(step)))
-                target.append(Button((px + nw + 8, yy, nw, 22), f"+{lab}",
+                target.append(Button((px + nw + 8, yy, nw, U(22)), f"+{lab}",
                                       (lambda d: lambda: nudge_aim_angle(d))(step)))
-                yy += 25
+                yy += U(25)
             return yy
 
         # Radius 100 is chosen, not spare: 1/100 = 0.0100 of spin per pixel,
@@ -5464,12 +5514,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         y = STATUS_STRIP_H
         panel_widgets["tabstrip"] = TabStrip((win_w - PANEL_W, y, PANEL_W, 26),
                                               TAB_LABELS, lambda: panel_tab, set_tab)
-        y += 32
+        y += U(32)
 
         shot = []
-        shot.append(Slider((px, y, pw, 34), CFG["POWER_MIN"], CFG["POWER_MAX"],
+        shot.append(Slider((px, y, pw, U(34)), CFG["POWER_MIN"], CFG["POWER_MAX"],
                             lambda: power, set_power, "power", "{:.2f} m/s"))
-        y += 38
+        y += U(38)
         # r29: power fine adjustment. The slider resolves ~0.028 m/s per pixel
         # against a readout showing two decimals, so a specific power was
         # simply unreachable by dragging -- the same problem r10 fixed for spin.
@@ -5481,15 +5531,15 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # 13-48 mm of cue travel at potting speed (a ball is 50.8 mm), while at
         # break speed it is only ~5 mm and 0.1 is the one that does anything.
         qp = (pw - 12) // 4
-        shot.append(Button((px, y, qp, 22), "-0.1",
+        shot.append(Button((px, y, qp, U(22)), "-0.1",
                             lambda: nudge_power_by(-0.1)))
-        shot.append(Button((px + qp + 4, y, qp, 22), "-.01",
+        shot.append(Button((px + qp + 4, y, qp, U(22)), "-.01",
                             lambda: nudge_power_by(-0.01)))
-        shot.append(Button((px + 2 * (qp + 4), y, qp, 22), "+.01",
+        shot.append(Button((px + 2 * (qp + 4), y, qp, U(22)), "+.01",
                             lambda: nudge_power_by(0.01)))
-        shot.append(Button((px + 3 * (qp + 4), y, qp, 22), "+0.1",
+        shot.append(Button((px + 3 * (qp + 4), y, qp, U(22)), "+0.1",
                             lambda: nudge_power_by(0.1)))
-        y += 29
+        y += U(29)
 
         # r40: the aim group is now built by the shared add_aim_group() and
         # sized by the same fit-or-omit rule the Shot-tab spin picker uses. The
@@ -5516,22 +5566,23 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # = 190. The headroom is not padding for its own sake: r37.1 clipped a
         # status line because a layout that merely fitted here met a taller
         # font fallback elsewhere.
-        aim_r = spin_group_radius(win_h - y, pw // 2 - 4, extra=190)
+        aim_r = spin_group_radius(win_h - y, pw // 2 - 4,
+                                  r_max=U(100), r_min=U(60), extra=U(190))
         if aim_r:
             y = add_aim_group(shot, y, aim_r)
         else:
-            y = add_aim_group(shot, y, 38)
-        # r30.1 BUG FIX: this was `y += 12` and Shoot overlapped the 0.01 deg
+            y = add_aim_group(shot, y, U(38))
+        # r30.1 BUG FIX: this was `y += U(12)` and Shoot overlapped the 0.01 deg
         # row by 10px. The 34 it replaced was never "the separation gap" -- it
         # was the 0.01 deg row's own 22px height PLUS a 12px gap, and I read
         # the comment instead of the arithmetic. It stays 34: 22 clears the
         # row, and the remaining 12 keeps Shoot visually apart from the fine
         # adjust rows, which matters because Shoot is the irreversible one.
-        y += 34
-        shot.append(Button((px, y, pw, 26), "Shoot", do_shoot,
+        y += U(34)
+        shot.append(Button((px, y, pw, U(26)), "Shoot", do_shoot,
                             enabled=lambda: shoot_enabled(
                                 sim.cue() is not None, sim.all_at_rest(), my_turn())))
-        y += 26
+        y += U(26)
         # r30.2 (Fork C): a second strike-point picker here when the window is
         # tall enough, so a desktop-sized game never leaves the Shot tab. The
         # fit rule is the pure spin_group_radius(); None means the window is
@@ -5543,95 +5594,95 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         panel_widgets["Shot"] = shot
 
         aim_tab = []
-        add_aim_group(aim_tab, STATUS_STRIP_H + 34, min(100, pw // 2 - 4))
+        add_aim_group(aim_tab, STATUS_STRIP_H + U(34), min(U(100), pw // 2 - 4))
         panel_widgets["Aim"] = aim_tab   # key MUST match TAB_LABELS (r12.1)
 
         spin_tab = []
-        y6 = add_spin_group(spin_tab, STATUS_STRIP_H + 34,
-                             min(100, pw // 2 - 4))
+        y6 = add_spin_group(spin_tab, STATUS_STRIP_H + U(34),
+                             min(U(100), pw // 2 - 4))
         # r33 (called shots): the caller lives here, in the room the Spin tab
         # already had. Sized by the same fit-or-omit rule the picker uses --
         # the table is 2:1, so the model needs half its width in height, plus
         # a row for the toggle and a row of caption.
-        y6 += 14
+        y6 += U(14)
         mini_h = pw // 2 + 4
         if win_h - (y6 + mini_h + 34) > 8:
             spin_tab.append(MiniTable((px, y6, pw, mini_h), mini_state,
                                        set_call_ball, set_call_pocket))
             y6 += mini_h + 6
-            spin_tab.append(Button((px, y6, pw // 2 - 4, 24), "Call: on/off",
+            spin_tab.append(Button((px, y6, pw // 2 - 4, U(24)), "Call: on/off",
                                     do_call_toggle))
-            spin_tab.append(Button((px + pw // 2 + 4, y6, pw // 2 - 4, 24),
+            spin_tab.append(Button((px + pw // 2 + 4, y6, pw // 2 - 4, U(24)),
                                     "Clear call", do_call_clear))
         panel_widgets["Spin"] = spin_tab   # key MUST match TAB_LABELS (r12.1)
 
         table = []
-        y2 = STATUS_STRIP_H + 34   # r11: below the persistent status strip
-        table.append(Slider((px, y2, pw, 34), 0.05, 1.0,
+        y2 = STATUS_STRIP_H + U(34)   # r11: below the persistent status strip
+        table.append(Slider((px, y2, pw, U(34)), 0.05, 1.0,
                              lambda: CFG["CUSHION_ELASTICITY"],
                              lambda v: sim.set_cushion_elasticity(v),
                              "cushion e", "{:.2f}"))
-        y2 += 42
-        table.append(Slider((px, y2, pw, 34), 0.02, 0.5,
+        y2 += U(42)
+        table.append(Slider((px, y2, pw, U(34)), 0.02, 0.5,
                              lambda: CFG["ROLL_DECEL"], set_roll_decel,
                              "roll decel", "{:.3f} m/s2"))
-        y2 += 42
-        table.append(Slider((px, y2, pw, 34), 0.015, 0.035,
+        y2 += U(42)
+        table.append(Slider((px, y2, pw, U(34)), 0.015, 0.035,
                              lambda: CFG["BALL_R_M"], set_ball_radius,
                              "ball radius", "{:.4f} m",
                                  enabled=table_is_editable))
-        y2 += 42
-        table.append(Button((px, y2, pw, 28),
+        y2 += U(42)
+        table.append(Button((px, y2, pw, U(28)),
                              lambda: ("Cue: 1-7/8\" 94g" if CFG["CUE_R_M"] < 0.025
                                       else "Cue: 2\" 116g"),
                              sim.toggle_cue_size))
-        y2 += 36
-        table.append(TabStrip((px, y2, pw, 26),
+        y2 += U(36)
+        table.append(TabStrip((px, y2, pw, U(26)),
                                [g[0] for g in GRADE_DEFS],
                                lambda: grade_idx, set_grade))
         panel_widgets["Table"] = table
 
         game_w = []
-        y3 = STATUS_STRIP_H + 34   # r11: below the persistent status strip
-        game_w.append(Button((px, y3, pw, 28),
+        y3 = STATUS_STRIP_H + U(34)   # r11: below the persistent status strip
+        game_w.append(Button((px, y3, pw, U(28)),
                               lambda: f"Mode: {MODES[mode]} (M)", do_cycle_mode))
-        y3 += 36
-        game_w.append(Button((px, y3, pw, 28), "Rack up (T)", do_rack))
-        y3 += 36
-        game_w.append(Button((px, y3, pw, 28), "Toggle overlay (G)", do_toggle_overlay))
+        y3 += U(36)
+        game_w.append(Button((px, y3, pw, U(28)), "Rack up (T)", do_rack))
+        y3 += U(36)
+        game_w.append(Button((px, y3, pw, U(28)), "Toggle overlay (G)", do_toggle_overlay))
         # r37: the solo clock's controls. Fork 3 as the Maker chose it -- the
         # READOUT lives in the persistent status strip, because a clock you
         # have to change tabs to read is not a clock, while a switch pressed
         # twice a session does not need that real estate. Both are inert
         # outside SOLO and say so by greying out.
-        y3 += 36
-        game_w.append(Button((px, y3, pw, 28),
+        y3 += U(36)
+        game_w.append(Button((px, y3, pw, U(28)),
                               lambda: ("Clock: ON" if solo_clock_on
                                        else "Clock: OFF"),
                               do_toggle_solo_clock, enabled=solo_active))
-        y3 += 36
-        game_w.append(Button((px, y3, pw, 28), "Reset run", do_reset_solo,
+        y3 += U(36)
+        game_w.append(Button((px, y3, pw, U(28)), "Reset run", do_reset_solo,
                               enabled=solo_active))
         panel_widgets["Game"] = game_w
 
         # r10 Custom tab -- trick-shot / practice editor. All of this is inert
         # unless mode == SANDBOX (custom_active()), and the buttons say so.
         custom = []
-        y4 = STATUS_STRIP_H + 34   # r11: below the persistent status strip
-        custom.append(TabStrip((px, y4, pw, 26),
+        y4 = STATUS_STRIP_H + U(34)   # r11: below the persistent status strip
+        custom.append(TabStrip((px, y4, pw, U(26)),
                                 [k.capitalize() for k in PLACE_KINDS],
                                 lambda: place_kind, set_place_kind))
-        y4 += 34
-        custom.append(Button((px, y4, pw, 26), "Clear table", do_clear_table,
+        y4 += U(34)
+        custom.append(Button((px, y4, pw, U(26)), "Clear table", do_clear_table,
                               enabled=table_is_editable))
-        y4 += 34
-        custom.append(TabStrip((px, y4, pw, 26), ["1", "2", "3", "4"],
+        y4 += U(34)
+        custom.append(TabStrip((px, y4, pw, U(26)), ["1", "2", "3", "4"],
                                 lambda: layout_slot, set_layout_slot))
-        y4 += 34
+        y4 += U(34)
         half = pw // 2 - 4
-        custom.append(Button((px, y4, half, 26), "Save", do_save_layout,
+        custom.append(Button((px, y4, half, U(26)), "Save", do_save_layout,
                               enabled=table_is_editable))
-        custom.append(Button((px + pw // 2 + 4, y4, half, 26), "Load",
+        custom.append(Button((px + pw // 2 + 4, y4, half, U(26)), "Load",
                               do_load_layout, enabled=table_is_editable))
         panel_widgets["Cust"] = custom   # key MUST match TAB_LABELS (r12.1)
 
@@ -9031,6 +9082,39 @@ def selftest():
           f"{len(t88)} ticks, {len(maj88)} major, labels {lbl88[:3]}...; "
           f"bad interval rejected: {bad88}; 123.456 -> {snap_aim(123.456)}; "
           f"359.999 -> {snap_aim(359.999)}; 720.5 -> {snap_aim(720.5)}")
+
+    # 89. r41: the HUD scale, and why it is capped.
+    #
+    # The panel is drawn in fixed pixels while the table scales through RSF, so
+    # on a tall high-DPI screen the type ends up physically tiny beside it.
+    # Measured on the Maker's 2160x1350: the buttons really were 115px wide,
+    # exactly as coded -- nothing had shrunk, the screen had moved on.
+    #
+    # THE CAP IS A TRADE, NOT A LIMIT, and that is what this pins. On this
+    # layout the scene is WIDTH-limited, so every pixel the panel gains the
+    # table loses: at 2160 wide, PANEL_W 260 -> 520 costs 14% of the playing
+    # area. The Maker chose 1.5 (7%) deliberately over 2.0. An assertion is the
+    # right place for that because a future reader raising the cap should have
+    # to notice they are spending table to buy panel.
+    #
+    # Never below 1.0: shrinking the HUD on a small screen makes the problem it
+    # exists to fix worse. Snapped, for the same reason power, spin and aim all
+    # snap -- a handful of predictable sizes rather than a different fractional
+    # pixel on every machine.
+    scales89 = {h: panel_scale(h) for h in (548, 768, 900, 1080, 1350, 2160)}
+    check("r41 HUD scale — grows with the window so the panel does not shrink "
+          "beside a table that scales, capped at 1.5 because the scene is "
+          "width-limited and panel pixels come straight out of the playing "
+          "area (2.0 would cost 14% of the table, 1.5 costs 7%), never below "
+          "1.0 on a small screen, and snapped to quarter steps rather than a "
+          "different fraction on every machine",
+          scales89[548] == 1.0 and scales89[768] == 1.0
+          and scales89[900] == 1.0 and scales89[1080] == 1.25
+          and scales89[1350] == 1.5 and scales89[2160] == 1.5
+          and panel_scale(0) == 1.0 and panel_scale(-5) == 1.0
+          and all(abs((v / 0.25) - round(v / 0.25)) < 1e-9
+                  for v in scales89.values()),
+          f"by window height {scales89}; degenerate 0 -> {panel_scale(0)}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
