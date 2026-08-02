@@ -2022,11 +2022,7 @@ def solo_apply_shot(run, potted_colours, cue_potted, first_contact,
         return out
     out["started"] = True
     out["shots"] = run["shots"] + 1
-    foul = False
-    if cue_potted:
-        foul = True
-    elif first_contact is None:
-        foul = True
+    foul = shot_is_foul(cue_potted, first_contact)
     if "black" in (potted_colours or []):
         # A colour potted on THIS shot alongside the black still counts as an
         # early black. `colours_left` is the count AFTER the shot, so on its
@@ -2278,22 +2274,59 @@ def attempt_population(rows, pockets, r_cue, r_obj):
     return out
 
 
-def scratch_summary(rows):
-    """r43: how often the cue ball is potted, and nothing more than that. Pure.
+def shot_is_foul(cue_potted, first_contact):
+    """r44: is this shot a foul, in the solo sense? Pure.
 
-    Returns (scratches, shots, rate, lo, hi). The restraint is the feature.
-    Seven scratches in 244 shots supports "you rarely scratch" and supports no
-    statement whatever about WHY -- not by power, not by cut angle, not by
-    spin. Splitting seven events three ways produces cells of one and two, and
-    a table of those would read as an explanation. That is the r19-r21 pattern
-    exactly: five confident mechanisms, each argued from noise, each dead on
-    contact with data. The interval is printed so the reader can see for
-    themselves how little is being claimed.
+    ONE DEFINITION, TWO CALLERS. `solo_apply_shot` charges the clock for a
+    foul and `foul_summary` counts them afterwards, and before r44 the second
+    one would have carried its own copy of the test. That is how the rule and
+    the report drift apart: someone adds a third foul condition to the run
+    state, the report goes on counting two, and the totals disagree with the
+    penalty the player actually paid -- with nothing failing anywhere. Same
+    treatment TIP_FRAC got at r42.
+
+    Deliberately NOT the full blackball foul list. Solo has no opponent, so
+    wrong-ball-first cannot exist (any colour is legal, in any order) and there
+    is no turn to hand over. What is left is potting the cue ball and failing
+    to hit anything at all.
     """
-    n = len(rows)
-    s = sum(1 for r in rows if "cue" in (r.get("potted") or []))
-    rate, lo, hi = rate_ci(s, n)
-    return (s, n, rate, lo, hi)
+    return bool(cue_potted) or first_contact is None
+
+
+def foul_summary(rows, penalty_s=SOLO_FOUL_PENALTY_S, mode=None):
+    """r44: how often the player fouls, and what it costs them. Pure.
+
+    Returns a dict of counts, a rate with its Wilson interval, and the time
+    charged. Derived entirely from fields the log already carries -- `potted`
+    and `first_contact` -- which is why it works on the whole history rather
+    than from the day it was written. The `foul` field in the schema is null on
+    every human row and is not used here; see the r44 note in KNOWN_ISSUES.
+
+    The time is the point. A rate of 5% is easy to shrug at; seventy seconds
+    off a clearance is not, and it is a cost the player currently has no way to
+    see. Counts and seconds are FACTS at any sample size, which is why they are
+    reported where the scratch section refused to say more -- what stays
+    unavailable is any account of WHY, and that is left unsaid.
+    """
+    sel = [r for r in rows if mode is None or r.get("mode") == mode]
+    scratch = no_contact = fouls = 0
+    for r in sel:
+        cue_potted = "cue" in (r.get("potted") or [])
+        fc = r.get("first_contact")
+        if not shot_is_foul(cue_potted, fc):
+            continue
+        fouls += 1
+        # Counted once as a foul, but described by both causes where both
+        # apply -- the totals below are a breakdown of causes, not of shots,
+        # and would not sum to `fouls` if a shot ever managed both.
+        if cue_potted:
+            scratch += 1
+        if fc is None:
+            no_contact += 1
+    rate, lo, hi = rate_ci(fouls, len(sel))
+    return {"shots": len(sel), "fouls": fouls, "scratch": scratch,
+            "no_contact": no_contact, "rate": rate, "lo": lo, "hi": hi,
+            "time_lost_s": fouls * float(penalty_s)}
 
 
 def summarise_shots(rows, x1, y1):
@@ -2506,15 +2539,27 @@ def summarise_derived(rows, x1, y1):
         for key in sorted(bands, key=lambda k: -bands[k][1]):
             hit, tot = bands[key]
             out.append(band_line(key, hit, tot, width=14))
-    s, n_all, s_rate, s_lo, s_hi = scratch_summary(rows)
+    fa = foul_summary(rows)
+    fs = foul_summary(rows, mode="solo")
     out.append("")
-    out.append("  SCRATCHES")
-    out.append("    %d in %d shots = %.1f%%  [%.1f-%.1f]"
-               % (s, n_all, s_rate * 100, s_lo * 100, s_hi * 100))
-    out.append("    no reading of WHY is available at this count -- %d events"
-               % s)
-    out.append("    cannot be split by power, angle or spin without inventing")
-    out.append("    a pattern. Play more and ask again.")
+    out.append("  FOULS  (cue ball potted, or nothing hit at all)")
+    out.append("    all shots   %3d/%3d = %5.1f%%  [%4.1f-%4.1f]"
+               % (fa["fouls"], fa["shots"], fa["rate"] * 100,
+                  fa["lo"] * 100, fa["hi"] * 100))
+    out.append("      %d scratch, %d no contact"
+               % (fa["scratch"], fa["no_contact"]))
+    if fs["shots"]:
+        # r44: solo gets its own line because solo is the only mode where a
+        # foul is CHARGED. Practice has no clock, so a foul there costs
+        # nothing but the shot -- pooling the two would put a price on shots
+        # that were never billed.
+        out.append("    solo        %3d/%3d = %5.1f%%  [%4.1f-%4.1f]"
+                   % (fs["fouls"], fs["shots"], fs["rate"] * 100,
+                      fs["lo"] * 100, fs["hi"] * 100))
+        out.append("      cost %.0fs on the clock at %.0fs a foul"
+                   % (fs["time_lost_s"], SOLO_FOUL_PENALTY_S))
+    out.append("    the count and the seconds are facts at any sample size;")
+    out.append("    WHY you foul is not available from %d events." % fa["fouls"])
     return out
 
 
@@ -9694,6 +9739,71 @@ def selftest():
           f"3/4 -> {r93:.3f} [{lo93:.3f}-{hi93:.3f}] width {hi93 - lo93:.3f}; "
           f"6/35 hi {bhi93:.3f} vs 48/61 lo {wlo93:.3f}; "
           f"line: {band_line('x', 3, 4).strip()}")
+
+    # 94. r44: the rule and the report cannot disagree about what a foul is.
+    #
+    # `solo_apply_shot` charges the clock for a foul; `foul_summary` counts
+    # them afterwards. Two copies of the same test is how a rule and its report
+    # drift: add a third foul condition to the run state, and the report goes
+    # on counting two while nothing fails anywhere. So there is one predicate
+    # and this pins that BOTH sides route through it -- the matrix below is
+    # checked against the run state's own accounting, not against a second
+    # hand-written expectation, which would just be the duplication again.
+    agree94 = []
+    for cue_potted in (False, True):
+        for fc in (None, "red"):
+            want = shot_is_foul(cue_potted, fc)
+            run = solo_apply_shot(new_solo_run(), ["red"] if not cue_potted
+                                  else ["red", "cue"], cue_potted, fc, 3)
+            charged = run["fouls"] == 1 and run["penalty_s"] > 0
+            agree94.append(charged == want)
+    check("r44 one foul definition — the solo clock and the --stats report "
+          "route through a single predicate, so a foul that costs the player "
+          "ten seconds is the same event the report counts; potting the cue "
+          "or hitting nothing at all is a foul, hitting a ball cleanly is "
+          "not, and solo has no wrong-ball foul because every colour is legal",
+          all(agree94)
+          and shot_is_foul(True, "red") and shot_is_foul(False, None)
+          and shot_is_foul(True, None)
+          and not shot_is_foul(False, "red"),
+          f"rule/report agreement {sum(agree94)}/{len(agree94)}; "
+          f"(cue potted, hit red) -> {shot_is_foul(True, 'red')}, "
+          f"(clean, hit red) -> {shot_is_foul(False, 'red')}")
+
+    # 95. r44: what a foul COSTS, from rows the log already carried.
+    #
+    # Nothing new is written to disk for this -- `potted` and `first_contact`
+    # have been there since r15, which is why it reports on the whole history
+    # rather than from the day it shipped. The schema's own `foul` field is
+    # null on every human row and is deliberately NOT used (see r44 in
+    # KNOWN_ISSUES: the human log write happens ABOVE the game block, before
+    # on_rest has run, so at write time the foul has not been decided yet).
+    #
+    # The seconds are the reportable part. A 5% rate is easy to shrug at and
+    # seventy seconds off a clearance is not, and unlike a rate a count and a
+    # price are facts at any sample size.
+    rows95 = [{"mode": "solo", "potted": ["cue"], "first_contact": "red"},
+              {"mode": "solo", "potted": [], "first_contact": None},
+              {"mode": "solo", "potted": ["red"], "first_contact": "red"},
+              {"mode": "practice", "potted": ["cue"], "first_contact": "red"},
+              {"mode": "solo", "potted": ["cue"], "first_contact": None}]
+    all95 = foul_summary(rows95, penalty_s=10.0)
+    solo95 = foul_summary(rows95, penalty_s=10.0, mode="solo")
+    check("r44 foul cost — fouls are derived from fields the log already "
+          "carried, so the whole history reports rather than only shots "
+          "played since; solo is counted separately because solo is the only "
+          "mode where a foul is actually charged; and a shot that both pots "
+          "the cue and hits nothing counts once as a foul while appearing "
+          "under both causes",
+          all95["shots"] == 5 and all95["fouls"] == 4
+          and solo95["shots"] == 4 and solo95["fouls"] == 3
+          and abs(solo95["time_lost_s"] - 30.0) < 1e-9
+          and solo95["scratch"] == 2 and solo95["no_contact"] == 2
+          and solo95["lo"] <= solo95["rate"] <= solo95["hi"],
+          f"all {all95['fouls']}/{all95['shots']}, "
+          f"solo {solo95['fouls']}/{solo95['shots']} costing "
+          f"{solo95['time_lost_s']:.0f}s, causes "
+          f"{solo95['scratch']} scratch / {solo95['no_contact']} no contact")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

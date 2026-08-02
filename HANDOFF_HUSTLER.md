@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r43 — playable, validated, no known blocking bugs.
+**Status:** r44 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r43
+## Validation snapshot at r44
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 93 assertions |
+| `--selftest` | ALL PASS — 95 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -98,6 +98,30 @@ found, never a comparison. The report now says so in the output itself.
 **Still open after r43:** `foul` and `event` are null on all 244 rows including
 the newest schema-6 ones, so the writer never populates them on the human path.
 Flagged, not fixed — it was deliberately left out of r43's scope.
+
+## What r44 changed (as built)
+
+**`shot_is_foul(cue_potted, first_contact)` is the single foul predicate.**
+`solo_apply_shot` (which charges the clock) and `foul_summary` (which counts
+afterwards) both route through it. Assertion 94 checks the agreement against
+the run state's own accounting rather than a second hand-written expectation,
+because a hand-written one would just be the duplication again.
+
+**`foul_summary(rows, penalty_s, mode)`** derives fouls from `potted` and
+`first_contact` — fields the log has carried since r15 — so it reports the whole
+history. Solo is reported separately because solo is the only mode where a foul
+is charged. Measured at r44: 10/244 overall (7 scratch, 3 no contact), 7/140 in
+solo, costing 70s.
+
+**r43's `scratch_summary()` was deleted**, not left unused. The fouls block
+carries the scratch count as one of its two causes.
+
+**The schema's `foul` field is still not written and that is now documented as
+KNOWN_ISSUES #5,** with the ordering diagnosis: the human log write sits above
+the game block, so `on_rest` has not run and the foul is undecided at write
+time. Also recorded there: in a game mode the `event` field would be *stale*
+rather than absent — read from the code, never tested against a real row,
+because the log contains no game-mode rows.
 
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
@@ -242,7 +266,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 93 assertions, all
+  out) rather than the pygame wrapper around it. Currently 95 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -1155,10 +1179,10 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 >
 > > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **93 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **95 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.43.0.
+> > standalone, 36 primitives. `setup.py` says 0.44.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

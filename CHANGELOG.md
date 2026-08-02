@@ -5,7 +5,53 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r43 — the pot rate stops flattering you (current)
+## r44 — what a foul actually costs you (current)
+
+The log has carried `foul` as a schema field for a long time and it is null on
+every human row. Investigating that turned up two different things wearing one
+label, and only one of them was a bug.
+
+`event` is correct as it stands. It is passed `game.last_event`, and there is
+no `Game` object in solo or practice — no rules engine, so no event. `foul` is
+a real gap, but not the missing-argument kind: the human log write sits above
+the game block in the frame loop, so at write time `on_rest` has not run and
+the foul has not been decided yet. That is written up as KNOWN_ISSUES #5 rather
+than patched, because it only bites in game modes and the log holds no
+game-mode rows at all.
+
+None of which matters for solo, because **a solo foul was already derivable**.
+`solo_apply_shot` defines one as the cue ball potted or nothing hit at all, and
+both have been in every row since r15. So `--stats` now reports them, over the
+whole history rather than from the day this shipped:
+
+```
+FOULS  (cue ball potted, or nothing hit at all)
+  all shots    10/244 =   4.1%  [ 2.2- 7.4]
+    7 scratch, 3 no contact
+  solo          7/140 =   5.0%  [ 2.4-10.0]
+    cost 70s on the clock at 10s a foul
+```
+
+The seconds are the reason this was worth building. A 5% foul rate is easy to
+shrug at; seventy seconds off a clearance is not, and it was a cost with no way
+to see it. Solo is counted separately from practice because solo is the only
+mode where a foul is actually charged — practice has no clock, and pooling them
+would put a price on shots that were never billed.
+
+**One definition, two callers.** The clock charges a foul and the report counts
+one, and a second copy of that test is exactly how a rule and its report drift
+apart: add a third foul condition to the run state and the report would go on
+counting two, with nothing failing anywhere. `shot_is_foul()` is now the single
+predicate and assertion 94 pins that both sides route through it. Same
+treatment `TIP_FRAC` got at r42.
+
+r43's `scratch_summary()` was removed rather than left sitting unused — the
+fouls block reports the scratch count as one of the two causes, and the two
+sections would have been near-duplicates disagreeing on scope.
+
+---
+
+## r43 — the pot rate stops flattering you
 
 `--stats` has recovered the target of every shot since r36 and reported pot
 rates by cut angle, distance, power and spin. Two things were wrong with it,

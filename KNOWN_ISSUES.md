@@ -1,6 +1,6 @@
 # Known Issues
 
-The honest state of the open threads as of r36. None of these stop the game
+The honest state of the open threads as of r44. None of these stop the game
 being playable. Each is written up with its diagnosis so the next person to
 touch it (quite possibly future me) starts from the answer, not the symptom.
 
@@ -155,6 +155,44 @@ to prevent.
 So a ball called into the top-left and rattled into the middle still scores.
 The pocket-accurate figure will arrive as its own number alongside the existing
 one, with the shot-diagnosis work, so nothing that exists changes meaning.
+
+## 5. The schema's `foul` field is never filled in on a human shot
+
+**Symptom:** `foul` is null on every human row in the log — all 244 of them at
+r44, including rows written by the newest schema version. `event` is null too.
+
+**Diagnosis, and it is two different things wearing one label.**
+
+`event` is correct. It is passed `game.last_event`, and `game` is `None` in
+solo and practice — there is no rules engine running in those modes, so there
+is genuinely no event to record. Nothing to fix.
+
+`foul` is a real gap, but not one a missing argument would explain. The human
+log write sits **above** the game block in the frame loop, deliberately: it is
+not gated on `game`, because sandbox has no `Game` object and sandbox is where
+practice frames happen. That means at the moment the row is written,
+`game.on_rest(sim)` has not yet run for this shot — the foul has not been
+decided. Passing `game.fouls` there would read the *previous* shot's count, and
+`game.last_event` in a game mode would carry the previous shot's event rather
+than nothing at all. So the fix is not a one-liner; it needs either the record
+back-patched after `on_rest`, or the write moved below the game block without
+breaking the sandbox path it was put above for.
+
+**Why it is not urgent.** In solo, a foul is fully derivable from fields the log
+already carries — `solo_apply_shot` defines one as the cue ball potted or
+nothing hit at all, and both are recorded. r44's `foul_summary()` reports them
+from history rather than from the day it shipped. The gap only bites in game
+modes 1 and 2, where a foul depends on rules that cannot be reconstructed from
+the row, and the log currently holds **no game-mode rows at all** (140 solo,
+104 practice).
+
+**What to do when it matters:** the first time a frame is played against an
+opponent with logging on, this becomes real. Fix it then, and note that the
+`event` field in that mode is not merely absent but *stale*, which is worse —
+that conclusion is read from the code and has never been tested against a real
+game-mode row, because there aren't any.
+
+---
 
 ## Recently fixed
 

@@ -228,6 +228,17 @@ Collected from real time lost. Each of these cost somebody a session.
   `panel_tab == 3` for years. Adding the Spin tab at r30 moved Custom to 4, and
   mouse-table ball placement would have started firing on the wrong tab with
   every automated check still green. It now reads `TAB_LABELS.index("Cust")`.
+- **One rule, one definition — especially when a report counts what a rule
+  charges.** At r44 the solo clock's foul test and the `--stats` foul count
+  would have been two copies of the same condition. Add a third foul case later
+  and the report goes on counting two, with nothing failing anywhere. Share the
+  predicate and assert both callers route through it.
+- **Check WHERE in the frame loop a value is available before blaming the
+  caller.** `foul` looked like a missing argument at the human log site. It is
+  an ordering problem: the write happens above the game block, before `on_rest`
+  has decided anything. A one-line "fix" there would have logged the previous
+  shot's state and looked entirely correct.
+
 - **Run the tool before declaring the data can't answer the question.** At r43
   the raw log showed `cut_deg`, `t_cue` and `d_tp` null on all 244 rows, and a
   whole brief was written around rebuilding the geometry — when `--stats` had
