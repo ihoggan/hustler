@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r42 — playable, validated, no known blocking bugs.
+**Status:** r43 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r42
+## Validation snapshot at r43
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 91 assertions |
+| `--selftest` | ALL PASS — 93 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -68,6 +68,36 @@ deliberately promises a clean row only when the lines leave room for one.
 **Headroom after the change** (SpecBlock bottom / window height): 764/1350,
 634/1080, 509/768, 509/548. The Shot tab remains the binding constraint at 25px
 (1920x1080) and 27px (1144x548), unchanged by this pass.
+
+## What r43 changed (as built)
+
+**Two denominators, because there is no single honest one.** `attempt_population()`
+splits the log into `confirmed` (a target pocket resolved), `unresolved_miss`
+(potted nothing and the line pointed at no pocket), `unresolved_other` (potted
+something but no pocket resolved) and `notrail` (too old). `--stats` prints the
+pot rate over `confirmed` and over `confirmed + unresolved_miss`, and the gap
+between them is the uncertainty. Measured on 244 rows: 56.2% against 50.9%.
+
+**Every rate carries its 95% Wilson interval** via `rate_ci()` and `band_line()`.
+`wilson_interval()` had been unused by the player-facing report since r15.
+
+**The spin table is labelled confounded, not corrected.** It measures which
+shots get which spin, not what spin does. Fixing it needs stratification by cut
+angle and distance within each spin family; at ~200 rows that leaves cells of
+five. r18's lesson was that a confound needs a controlled comparison, not a
+caveat — so the caveat is explicitly a placeholder for one.
+
+**A scratch section that says almost nothing on purpose:** 7 in 244 = 2.9%
+[1.4-5.8], and no split by power, angle or spin at that count.
+
+**The provenance trap, worth not rediscovering:** `observed` rows are pots by
+construction (the drop pocket only exists when the ball dropped) and `inferred`
+rows are misses by construction. The counts are a census of how the target was
+found, never a comparison. The report now says so in the output itself.
+
+**Still open after r43:** `foul` and `event` are null on all 244 rows including
+the newest schema-6 ones, so the writer never populates them on the human path.
+Flagged, not fixed — it was deliberately left out of r43's scope.
 
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
@@ -212,7 +242,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 91 assertions, all
+  out) rather than the pygame wrapper around it. Currently 93 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -1125,10 +1155,10 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 >
 > > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **91 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **93 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.42.0.
+> > standalone, 36 primitives. `setup.py` says 0.43.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

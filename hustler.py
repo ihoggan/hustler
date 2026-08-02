@@ -2203,6 +2203,99 @@ def format_clock(seconds):
     return "%d:%04.1f" % (m, seconds - m * 60)
 
 
+def rate_ci(made, n, z=1.96):
+    """r43: a rate with its 95% Wilson interval, as (rate, lo, hi). Pure.
+
+    A thin wrapper on wilson_interval, and it exists to make the interval the
+    DEFAULT way a rate leaves this module rather than an optional extra. Every
+    band in --stats printed a bare percentage until r43: `6/35 = 17.1%` and
+    `3/4 = 75.0%` carried identical authority on the page, and one of those is
+    a finding while the other is four shots. wilson_interval has been sitting
+    in this file unused by the player-facing report since r15.
+    """
+    if n <= 0:
+        return (0.0, 0.0, 1.0)
+    lo, hi = wilson_interval(made, n, z)
+    return (made / n, lo, hi)
+
+
+def band_line(label, made, n, width=12):
+    """r43: one printable band row, rate plus interval. Pure.
+
+    The interval is printed for every band without exception, including the
+    comfortable ones. Showing it only on small samples would turn its presence
+    into a warning label, and the reader would learn to skip the rows that
+    have one -- which are precisely the rows that need reading carefully.
+    """
+    rate, lo, hi = rate_ci(made, n)
+    return ("    %-*s %3d/%3d = %5.1f%%  [%4.1f-%4.1f]"
+            % (width, label, made, n, rate * 100, lo * 100, hi * 100))
+
+
+def attempt_population(rows, pockets, r_cue, r_obj):
+    """r43: split a shot log into the populations a pot rate can honestly be
+    taken over. Pure -- rows in, dict of row-lists out.
+
+    THIS EXISTS BECAUSE THE DENOMINATOR WAS QUIETLY FLATTERING. `shot_target`
+    resolves a target pocket from the drop pocket when the ball went in, and
+    from the departure line when it did not -- and the line branch REFUSES
+    when it passes further than POCKET_AIM_TOL from every pocket. Refusing is
+    correct: a safety is not a failed pot, and r36 built that deliberately.
+
+    But the refusal is triggered by MISSING BADLY, and the rows it refused
+    were then dropped from the rate entirely. Measured on a 244-row log: 27
+    rows resolved no pocket and 22 of them potted nothing at all. Counting
+    those as attempts moves the overall rate from 56.2% to 50.9%, and it will
+    not move it evenly -- the exclusion bites hardest in exactly the bands
+    where the player misses worst, so the wide cuts and the long pots were the
+    most flattered figures in the report.
+
+    The answer is NOT to pick one denominator. Both are defensible and they
+    bound the truth between them: `confirmed` is every shot we can show was a
+    pot attempt, `unresolved_miss` is every shot that potted nothing and whose
+    line pointed nowhere near a pocket -- some of those are safeties and some
+    are shots hit so badly they no longer look like attempts, and from the log
+    alone the two are genuinely indistinguishable. So both rates are reported
+    and the gap between them is the honest measure of the uncertainty.
+
+    `unresolved_other` is the small awkward set: no pocket resolved, yet
+    something went down. A fluke, a cannon that dropped a ball, or a plant.
+    Counted as neither, listed so it cannot be forgotten.
+    """
+    out = {"confirmed": [], "unresolved_miss": [], "unresolved_other": [],
+           "notrail": []}
+    for r in rows:
+        t = shot_target(r, pockets, r_cue, r_obj)
+        if t is None:
+            out["notrail"].append(r)
+            continue
+        if t["pocket"] is None:
+            potted_any = [p for p in (r.get("potted") or []) if p != "cue"]
+            key = "unresolved_other" if potted_any else "unresolved_miss"
+            out[key].append(r)
+            continue
+        out["confirmed"].append((r, t))
+    return out
+
+
+def scratch_summary(rows):
+    """r43: how often the cue ball is potted, and nothing more than that. Pure.
+
+    Returns (scratches, shots, rate, lo, hi). The restraint is the feature.
+    Seven scratches in 244 shots supports "you rarely scratch" and supports no
+    statement whatever about WHY -- not by power, not by cut angle, not by
+    spin. Splitting seven events three ways produces cells of one and two, and
+    a table of those would read as an explanation. That is the r19-r21 pattern
+    exactly: five confident mechanisms, each argued from noise, each dead on
+    contact with data. The interval is printed so the reader can see for
+    themselves how little is being claimed.
+    """
+    n = len(rows)
+    s = sum(1 for r in rows if "cue" in (r.get("potted") or []))
+    rate, lo, hi = rate_ci(s, n)
+    return (s, n, rate, lo, hi)
+
+
 def summarise_shots(rows, x1, y1):
     """r33.2: turn a shot log into the numbers a player actually wants. Pure --
     rows in, list of printable lines out, no file I/O and no pygame.
@@ -2318,16 +2411,11 @@ def summarise_derived(rows, x1, y1):
     quoted for a year before anyone asks how it was arrived at."""
     pockets = [c for c, _ in capture_points()]
     r_cue, r_obj = CFG["CUE_R_M"], ball_r()
-    prov = {"called": 0, "observed": 0, "inferred": 0, "none": 0, "notrail": 0}
+    pop = attempt_population(rows, pockets, r_cue, r_obj)
+    prov = {"called": 0, "observed": 0, "inferred": 0}
     recs = []
-    for r in rows:
-        t = shot_target(r, pockets, r_cue, r_obj)
-        if t is None:
-            prov["notrail"] += 1
-            continue
-        prov[t["how"]] += 1
-        if t["pocket"] is None:
-            continue
+    for r, t in pop["confirmed"]:
+        prov[t["how"]] = prov.get(t["how"], 0) + 1
         g = pocket_geometry(t["obj_pos"], pockets[t["pocket"]], x1, y1)
         if not g:
             continue
@@ -2339,17 +2427,41 @@ def summarise_derived(rows, x1, y1):
         if not sel:
             return None
         m = sum(1 for _r, _t, _g, made in sel if made)
-        return "    %-12s %2d/%2d = %5.1f%%" % (label, m, len(sel),
-                                                100.0 * m / len(sel))
+        return band_line(label, m, len(sel))
 
+    made_n = sum(1 for _r, _t, _g, made in recs if made)
+    n_um = len(pop["unresolved_miss"])
     out = ["", "  ALL SHOTS, target recovered from the log (r36)",
            "    %d called, %d observed from the drop pocket, %d inferred from "
            "the line," % (prov["called"], prov["observed"], prov["inferred"]),
-           "    %d not a pot attempt, %d too old to reconstruct"
-           % (prov["none"], prov["notrail"])]
-    made_n = sum(1 for _r, _t, _g, made in recs if made)
-    out.append("    overall  %d/%d = %.1f%%"
-               % (made_n, len(recs), 100.0 * made_n / len(recs)))
+           "    %d potted nothing and pointed nowhere near a pocket, "
+           "%d potted something but" % (n_um, len(pop["unresolved_other"])),
+           "    resolved no pocket, %d too old to reconstruct"
+           % len(pop["notrail"]),
+           "",
+           # r43: the provenance counts are a CENSUS, never a comparison. The
+           # drop pocket only exists when the ball dropped, so `observed` rows
+           # are 100% pots by construction and `inferred` rows are 0% by
+           # construction -- the label IS the outcome. Splitting the rate by
+           # provenance would produce two spectacular and entirely empty
+           # numbers, so this says so rather than inviting anyone to try.
+           "    (observed rows are pots by construction and inferred rows are "
+           "misses;",
+           "     the counts are a census of HOW the target was found, not a "
+           "comparison)"]
+    strict = band_line("confirmed", made_n, len(recs), width=10)
+    incl = band_line("inclusive", made_n, len(recs) + n_um, width=10)
+    out += ["",
+            # r43: two denominators, deliberately. See attempt_population --
+            # the excluded rows are excluded BECAUSE they were missed badly,
+            # so the strict figure flatters exactly the shots that need work.
+            "  POT RATE -- the truth is between these two lines",
+            strict.replace("    ", "  ", 1),
+            incl.replace("    ", "  ", 1),
+            "    confirmed = shots we can show were pot attempts",
+            "    inclusive = plus the %d that potted nothing and may have been"
+            % n_um,
+            "                wild misses rather than safeties"]
     out.append("")
     out.append("  by APPROACH ANGLE off the pocket mouth")
     for lo, hi in ((0, 10), (10, 20), (20, 30), (30, 90)):
@@ -2379,10 +2491,30 @@ def summarise_derived(rows, x1, y1):
     if bands:
         out.append("")
         out.append("  by SPIN used")
+        # r43: THIS TABLE IS CONFOUNDED AND SAYING SO IS THE ONLY HONEST
+        # OPTION AT THIS N. It does not measure what spin does to a shot; it
+        # measures which shots the player chooses each spin for. Centre ball
+        # gets the awkward ones, top-right gets the ones already lined up.
+        # Separating the two needs the rate stratified by cut angle AND
+        # distance WITHIN each spin family, which at a couple of hundred rows
+        # leaves cells of five and six -- noise with a percentage sign on it.
+        # This is the r18 skill/strategy confound in a new costume, and r18's
+        # lesson was that the fix is a controlled comparison, not a caveat.
+        # Until there is one, the caveat is what the reader gets.
+        out.append("    (confounded: this reflects WHICH shots you use each")
+        out.append("     spin for, not what the spin does -- see the intervals)")
         for key in sorted(bands, key=lambda k: -bands[k][1]):
             hit, tot = bands[key]
-            out.append("    %-14s %2d/%2d = %5.1f%%"
-                       % (key, hit, tot, 100.0 * hit / tot))
+            out.append(band_line(key, hit, tot, width=14))
+    s, n_all, s_rate, s_lo, s_hi = scratch_summary(rows)
+    out.append("")
+    out.append("  SCRATCHES")
+    out.append("    %d in %d shots = %.1f%%  [%.1f-%.1f]"
+               % (s, n_all, s_rate * 100, s_lo * 100, s_hi * 100))
+    out.append("    no reading of WHY is available at this count -- %d events"
+               % s)
+    out.append("    cannot be split by power, angle or spin without inventing")
+    out.append("    a pattern. Play more and ask again.")
     return out
 
 
@@ -9481,6 +9613,87 @@ def selftest():
           f"4 lines at 1.5x -> {roomy91}px, 7 lines -> {busy91}px; "
           f"call row inside {sum(inside91)}/{len(inside91)}, "
           f"clean {sum(clean91)}/{len(clean91)}")
+
+    # 92. r43: a badly missed shot is not allowed to vanish from the rate.
+    #
+    # `shot_target` resolves the pocket from the drop when the ball went in and
+    # from the departure line when it did not, and the line branch refuses when
+    # it points nowhere near a pocket. The refusal is right -- a safety is not a
+    # failed pot. But the refusal is TRIGGERED BY MISSING BADLY, and those rows
+    # were then dropped from the denominator entirely, which flatters exactly
+    # the shots that need work. On the real 244-row log that was 22 rows and
+    # 5.3 points of pot rate.
+    #
+    # The fix is not to pick a denominator -- from the log alone a wild miss and
+    # a safety are genuinely indistinguishable. Both are reported and the gap
+    # between them is the honest uncertainty. What this pins is that no row can
+    # fall out of every bucket on its way through.
+    pk92 = [c for c, _ in capture_points()]
+    rc92, ro92 = CFG["CUE_R_M"], ball_r()
+
+    def _row92(**kw):
+        base = {"layout": [{"id": 1, "c": "red", "x": 0.6, "y": 0.4}],
+                "cue_trail": [{"kind": "ball", "id": 1}],
+                "cue_pos": [0.3, 0.4], "aim_deg": 90.0, "potted": [],
+                "potted_ids": [], "intent": "none"}
+        base.update(kw)
+        return base
+    # a pot: the drop pocket is recorded, so the target is ground truth
+    pot92 = _row92(drop_pockets=[{"id": 1, "pocket": 0}], potted=["red"],
+                   potted_ids=[1])
+    # a wild miss: nothing down, line points up the table at no pocket
+    wild92 = _row92(aim_deg=90.0)
+    # potted something anyway, but no pocket resolves for the struck ball
+    odd92 = _row92(aim_deg=90.0, potted=["yellow"], potted_ids=[2])
+    # too old: no trail and no nomination, nothing to reconstruct from
+    old92 = _row92(cue_trail=[], called_ball=None)
+    pop92 = attempt_population([pot92, wild92, odd92, old92], pk92, rc92, ro92)
+    total92 = sum(len(v) for v in pop92.values())
+    check("r43 attempt population — a shot missed so badly that its line "
+          "points at no pocket is still an attempt, and is reported rather "
+          "than dropped from the denominator; every row lands in exactly one "
+          "bucket, and the confirmed and inclusive rates bracket the truth "
+          "instead of one of them being chosen and flattering the bands where "
+          "the player misses worst",
+          total92 == 4
+          and len(pop92["confirmed"]) == 1
+          and len(pop92["unresolved_miss"]) == 1
+          and len(pop92["unresolved_other"]) == 1
+          and len(pop92["notrail"]) == 1
+          and pop92["unresolved_miss"][0] is wild92
+          and pop92["unresolved_other"][0] is odd92,
+          f"confirmed {len(pop92['confirmed'])}, "
+          f"unresolved_miss {len(pop92['unresolved_miss'])}, "
+          f"unresolved_other {len(pop92['unresolved_other'])}, "
+          f"notrail {len(pop92['notrail'])}, total {total92}/4")
+
+    # 93. r43: every rate carries its interval, and small ones disqualify
+    # themselves.
+    #
+    # wilson_interval has been in this file since r15 and the player-facing
+    # report never used it, so `6/35 = 17.1%` and `3/4 = 75.0%` printed with
+    # identical authority. The second is four shots. The property worth pinning
+    # is not the arithmetic (r15 owns that) but that the interval is WIDE
+    # ENOUGH TO BE USEFUL AS A WARNING: a 3-of-4 band must not be separable
+    # from an even-money one, or the reader will go on drawing conclusions from
+    # four shots and the interval will just be decoration.
+    r93, lo93, hi93 = rate_ci(3, 4)
+    _, blo93, bhi93 = rate_ci(6, 35)
+    _, wlo93, whi93 = rate_ci(48, 61)
+    check("r43 rates carry intervals — every band prints its 95% Wilson "
+          "bounds, not just the comfortable ones, and a three-from-four band "
+          "comes out so wide it cannot be told apart from a coin flip, which "
+          "is the whole point of printing it; a real finding like the wide-cut "
+          "band stays clear of the good one",
+          lo93 <= r93 <= hi93 and abs(r93 - 0.75) < 1e-9
+          and lo93 < 0.5 < hi93
+          and (hi93 - lo93) > 0.6
+          and bhi93 < wlo93
+          and rate_ci(0, 0) == (0.0, 0.0, 1.0)
+          and "[" in band_line("x", 3, 4) and "75.0%" in band_line("x", 3, 4),
+          f"3/4 -> {r93:.3f} [{lo93:.3f}-{hi93:.3f}] width {hi93 - lo93:.3f}; "
+          f"6/35 hi {bhi93:.3f} vs 48/61 lo {wlo93:.3f}; "
+          f"line: {band_line('x', 3, 4).strip()}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

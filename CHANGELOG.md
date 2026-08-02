@@ -5,7 +5,54 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r42 — the constants get a reference, and the strip gets its air back (current)
+## r43 — the pot rate stops flattering you (current)
+
+`--stats` has recovered the target of every shot since r36 and reported pot
+rates by cut angle, distance, power and spin. Two things were wrong with it,
+and one of them was quietly changing the answer.
+
+**The denominator dropped the worst shots.** `shot_target` resolves the pocket
+from the drop when the ball goes in, and from the departure line when it does
+not — and the line branch refuses when it points further than 50mm from every
+pocket. Refusing is correct, and r36 built it deliberately: a safety is not a
+failed pot. But the refusal is triggered by *missing badly*, and the refused
+rows were then dropped from the rate altogether. On the 244-row log that was 27
+rows, 22 of which potted nothing at all. The overall figure moves from 56.2% to
+50.9% when they are counted — and it will not move evenly, because the
+exclusion bites hardest in exactly the bands where the player misses worst.
+
+There is no correct denominator to pick here. From the log alone a wild miss
+and a deliberate safety are genuinely indistinguishable. So both are now
+reported, **confirmed** and **inclusive**, and the gap between them is the
+honest measure of what is not known.
+
+**Nothing carried a confidence interval.** `wilson_interval()` has been in the
+file since r15 and the player-facing report never used it, so `6/35 = 17.1%`
+and `3/4 = 75.0%` printed with identical authority on the same page. Every band
+now prints its 95% Wilson bounds — including the comfortable ones, because
+showing the interval only on small samples turns it into a warning label and
+teaches the reader to skip precisely the rows that need care.
+
+That change does most of the work on a third problem. The spin table does not
+measure what spin does to a shot; it measures which shots the player reaches
+for each spin on. Centre ball gets the awkward ones. Separating the two needs
+the rate stratified by cut angle *and* distance within each spin family, which
+at a couple of hundred rows leaves cells of five and six — the r18 confound in
+a new costume. It is labelled as confounded rather than corrected, and the
+intervals now make `left 3/4 = 75.0% [30.1-95.4]` disqualify itself on sight.
+
+A scratch section was added and deliberately says almost nothing: seven events
+in 244 shots supports "you rarely scratch" and no statement whatever about why.
+
+One more thing worth recording, because it is a trap for anyone reading the
+provenance line: the drop pocket only exists when the ball dropped, so
+`observed` rows are 100% pots by construction and `inferred` rows are 0% by
+construction. The label *is* the outcome. Those counts are a census of how the
+target was found, never a comparison, and the report now says so.
+
+---
+
+## r42 — the constants get a reference, and the strip gets its air back
 
 Four numbers had been sitting in the persistent status strip since r11:
 cushion elasticity, roll deceleration, ball size, cue size. They were honest

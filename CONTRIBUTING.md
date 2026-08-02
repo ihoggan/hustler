@@ -228,6 +228,24 @@ Collected from real time lost. Each of these cost somebody a session.
   `panel_tab == 3` for years. Adding the Spin tab at r30 moved Custom to 4, and
   mouse-table ball placement would have started firing on the wrong tab with
   every automated check still green. It now reads `TAB_LABELS.index("Cust")`.
+- **Run the tool before declaring the data can't answer the question.** At r43
+  the raw log showed `cut_deg`, `t_cue` and `d_tp` null on all 244 rows, and a
+  whole brief was written around rebuilding the geometry — when `--stats` had
+  been recovering it at read time since r36 and already printed the answer. One
+  command would have settled it. Inspecting the artefact is not the same as
+  running the reader.
+- **An exclusion rule triggered by failure will flatter your numbers.** The pot
+  rate dropped shots whose line pointed nowhere near a pocket, which is the
+  right call for safeties and the wrong one for shots missed so badly they
+  stopped looking like attempts. Whenever a row is filtered out, ask what makes
+  a row get filtered — if the answer correlates with the outcome, report both
+  denominators rather than choosing one.
+- **A provenance label can BE the outcome.** `observed` targets come from the
+  drop pocket, which only exists when the ball dropped; `inferred` targets come
+  from the line, which is only consulted when it did not. Splitting a rate by
+  those labels yields 100% and 0% and means nothing. Check whether a category
+  is caused by the thing you are measuring before you group by it.
+
 - **A fixed pixel inside a scaled layout is a bug waiting for a bigger screen.**
   This has now been found three times: r41's button rects, and at r42 both the
   status strip's `+ 1` leading and the call indicator's `STATUS_STRIP_H - 14`
