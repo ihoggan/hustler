@@ -94,6 +94,17 @@ against — it is the most likely route to a sixth bug.
 
 ### Larger features under discussion
 
+**League mode — next, and unscoped by choice.** Single player against a set of
+AI opponents across a fixture list, results feeding a standings table
+(played/won/lost/points) and a final ranking. This suits what the project is
+actually for: the human plays every fixture rather than watching AI play. The
+Grannie feeds in — a whitewash, where the winner clears their colours and the
+black while the loser pots nothing. Detection is a small check at frame end;
+the visual payoff the Maker wants (a granny on the win screen with big text) is
+the part that touches the no-asset-files rule and needs a decision, not an
+assumption. A code-drawn cartoon keeps the constraint; a photograph breaks it.
+
+
 > **Cue-ball strike point and tip size (r30) is done.** The SpinPad had the
 > power slider's pre-r29 defect to within a rounding error — 0.028 of spin per
 > pixel against a two-decimal readout, and `nudge_spin()` did not snap. It now
@@ -274,10 +285,53 @@ must not offer one.
 > ticks every 10 with every third labelled, and a 0.01 snap shared with the
 > nudge buttons. All three shot controls now reach the precision they display.
 
-**Next session, in order.** (1) Shot diagnosis and
-scratch diagnosis — "Human Learning", now unblocked: the leave is in the log.
-(2) Profile writing, then a ranking display carrying its Wilson bounds.
-(3) The style fit from shot selection. (4) Tournament mode.
+> **Shot and scratch diagnosis (r43/r44) is done, and it mostly consisted of
+> reading data that was already there.** No new field was written for either.
+> r43 found the pot rate was flattering the player: `shot_target` refuses to
+> name a pocket when the departure line points nowhere near one, which is right
+> for a safety and wrong for a shot missed so badly it stopped looking like an
+> attempt — 22 such rows were being dropped from the denominator, worth 5.3
+> points. Both denominators are now reported and the gap between them is the
+> uncertainty. Every band grew its 95% Wilson interval, which `wilson_interval()`
+> had been able to supply since r15 without the player-facing report ever asking.
+> r44 added the foul section: fouls are derived from `potted` and
+> `first_contact`, so the whole history reports, and solo is counted separately
+> because solo is the only mode where a foul is charged.
+
+> **Sessions (r45) are done.** Human rows carry `session` and `t`; schema 7;
+> `--stats` gains a BY SESSION block. A session is one run of the program, not
+> one day. The guard matters more than the feature: the study JSONL is
+> byte-identical for a fixed seed, which is how r17 proved three optimisations
+> behaviour-preserving, and a timestamp in the shared record builder would have
+> retired that technique without failing a test. Assertion 96 fails if the
+> fields ever move off the human path.
+
+**Next session: LEAGUE MODE, and it starts with a conversation, not a design.**
+The Maker has points they want to discuss. It has been offered three times as a
+side option and they have never yet set out their own requirements, so the
+first job is to hear them.
+
+What is known so far: the human plays every fixture against a ladder of AI
+opponents, results feed a standings table, and everyone is ranked at the end.
+The Grannie belongs here — and its visual payoff, a granny on the win screen,
+is the one part that touches the no-asset-files rule, so it needs an explicit
+decision rather than an assumption.
+
+Most of the substrate exists. A ladder of opponents is a list of
+`(aim_jitter, threshold, greed, caution)` tuples, and r18 made skill a clean
+independent dial. `rate_ci()`, `attempt_population()` and `sessions()` give a
+standings table honest uncertainty for free. The old blocker — "standings only
+make sense once the turn-handover bug is fixed" — was cleared at r23 and is
+covered by selftest 52, with r28's play-through test driving a whole frame.
+
+Two questions to settle early: where league state lives, since a league spans
+sessions and needs to survive a restart; and whether AI-vs-AI fixtures are
+simulated when the human is not playing, or whether only the human's results
+drive the table. The second changes the whole shape of the feature.
+
+Still queued behind it: profile writing and a ranking display carrying its
+Wilson bounds (which league mode may absorb), the style fit from shot
+selection, and tournament mode.
 
 ### Deferred
 
