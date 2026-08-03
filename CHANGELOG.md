@@ -5,7 +5,59 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r44 — what a foul actually costs you (current)
+## r45 — the log learns what a sitting is (current)
+
+Everything the report said was a lifetime aggregate, which cannot tell a bad
+Tuesday from a decline. Worse, the before-and-after comparison run at r44 was
+only possible because the *commit history* marked where one batch of play
+ended and the next began — read from the log alone, nobody could reproduce it.
+There was no timestamp and no session marker anywhere in the schema.
+
+So human rows now carry `session` (fixed once when the game starts) and `t`
+(the shot's clock, UTC). Schema 7. `--stats` grows a BY SESSION block listing
+the last ten sittings.
+
+**A session is one run of the program, not one day.** Two sittings in an
+evening are two sessions; leaving the game open overnight is one. That is the
+only boundary the game can actually observe, and documenting it honestly beats
+a heuristic that guesses at wall-clock gaps and is wrong on the days it counts.
+
+### The guard matters more than the feature
+
+A study run with a fixed seed writes a byte-identical JSONL every time. That is
+not a curiosity — it is how r17 proved three separate optimisations
+behaviour-preserving, by md5-diffing the study log before and after. **A
+timestamp in the shared record builder would have ended that silently:** no
+test fails, nothing goes red, the diff simply stops meaning anything, and it
+gets discovered months later by whoever next needs to prove a change safe.
+
+Session and clock are therefore written on the human path alone, and assertion
+96 exists solely to fail if they ever move — it checks both that
+`make_shot_record` stays clean and that exactly one site in the file assigns
+them. Verified empirically too: two fixed-seed study runs still produce
+identical bytes, and the only field that changed against the pre-r45 baseline
+is `schema`, 6 to 7.
+
+### What was deliberately not done
+
+**The 377 existing rows were not backfilled.** The commit boundaries would have
+allowed four plausible chunks to be reconstructed, and that is exactly the
+problem: a guess written into a tracked data file cannot be told from a
+measurement a year later, and this file is the project's only record of how the
+game was really played. They sit in one honest "before sessions were recorded"
+bucket.
+
+**No trend line and no verdict.** With a handful of sittings an arrow would be
+noise with a direction painted on it, which is what r43's intervals were built
+to prevent. The sittings are listed; the reading is the player's.
+
+Assertion 39 needed relaxing from `STUDY_SCHEMA == 6` to `>= 6`. The reader was
+always keyed on field presence rather than a version number, so only the
+assertion pinned the value — and assertion 47 already used `>=`.
+
+---
+
+## r44 — what a foul actually costs you
 
 The log has carried `foul` as a schema field for a long time and it is null on
 every human row. Investigating that turned up two different things wearing one

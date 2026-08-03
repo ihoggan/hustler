@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r44 — playable, validated, no known blocking bugs.
+**Status:** r45 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r44
+## Validation snapshot at r45
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 95 assertions |
+| `--selftest` | ALL PASS — 97 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -122,6 +122,33 @@ the game block, so `on_rest` has not run and the foul is undecided at write
 time. Also recorded there: in a game mode the `event` field would be *stale*
 rather than absent — read from the code, never tested against a real row,
 because the log contains no game-mode rows.
+
+## What r45 changed (as built)
+
+**Human rows carry `session` and `t`.** `session` is fixed once at the top of
+`run_gui` (one run of the program = one session, NOT one day); `t` is the
+shot's UTC clock via `stamp_utc()`. Schema 7. Written in `log_human_shot` and
+nowhere else.
+
+**`sessions(rows, limit)`** groups them oldest-first with a single `None` bucket
+for everything predating r45; **`session_span_s(rows)`** returns the sitting's
+duration, or None below two stamped rows. `--stats` gains a BY SESSION block
+(last ten), which stays hidden while every row is in the unknown bucket.
+
+**Assertion 96 is the important one.** The study log must stay byte-identical
+for a fixed seed — that md5 diff is how r17 proved three optimisations safe. It
+checks `make_shot_record` carries neither field and that exactly one site in
+the file assigns them. Verified empirically as well: two fixed-seed runs give
+identical bytes, and the only field differing from the pre-r45 baseline is
+`schema` (6 → 7).
+
+**Not done, deliberately:** no backfill of the 377 existing rows from commit
+boundaries, and no trend line. Both are written up in the changelog with the
+reasoning.
+
+**Assertion 39 relaxed** from `STUDY_SCHEMA == 6` to `>= 6`. `break_shot()` was
+always keyed on field presence, so only the assertion pinned the number, and
+assertion 47 already used `>=`.
 
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
@@ -266,7 +293,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 95 assertions, all
+  out) rather than the pygame wrapper around it. Currently 97 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -1179,10 +1206,10 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 >
 > > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **95 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **97 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.44.0.
+> > standalone, 36 primitives. `setup.py` says 0.45.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

@@ -228,6 +228,22 @@ Collected from real time lost. Each of these cost somebody a session.
   `panel_tab == 3` for years. Adding the Spin tab at r30 moved Custom to 4, and
   mouse-table ball placement would have started firing on the wrong tab with
   every automated check still green. It now reads `TAB_LABELS.index("Cust")`.
+- **Before adding a field to a shared record, ask what depends on that record
+  being reproducible.** The study JSONL is byte-identical for a fixed seed, and
+  that property is load-bearing: r17 proved three optimisations
+  behaviour-preserving by md5-diffing it. A wall-clock stamp in
+  `make_shot_record` would have retired the technique without failing a single
+  test. If a field cannot be reproduced, it belongs on the path that needs it,
+  not in the shared builder — and write the assertion that fails if it moves.
+- **A guess in a data file outlives the person who made it.** The 377 rows
+  predating sessions could have been chopped into plausible chunks using commit
+  boundaries. Nobody reading the file a year later could tell that from real
+  session data. One honest unknown bucket beats four confident fictions.
+- **An assertion that inspects source can match its own text.** Assertion 96
+  counts assignment sites by reading the module source, and failed first run
+  with 3 instead of 1 because the assertion's own literals were in the count.
+  Strip the selftest's source before counting.
+
 - **One rule, one definition — especially when a report counts what a rule
   charges.** At r44 the solo clock's foul test and the `--stats` foul count
   would have been two copies of the same condition. Add a third foul case later

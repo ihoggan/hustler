@@ -108,12 +108,14 @@ Command line:
 
 import argparse
 import functools
+import inspect
 import json
 import math
 import multiprocessing
 import os
 import random
 import sys
+import time
 import types
 
 # ----------------------------------------------------------------------------
@@ -1978,7 +1980,7 @@ def default_ais(rng=None):
                    caution=0.70, rng=rng)]
 
 
-STUDY_SCHEMA = 6   # bump when the JSONL record shape changes, so old study
+STUDY_SCHEMA = 7   # bump when the JSONL record shape changes, so old study
                    # files can never be silently misread by a newer analysis.
                    # 2 (r19): added cut_deg / t_cue / d_tp -- the pot geometry.
 
@@ -2329,6 +2331,60 @@ def foul_summary(rows, penalty_s=SOLO_FOUL_PENALTY_S, mode=None):
             "time_lost_s": fouls * float(penalty_s)}
 
 
+def stamp_utc(epoch_s):
+    """r45: one timestamp format, UTC, sortable as a plain string. Pure.
+
+    ISO-ish and lexicographically ordered, so sessions sort correctly without
+    parsing anything. UTC rather than local time deliberately: the log is
+    committed to a public repo and read on other machines, and a local stamp
+    silently means something different depending on who is reading it.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch_s))
+
+
+def session_span_s(rows):
+    """r45: seconds between the first and last stamped shot in a group. Pure.
+
+    Returns None when fewer than two rows carry a stamp -- a single shot has no
+    duration, and saying 0 would read as "played for no time" rather than "not
+    enough to say".
+    """
+    ts = sorted(r["t"] for r in rows if r.get("t"))
+    if len(ts) < 2:
+        return None
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    try:
+        return (time.mktime(time.strptime(ts[-1], fmt))
+                - time.mktime(time.strptime(ts[0], fmt)))
+    except ValueError:
+        return None
+
+
+def sessions(rows, limit=None):
+    """r45: split the log into sittings. Pure -- rows in, [(key, rows)] out,
+    oldest first.
+
+    A session is ONE RUN OF THE PROGRAM, which is the only boundary the game
+    can actually observe. It is not "a day" and must not be described as one:
+    two sittings in an evening are two sessions, and leaving the game open
+    overnight is one. Documenting that honestly is cheaper than a heuristic
+    that guesses at wall-clock gaps and is wrong on the days it matters.
+
+    Rows written before r45 carry no session at all, and they are NOT split up
+    or guessed at. They collect in a single `None` bucket sorted first. The
+    commit history would have allowed four plausible chunks to be reconstructed
+    for the 377 rows that already existed, and that was deliberately not done:
+    a guess written into a tracked data file is indistinguishable from a
+    measurement a year later, and this file is the project's only record of how
+    the game was actually played.
+    """
+    groups = {}
+    for r in rows:
+        groups.setdefault(r.get("session"), []).append(r)
+    out = sorted(groups.items(), key=lambda kv: (kv[0] is not None, kv[0] or ""))
+    return out[-limit:] if limit else out
+
+
 def summarise_shots(rows, x1, y1):
     """r33.2: turn a shot log into the numbers a player actually wants. Pure --
     rows in, list of printable lines out, no file I/O and no pygame.
@@ -2539,6 +2595,25 @@ def summarise_derived(rows, x1, y1):
         for key in sorted(bands, key=lambda k: -bands[k][1]):
             hit, tot = bands[key]
             out.append(band_line(key, hit, tot, width=14))
+    sess = sessions(rows, limit=10)
+    if len(sess) > 1 or (sess and sess[0][0] is not None):
+        out.append("")
+        out.append("  BY SESSION  (one session = one run of the game, not one day)")
+        for key, srows in reversed(sess):
+            f = foul_summary(srows)
+            span = session_span_s(srows)
+            label = key.replace("T", " ").replace("Z", "") if key else \
+                "before sessions were recorded"
+            out.append("    %-22s %3d shots, %d foul%s%s"
+                       % (label, len(srows), f["fouls"],
+                          "" if f["fouls"] == 1 else "s",
+                          ", %d min" % round(span / 60.0) if span else ""))
+        # r45: no trend line and no verdict. With a handful of sittings an
+        # arrow would be noise with a direction painted on it, and the whole
+        # point of r43's intervals was to stop the report claiming more than
+        # it knows. The sittings are listed; the reading is the player's.
+        out.append("    listed, not trended -- too few sittings to call a "
+                   "direction")
     fa = foul_summary(rows)
     fs = foul_summary(rows, mode="solo")
     out.append("")
@@ -4617,6 +4692,14 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     import pygame
 
+    # r45: fixed ONCE here, so every shot played in this run carries the same
+    # session key. A session is one run of the program -- not one day. Two
+    # sittings in an evening are two sessions; leaving the game open overnight
+    # is one. That is the only boundary the program can actually see, and
+    # guessing at wall-clock gaps would be wrong exactly on the days it
+    # mattered.
+    SESSION_ID = stamp_utc(time.time())
+
     pygame.init()
     if not smoke:
         # Sound effects: mono, matching synth_tone_samples/synth_impact_samples
@@ -5372,6 +5455,18 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         it is the accumulated record of every shot played."""
         rec["schema"] = STUDY_SCHEMA
         rec["player"] = profile_name
+        # r45: session and shot time are written HERE and only here, on the
+        # human path. They must NEVER reach a study row. The AI study log is
+        # byte-identical across runs for a fixed seed, and that is not a
+        # curiosity -- it is how r17 proved three optimisations
+        # behaviour-preserving, by md5-diffing the JSONL before and after. A
+        # timestamp in make_shot_record would break that silently: nothing
+        # fails, the diff just stops meaning anything, and nobody finds out
+        # until the next time someone needs to prove a change safe. Assertion
+        # 96 exists solely to fail if these ever move up into the shared
+        # record builder.
+        rec["session"] = SESSION_ID
+        rec["t"] = stamp_utc(time.time())
         try:
             with open(shot_log_path(__file__,
                                     os.environ.get("HUSTLER_SHOT_LOG")), "a",
@@ -9482,8 +9577,8 @@ def selftest():
           break_shot(old87) is None
           and new87.get("break_shot") is True and break_shot(new87) is True
           and not87.get("break_shot") is False and break_shot(not87) is False
-          and STUDY_SCHEMA == 6,
-          f"pre-schema-6 row -> {break_shot(old87)}; flagged -> "
+          and STUDY_SCHEMA >= 6,
+          f"pre-flag row -> {break_shot(old87)}; flagged -> "
           f"{break_shot(new87)}; unflagged -> {break_shot(not87)}; "
           f"STUDY_SCHEMA {STUDY_SCHEMA}; "
           f"field present in the record: {'break_shot' in new87}")
@@ -9804,6 +9899,81 @@ def selftest():
           f"solo {solo95['fouls']}/{solo95['shots']} costing "
           f"{solo95['time_lost_s']:.0f}s, causes "
           f"{solo95['scratch']} scratch / {solo95['no_contact']} no contact")
+
+    # 96. r45: THE STUDY LOG MUST STAY BYTE-REPRODUCIBLE. This is the guard,
+    # and it matters more than the feature it guards.
+    #
+    # A study run with a fixed seed writes a byte-identical JSONL every time,
+    # and that is not a curiosity: r17 proved three separate optimisations
+    # behaviour-preserving by md5-diffing the study log before and after. A
+    # wall-clock stamp anywhere in the shared record builder would end that
+    # silently -- nothing fails, no test goes red, the diff simply stops
+    # meaning anything, and it would be discovered months later by whoever next
+    # needed to prove a change safe.
+    #
+    # So session and shot time are written on the HUMAN path only, and this
+    # asserts both that make_shot_record stays clean and that exactly one site
+    # in the file assigns them. The second half is the part that catches a
+    # future "tidy-up" moving them somewhere more convenient.
+    rec96 = make_shot_record(1, 0, "P", "red", {"type": "pot"}, [], "red",
+                             False, False, "", False, False, False)
+    # This assertion's own source contains the very strings it counts, so the
+    # selftest is removed from the text first. Counting them in place returned
+    # 3 and the assertion failed on its first run -- which is the check working
+    # in the least useful way possible, but working.
+    src96 = inspect.getsource(sys.modules[__name__])
+    src96 = src96.replace(inspect.getsource(selftest), "")
+    sess_sites = src96.count('rec["session"] =')
+    t_sites = src96.count('rec["t"] =')
+    gui96 = inspect.getsource(run_gui)
+    check("r45 study log stays reproducible — the session key and the shot "
+          "clock are written on the human path alone and never by the shared "
+          "record builder, because a fixed-seed study run must keep producing "
+          "a byte-identical JSONL: that md5 diff is how r17 proved three "
+          "optimisations behaviour-preserving, and a timestamp would retire "
+          "the technique without failing anything",
+          "session" not in rec96 and "t" not in rec96
+          and sess_sites == 1 and t_sites == 1
+          and 'rec["session"] =' in gui96 and 'rec["t"] =' in gui96,
+          f"make_shot_record keys session/t present: "
+          f"{'session' in rec96}/{'t' in rec96}; assignment sites "
+          f"{sess_sites} session, {t_sites} shot clock, both inside run_gui: "
+          f"{'rec[\"session\"] =' in gui96 and 'rec[\"t\"] =' in gui96}")
+
+    # 97. r45: sittings are grouped, and the rows from before r45 are not
+    # invented.
+    #
+    # A session is one RUN OF THE PROGRAM -- not one day. Two sittings in an
+    # evening are two sessions and an all-nighter is one, which is the only
+    # boundary the game can actually observe. The 377 rows that predate this
+    # carry nothing, and the commit history would have allowed four plausible
+    # chunks to be reconstructed for them. That was deliberately refused: a
+    # guess written into a tracked data file is indistinguishable from a
+    # measurement a year later, and this file is the only record of how the
+    # game was really played. They collect in one honest unknown bucket.
+    rows97 = [{"session": "2026-08-02T19:00:00Z", "t": "2026-08-02T19:00:10Z"},
+              {"session": "2026-08-02T19:00:00Z", "t": "2026-08-02T19:04:10Z"},
+              {"t": "2026-08-01T10:00:00Z"},
+              {"session": "2026-08-01T09:00:00Z", "t": "2026-08-01T09:00:05Z"},
+              {}]
+    got97 = sessions(rows97)
+    keys97 = [k for k, _ in got97]
+    span97 = session_span_s(got97[-1][1])
+    check("r45 sessions — shots group into the sitting they were played in, "
+          "oldest first, and every row from before sessions were recorded "
+          "falls into ONE unknown bucket rather than being split into "
+          "plausible chunks from the commit history, because a guess written "
+          "into a tracked data file cannot be told from a measurement later",
+          keys97 == [None, "2026-08-01T09:00:00Z", "2026-08-02T19:00:00Z"]
+          and len(got97[0][1]) == 2
+          and [k for k, _ in sessions(rows97, limit=1)]
+          == ["2026-08-02T19:00:00Z"]
+          and abs(span97 - 240.0) < 1e-6
+          and session_span_s([{"t": "2026-08-02T19:00:00Z"}]) is None
+          and session_span_s([{}, {}]) is None,
+          f"keys {keys97}; unknown bucket holds {len(got97[0][1])}; "
+          f"latest sitting span {span97}s; single-shot span "
+          f"{session_span_s([{'t': '2026-08-02T19:00:00Z'}])}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
