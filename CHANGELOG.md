@@ -5,7 +5,53 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r49.1 — and now you can actually swap (current)
+## r49.2 — a real name and a nickname (current)
+
+The first real career got written, and it read like a list of parameter sets:
+`PLAYER` beat `SHARK` twice. The Maker's model is how pub players actually
+work — Joe Bloggs known as Bullet — so a profile now carries both. The
+nicknames were already here; SHARK and STEADY are exactly that register. There
+was simply nowhere to put a name.
+
+Eight are drafted as placeholders, to be overwritten when the league fills them
+out: **Ronnie Vance "SHARK"**, **Alan Prosser "STEADY"**, Tommy Fenn "BULLET",
+Bernard Ash "DOC", Kev Dolan "MAGPIE", Danny White "CHALKY", Errol Nash
+"SPIDER", Pat Cardew "DUCHESS". Only the first two have parameter sets today,
+so the playable roster stays a subset of the named one rather than a second
+list that can disagree with it.
+
+**The store stays keyed on the nickname**, because that is what a fixture list
+shows and what gets shouted across a pub. That invariant broke the moment real
+names arrived: `profiles_from_json` keyed on `name`, so a round trip quietly
+re-filed SHARK as "Ronnie Vance" and every lookup pointing at SHARK missed.
+Assertion 102 caught it.
+
+Schema 2, upgraded on read rather than by a migration pass — there are already
+real frames recorded the old way. A schema-1 profile stored its nickname in
+`name`; the roster supplies the real name behind it, and anyone off the roster
+keeps their nickname as their name, which is what a human who has not filled
+the field in should read as. **The schema has to be read off the RAW record:**
+`deserialise_profile` stamps the current schema onto its output, so asking the
+output means the upgrade never fires. It did exactly that in the first cut.
+
+### And the zero that could not be recovered
+
+`record_frame` takes a `shots` argument and the call site never passed it, so
+every frame row recorded **0 shots** — including the two already committed.
+Found by reading the first real career rather than by any test, because the
+call sits in `run_gui` where no unit test reaches. A mutation test then proved
+the fix was unguarded, so assertion 104 checks the call site in source, the
+same technique assertion 103 uses.
+
+The name field itself is still to come. There is **no text-entry widget
+anywhere in this codebase**, and every letter key is a global shortcut — typing
+"Steady" during a game would rack up, cycle the mode and toggle the overlay on
+the way past. It belongs in the menu, where no frame is running and nothing is
+listening. Until then `$HUSTLER_PLAYER` sets the key.
+
+---
+
+## r49.1 — and now you can actually swap
 
 r49 fixed *which* AI sits in the seat and shipped no way to choose it.
 `human_opponent` was assigned once and nothing on earth ever touched it. The

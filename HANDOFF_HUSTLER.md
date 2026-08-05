@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r49.1 — playable, validated, no known blocking bugs.
+**Status:** r49.2 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -21,7 +21,7 @@ source of truth.
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 103 assertions |
+| `--selftest` | ALL PASS — 104 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -270,6 +270,28 @@ the same path rather than a copy — the r49 fault reappearing three inches left
 **Assertion 103's guard changed** from "assigned once" to "no literal ever
 assigned". A guard that forbids the fix rather than the fault is the wrong guard.
 
+## What r49.2 added
+
+**Profiles carry a real name and a nickname** (schema 2). `PLAYER_ROSTER` maps
+nickname -> real name for eight DRAFTED placeholders; `OPPONENT_ROSTER` stays a
+subset (only SHARK and STEADY have parameter sets). `real_name()` falls back to
+the nickname for anyone off the roster.
+
+**The store is keyed on the NICKNAME.** `profiles_from_json` keyed on `name`
+before, so a round trip re-filed SHARK as "Ronnie Vance". Assertion 102 caught
+it — the store key is load-bearing for every fixture and lookup.
+
+**Schema-1 upgrade happens on read**, and the schema must be taken from the RAW
+record: `deserialise_profile` stamps the current schema on its output, so
+checking the output means the upgrade never fires.
+
+**`shots=game.shots` now reaches the record** — it never did, so every frame row
+stored 0. Guarded at source (assertion 104) because the call is inside run_gui.
+
+**Still to come:** the name-entry field. No text-entry widget exists, and every
+letter key is a global shortcut, so it belongs in the menu where nothing is
+listening. `$HUSTLER_PLAYER` sets the key meanwhile.
+
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
 enforces the `--snap` md5 as well: the hash lives in one place, as a
@@ -413,7 +435,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 103 assertions, all
+  out) rather than the pygame wrapper around it. Currently 104 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -1326,10 +1348,10 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 >
 > > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **103 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **104 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.49.1.
+> > standalone, 36 primitives. `setup.py` says 0.49.2.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

@@ -2514,7 +2514,8 @@ def record_frame(profiles, winner, loser, grannie=False, mode="tournament",
     """
     out = dict(profiles)
     for who, won in ((winner, True), (loser, False)):
-        prof = out.get(who) or new_profile(who, kind="ai")
+        prof = out.get(who) or new_profile(real_name(who), kind="ai",
+                                           nickname=who)
         prof = profile_record_game(prof, opponent=(loser if won else winner),
                                    won=won, mode=mode, shots=shots)
         if grannie:
@@ -2572,7 +2573,10 @@ def profile_table(profiles, mode="tournament"):
         p = profiles[name]
         n, w, rate, lo, hi = profile_record(p, mode=mode)
         given, taken = grannie_counts(p)
-        rows.append({"name": name, "kind": p.get("kind", "ai"),
+        rows.append({"name": name,
+                     "real": p.get("name", name),
+                     "nickname": p.get("nickname", name),
+                     "kind": p.get("kind", "ai"),
                      "played": n, "won": w, "rate": rate, "lo": lo, "hi": hi,
                      "grannies_given": given, "grannies_taken": taken,
                      "trophies": len(p.get("trophies", []))})
@@ -2606,9 +2610,28 @@ def profiles_from_json(blob):
             # can edit it. Assertion 102 caught it.
             continue
         q["name"] = q.get("name") or name
+        # r49.2: a schema-1 profile stored the NICKNAME in `name`, because
+        # that was the only name a player had. Upgrade it in place on read:
+        # the roster knows the real name behind a known nickname. Guarded on
+        # the schema so a deliberately-set real name is never clobbered, and
+        # anyone off the roster keeps their nickname as their name, which is
+        # exactly what a human who has not filled the field in should read as.
+        # Read the schema off the RAW record: `deserialise_profile` has already
+        # stamped q with the CURRENT schema by this point, so asking q would
+        # always say 2 and the upgrade would never fire. Caught by the store
+        # still printing bare nicknames after the migration was written.
+        if int(p.get("schema", 1) or 1) < 2:
+            nick = q["name"]
+            q["nickname"] = nick
+            q["name"] = real_name(nick)
+            q["schema"] = PROFILE_SCHEMA
         for k, v in p.items():
             q.setdefault(k, v)
-        out[q["name"]] = q
+        # r49.2: keyed on the NICKNAME, not the real name. Once profiles
+        # gained real names this quietly re-keyed the whole store on the round
+        # trip -- SHARK came back as "Ronnie Vance" and every fixture, result
+        # and lookup pointing at SHARK missed. Assertion 102 caught it.
+        out[q.get("nickname") or q["name"]] = q
     return out
 
 
@@ -2623,7 +2646,38 @@ def profiles_to_json(profiles):
             "players": {k: serialise_profile(v) for k, v in profiles.items()}}
 
 
+# r49.2: every player has a REAL NAME and a NICKNAME, the way pub players
+# actually do -- Joe Bloggs known as Bullet. The nicknames were already here
+# (SHARK, STEADY are exactly that register); the real names were not.
+#
+# DRAFTED AS PLACEHOLDERS at the Maker's request, to see the model working
+# before the league fills it out. Expect them to be overwritten. Only SHARK
+# and STEADY have parameter sets today; the other six are names waiting for
+# the personalities the league will give them.
+PLAYER_ROSTER = {
+    "SHARK": "Ronnie Vance",
+    "STEADY": "Alan Prosser",
+    "BULLET": "Tommy Fenn",
+    "DOC": "Bernard Ash",
+    "MAGPIE": "Kev Dolan",
+    "CHALKY": "Danny White",
+    "SPIDER": "Errol Nash",
+    "DUCHESS": "Pat Cardew",
+}
+
+# Only the two with parameter sets can actually take a shot yet, so the
+# playable roster stays a subset of the named one rather than a second list.
 OPPONENT_ROSTER = ("SHARK", "STEADY")
+
+
+def real_name(nickname):
+    """r49.2: the name on the entry form, for a nickname. Pure.
+
+    Falls back to the nickname itself for anyone not on the roster -- a human
+    who has not entered a real name yet reads as their nickname rather than as
+    a blank, which is also how they would be called across a pub.
+    """
+    return PLAYER_ROSTER.get(nickname, nickname)
 
 
 def next_opponent(current, roster=OPPONENT_ROSTER):
@@ -3329,10 +3383,10 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
     }
 
 
-PROFILE_SCHEMA = 1
+PROFILE_SCHEMA = 2
 
 
-def new_profile(name, kind="human"):
+def new_profile(name, kind="human", nickname=None):
     """r32 (stats): a player profile. IDENTITY AND RESULTS ONLY -- deliberately.
 
     THE SHOT LOG IS THE SOURCE OF TRUTH. Every statistic this project will ever
@@ -3357,7 +3411,13 @@ def new_profile(name, kind="human"):
     it is null until fitted from their own logged shots."""
     return {
         "schema": PROFILE_SCHEMA,
+        # r49.2 (schema 2): `name` is the REAL name and `nickname` is what they
+        # are called. The store is keyed on the nickname, because that is what
+        # appears in a fixture list and on the table. A profile written before
+        # schema 2 has no nickname; the reader defaults it to the name, so an
+        # existing record reads unchanged rather than needing a migration pass.
         "name": str(name),
+        "nickname": str(nickname if nickname else name),
         "kind": "ai" if kind == "ai" else "human",
         "games": [],
         "params": None,
@@ -3402,6 +3462,10 @@ def serialise_profile(profile):
     return {
         "schema": PROFILE_SCHEMA,
         "name": str(profile.get("name", "")),
+        # r49.2: defaults to the name so a schema-1 profile round-trips
+        # unchanged rather than acquiring an empty nickname.
+        "nickname": str(profile.get("nickname")
+                        or profile.get("name", "")),
         "kind": "ai" if profile.get("kind") == "ai" else "human",
         # r48: `grannie` rides on the FRAME ROW (given/taken/absent) and
         # `trophies` on the profile. Both are new here, and both had to be
@@ -3431,7 +3495,8 @@ def deserialise_profile(data):
     hand-edited or truncated profile should cost you a row, not the game."""
     if not isinstance(data, dict) or not data.get("name"):
         return None
-    prof = new_profile(data["name"], data.get("kind", "human"))
+    prof = new_profile(data["name"], data.get("kind", "human"),
+                        nickname=data.get("nickname"))
     # r48: `games` was iterated without checking it was iterable, so a
     # hand-edited `"games": 7` raised TypeError and took the game down with it
     # -- on the one file the Maker keeps tracked in order to edit it by hand.
@@ -6970,9 +7035,13 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                         if os.path.exists(_pp):
                             with open(_pp, "r", encoding="utf-8") as _f:
                                 _cur = profiles_from_json(json.load(_f))
+                        # r49.2: `shots` was never passed, so every frame row
+                        # recorded 0 -- a zero that cannot be recovered later,
+                        # found the moment the first real career was written.
                         _cur = record_frame(_cur, _seat(game.winner),
                                             _seat(1 - game.winner),
-                                            grannie=finale["grannie"])
+                                            grannie=finale["grannie"],
+                                            shots=game.shots)
                         for _i in (0, 1):
                             if game.controllers[_i] == "human":
                                 _cur[_seat(_i)]["kind"] = "human"
@@ -10799,6 +10868,59 @@ def selftest():
           f"{[a.name if a else None for a in ais_for_seats(an_you)]}; "
           f"chosen STEADY -> {steady103}; unknown -> {bogus103}")
 
+    # 104. r49.2: a player has a real name AND a nickname.
+    #
+    # The Maker's model, and it is how pub players actually work: Joe Bloggs
+    # known as Bullet. The nicknames were already here -- SHARK and STEADY are
+    # exactly that register -- but there was nowhere to put a real name, so a
+    # league table would have read as a list of parameter sets.
+    #
+    # The store stays keyed on the NICKNAME, because that is what appears in a
+    # fixture list and on the table. What matters here is the schema-1 upgrade:
+    # a profile written before this stored the nickname in `name` and had no
+    # nickname at all, and there are already real frames recorded that way. It
+    # is upgraded on read rather than by a migration pass, and the schema must
+    # be read off the RAW record -- deserialise_profile has already stamped the
+    # current schema onto its output by then, so asking the output would mean
+    # the upgrade never fires. That was a real bug in the first cut: the store
+    # went on printing bare nicknames with the migration sitting right there.
+    old104 = {"schema": 1, "name": "SHARK", "kind": "ai",
+              "games": [{"opponent": "PLAYER", "won": False,
+                         "mode": "tournament", "shots": 31}]}
+    mine104 = {"schema": 1, "name": "PLAYER", "kind": "human", "games": []}
+    up104 = profiles_from_json({"players": {"SHARK": old104,
+                                            "PLAYER": mine104}})
+    fresh104 = new_profile("Tommy Fenn", kind="ai", nickname="BULLET")
+    trip104 = deserialise_profile(serialise_profile(fresh104))
+    check("r49.2 real names and nicknames — a player carries both, the store "
+          "stays keyed on the nickname because that is what a fixture list "
+          "shows, and a profile written before this is upgraded on read: the "
+          "nickname it stored as a name becomes the nickname, and the roster "
+          "supplies the real name behind it; anyone off the roster keeps their "
+          "nickname as their name rather than reading as a blank",
+          up104["SHARK"]["nickname"] == "SHARK"
+          and up104["SHARK"]["name"] == "Ronnie Vance"
+          and up104["SHARK"]["schema"] == PROFILE_SCHEMA
+          and profile_record(up104["SHARK"])[0] == 1
+          and up104["PLAYER"]["nickname"] == "PLAYER"
+          and up104["PLAYER"]["name"] == "PLAYER"
+          and real_name("BULLET") == "Tommy Fenn"
+          and real_name("NOBODY") == "NOBODY"
+          and trip104["nickname"] == "BULLET"
+          and trip104["name"] == "Tommy Fenn"
+          and set(OPPONENT_ROSTER) <= set(PLAYER_ROSTER)
+          # r49.2: the frame's shot count reaches the record. It never did --
+          # `record_frame` takes `shots` and the call site omitted it, so every
+          # row stored 0, found only when the first real career was written.
+          # Guarded at the source because that call sits in run_gui where no
+          # unit test can reach it; a mutation test proved the gap.
+          and inspect.getsource(run_gui).count("shots=game.shots") == 1,
+          f"upgraded SHARK -> {up104['SHARK']['name']!r} known as "
+          f"{up104['SHARK']['nickname']!r}, frames kept "
+          f"{profile_record(up104['SHARK'])[0]}; off-roster human stays "
+          f"{up104['PLAYER']['name']!r}; round trip "
+          f"{trip104['nickname']!r}/{trip104['name']!r}")
+
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
 
@@ -10879,8 +11001,11 @@ def main():
         if not rows:
             print("  nothing recorded yet")
         for r in rows:
-            print("  %-12s %-5s  %3d played %3d won  %5.1f%% [%4.1f-%4.1f]"
-                  % (r["name"], r["kind"], r["played"], r["won"],
+            who = r["nickname"]
+            if r["real"] and r["real"] != r["nickname"]:
+                who = "%s (%s)" % (r["nickname"], r["real"])
+            print("  %-28s %-5s %3d played %3d won  %5.1f%% [%4.1f-%4.1f]"
+                  % (who, r["kind"], r["played"], r["won"],
                      r["rate"] * 100, r["lo"] * 100, r["hi"] * 100))
             extra = []
             if r["grannies_given"]:

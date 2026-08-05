@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current status: r49.1 — playable, validated
+## Current status: r49.2 — playable, validated
 
 **Validation snapshot (r49, measured on nix5 and reproduced in a Linux
 container):**
@@ -8,7 +8,7 @@ container):**
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 103 assertions |
+| `--selftest` | ALL PASS — 104 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
