@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r46 — playable, validated, no known blocking bugs.
+**Status:** r47 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r46
+## Validation snapshot at r47
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 99 assertions |
+| `--selftest` | ALL PASS — 100 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -177,6 +177,38 @@ Assertion 99 pins the invariant, because league mode racks at volume.
 **Not in r46:** the permanent record of a Grannie. That needs profiles, which
 are r47.
 
+## What r47 changed (as built)
+
+**The status readout moved to the band above the table**, and `STATUS_STRIP_H`
+collapses to 0 when it does. Pure cores: `band_capacity(band_h, font_h, lead,
+pad)` and `status_goes_in_band(...)`. The band is computed in `refit()` from
+the FITTED height (`(win_h - fit_H1) // 2`) because it only exists as the
+leftover of the table fit; `STATUS_STRIP_H` is then decided once the panel font
+is known, and `build_panel_widgets()` — already re-run on resize — lays every
+tab out from the new origin.
+
+**Decided by geometry, never by the live text.** A content-driven choice would
+relayout the panel whenever an event line appeared. Assertion 100.
+
+**Measured:** worst-case status packs 6 panel lines into 2 band lines at
+2160x1350, 1 at 1920x1080, 2 at 1024x768, and the band is 0px at 1144x548 where
+the panel strip carries on unchanged. Shot-tab headroom at 1920x1080 goes
+25px -> 166px.
+
+**Side effect, by design:** at 1024x768 the reclaimed space lets r30.2's
+`spin_group_radius()` fit a second strike-point picker on the Shot tab, which
+did not fit at r46. Five extra widgets, and the reason the tab now ends 8px
+from the window foot.
+
+**Fixed on the way:** `call_led()` is computed once above the branch so both
+homes draw it; and r46's grannie block had reused the name `_lc` for the
+loser's colour, clashing with the call indicator's colour — renamed `_loc`.
+
+**Scope note:** "readouts" here means the status strip. Slider value suffixes
+and the r42 constants block stay with their controls — a slider without its
+value is unusable, and the constants block was deliberately placed beside the
+sliders that change it (r42 Fork 1B).
+
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
 enforces the `--snap` md5 as well: the hash lives in one place, as a
@@ -320,7 +352,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 99 assertions, all
+  out) rather than the pygame wrapper around it. Currently 100 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -1233,10 +1265,10 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 >
 > > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **99 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **100 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.46.0.
+> > standalone, 36 primitives. `setup.py` says 0.47.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

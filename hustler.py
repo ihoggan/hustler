@@ -2428,6 +2428,46 @@ def grannie(potted_colours, winner_colour, loser_colour, clean_black,
             and "black" in potted_colours)
 
 
+def band_capacity(band_h, font_h, lead, pad):
+    """r47: how many lines of readout the empty strip above the table can
+    hold. Pure.
+
+    The table is fitted into the window and centred, which leaves a band above
+    and below it. That band is WIDE AND SHORT -- about 1734 x 126 on a
+    2160x1350 screen -- and it is the exact opposite shape to the panel's
+    status strip, which is narrow and tall. The same status text that wraps to
+    six lines in a 370px strip packs into two across the band, which is what
+    makes moving it worth doing rather than merely tidy.
+
+    Returns 0 when there is no usable band, and 0 is the answer that matters:
+    at the F11 windowed size (1144x548) the table fills the window exactly and
+    there is no band at all. Nothing may depend on the band existing.
+    """
+    if band_h <= 0 or font_h <= 0:
+        return 0
+    step = font_h + max(0, lead)
+    if step <= 0:
+        return 0
+    return max(0, (band_h - max(0, pad)) // step)
+
+
+def status_goes_in_band(band_h, font_h, lead, pad, need=2):
+    """r47: does the status readout move to the top band, or stay in the panel?
+
+    Decided from WINDOW GEOMETRY ALONE -- never from the text currently on
+    screen. That restraint is the whole design. If this consulted the live line
+    count, the panel would relayout the moment an event line appeared and every
+    tab below would jump a shot at a time. The window decides once; the content
+    then flows into whichever home it was given.
+
+    `need` is the worst case measured across the real status cases: a game with
+    ball in hand packs into two band lines at 2160x1350 and 1024x768, and into
+    one at 1920x1080. Requiring two keeps a margin everywhere the band exists,
+    and where it does not exist the panel strip carries on exactly as it did.
+    """
+    return band_capacity(band_h, font_h, lead, pad) >= need
+
+
 def summarise_shots(rows, x1, y1):
     """r33.2: turn a shot log into the numbers a player actually wants. Pure --
     rows in, list of printable lines out, no file I/O and no pygame.
@@ -4850,6 +4890,21 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # set_mode; UI_S is used for every panel dimension below.
     UI_S = panel_scale(DESKTOP_H)
     PANEL_W = int(round(CFG["PANEL_W_PX"] * UI_S))
+    # r47: the status readout moves to the empty band above the table when the
+    # window leaves one, and the panel strip then collapses to nothing --
+    # handing 113-170px back to the panel and lifting every tab with it. These
+    # sit here, before the first refit(), because refit() decides them: the
+    # band only exists as the leftover of the TABLE FIT.
+    #
+    # Decided from geometry, never from the live text (see
+    # status_goes_in_band). A content-driven decision would relayout the whole
+    # panel the moment an event line appeared, and the tabs would jump a shot
+    # at a time.
+    STATUS_STRIP_H = int(round(113 * UI_S))
+    TOP_BAND_H = 0
+    BAND_READOUT = False
+    _band_lead = max(1, int(round(2 * UI_S)))
+    _band_pad = int(round(4 * UI_S))
     fullscreen = False
 
     if smoke:
@@ -4887,6 +4942,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # headless guard (smoke) always fits at FS=1 with no panel reserved --
         # this reproduces the exact R6.1 framing, untouched.
         nonlocal FS, fit_W1, fit_H1, W, H, S, M, RSF, screen, font, panel_font
+        nonlocal TOP_BAND_H, BAND_READOUT, STATUS_STRIP_H
         if smoke:
             FS, fit_W1, fit_H1 = 1.0, BASE_W1, BASE_H1
         else:
@@ -4895,6 +4951,10 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         S = PXM * FS * RS
         M = MG * FS * RS
         RSF = RS * FS
+        # r47: the band is what the fit leaves above the table. It only exists
+        # because the scene is centred in the window, so it is computed here,
+        # from the fitted height, and nowhere else.
+        TOP_BAND_H = 0 if smoke else max(0, (win_h - fit_H1) // 2)
         screen = pygame.Surface((W, H))
         try:
             font = pygame.font.SysFont("consolas,menlo,monospace",
@@ -4910,6 +4970,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                                  int(round(14 * UI_S)))
             except Exception:
                 panel_font = pygame.font.Font(None, int(round(16 * UI_S)))
+            # r47: now that the font is known, decide where the readout lives.
+            # The strip collapses to nothing when the band takes it, which is
+            # what hands the panel back 113-170px and lifts every tab with it.
+            BAND_READOUT = status_goes_in_band(
+                TOP_BAND_H, panel_font.get_height(), _band_lead, _band_pad)
+            STATUS_STRIP_H = 0 if BAND_READOUT else int(round(113 * UI_S))
 
     rebuild_render_targets()
 
@@ -6031,7 +6097,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # r41: scales with the HUD. It is a LINE budget, and the line height grows
     # with the font, so a fixed 113 would clip at 1.5x exactly as it clipped at
     # r37.1 -- the same bug, arrived at from the other direction.
-    STATUS_STRIP_H = int(round(113 * UI_S))
+    # r47: STATUS_STRIP_H now lives with UI_S above -- it is decided by the
+    # window, in refit(), because the band that replaces it is what the table
+    # fit leaves over.
     panel_widgets = {"tabstrip": None, "Shot": [], "Table": [], "Game": []}
 
     def build_panel_widgets():
@@ -6570,11 +6638,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     # standing. It is a pure question asked of state that
                     # already exists -- nothing new is tracked during play.
                     _wc = game.colours.get(game.winner)
-                    _lc = game.colours.get(1 - game.winner)
+                    _loc = game.colours.get(1 - game.winner)
                     finale = {"start_frame": frames,
                               "cup": last_black_cup,
                               "grannie": grannie(
-                                  sim.potted_colours_all(), _wc, _lc,
+                                  sim.potted_colours_all(), _wc, _loc,
                                   game.reason == "black potted cleanly")}
             if (not game.over and not pending
                     and game.controllers[game.current] == "ai"):
@@ -7076,56 +7144,87 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             # the tabs below.
             sx = win_w - PANEL_W + 10
             sw = PANEL_W - 20
-            measure = lambda s: panel_font.size(s)[0]
-            strip_lines = (wrap_fields(status_fields, sw, measure)
-                           + wrap_fields(status_lines2, sw, measure))
-            # r42 Fork 3B: the leading is COMPUTED, not chosen. It was
-            # `get_height() + 1` and that +1 never scaled, so at 1.5x the lines
-            # sat one pixel apart and read as a solid block -- which is what
-            # the Maker reported. Raising it to a bigger fixed number is not
-            # available: a full game with ball in hand fills the strip, and a
-            # wider fixed gap would clip a line rather than space one out. So
-            # few lines share out the spare height, many lines tighten back to
-            # the old 1px floor, and the call row below is paid for up front
-            # instead of being clamped on top of the last line afterwards.
-            _fh = panel_font.get_height()
-            _top = int(round(6 * UI_S))
-            _led_h = _fh + int(round(4 * UI_S))
-            line_h = _fh + strip_leading(len(strip_lines), _fh,
-                                         STATUS_STRIP_H, top=_top,
-                                         reserve=_led_h, lo=1,
-                                         hi=int(round(6 * UI_S)))
-            sy = _top
-            for ln in strip_lines:
-                if sy + line_h > STATUS_STRIP_H:
-                    break                      # clip; never spill onto the tabs
-                display.blit(panel_font.render(ln, True, COL["hud"]), (sx, sy))
-                sy += line_h
-            # r33.1: the call indicator. It lives in the PERSISTENT strip so
-            # it is readable from every tab, including the Shot tab where the
-            # shot actually gets taken and the mini table is not visible.
+            # r33.1: the call indicator. It lives with the readout so it is
+            # visible from every tab, including the Shot tab where the shot
+            # actually gets taken and the mini table is not visible.
+            # r47: hoisted above the branch -- both homes draw it.
             _lc, _lt = call_led(call_on, call_ball, call_pocket,
                                 (frames - logged_frame)
                                 if logged_frame is not None else None,
                                 made=logged_made)
-            # r42: this clamp was `STATUS_STRIP_H - 14`, an UNSCALED literal
-            # inside a strip that scales. Measured before the fix: the call row
-            # overlapped the last line's ink by 4px at 1.5x and 12px at 1.25x
-            # and 1.0x, and spilled past the strip's own rule onto the tabstrip
-            # at every scale. It is the same defect as the +1 leading above and
-            # the same one r41 found in the button rects -- a fixed pixel
-            # inside a scaled layout, which looks correct at exactly one size.
-            _lr = max(3, int(round(5 * UI_S)))
-            _ly = min(sy + int(round(2 * UI_S)),
-                      STATUS_STRIP_H - _fh - int(round(3 * UI_S)))
-            _lcx, _lcy = sx + _lr, _ly + _fh // 2
-            pygame.draw.circle(display, _lc, (_lcx, _lcy), _lr)
-            pygame.draw.circle(display, (20, 22, 26), (_lcx, _lcy), _lr, 1)
-            display.blit(panel_font.render(_lt, True, _lc),
-                          (sx + 2 * _lr + int(round(6 * UI_S)), _ly))
-            pygame.draw.line(display, (68, 72, 80),
-                              (win_w - PANEL_W, STATUS_STRIP_H - 3),
-                              (win_w - 1, STATUS_STRIP_H - 3), 1)
+            if BAND_READOUT:
+                # r47: the readout has moved to the band above the table. Wide
+                # and short instead of narrow and tall, so the SAME fields that
+                # wrap to six lines in a 370px strip pack into two across
+                # 1734px -- which is what made this worth doing rather than
+                # merely tidy. It also gives `BALL IN HAND — drag cue in
+                # baulk` (416px against a 370px strip budget at 1.5x) a home it
+                # fits in, curing the overflow instead of shortening the words.
+                bx = int(round(12 * UI_S))
+                bw = max(80, win_w - PANEL_W - 2 * bx)
+                bmeasure = lambda s: panel_font.size(s)[0]   # noqa: E731
+                blines = (wrap_fields(status_fields, bw, bmeasure)
+                          + wrap_fields(status_lines2, bw, bmeasure))
+                bfh = panel_font.get_height()
+                bstep = bfh + _band_lead
+                cap = band_capacity(TOP_BAND_H, bfh, _band_lead, _band_pad)
+                by = max(0, (TOP_BAND_H - min(len(blines), cap) * bstep) // 2)
+                for ln in blines[:cap]:
+                    display.blit(panel_font.render(ln, True, COL["hud"]),
+                                  (bx, by))
+                    by += bstep
+                # The call indicator rides along on its own line, same as it
+                # did at the foot of the strip.
+                if len(blines) < cap:
+                    _lr = max(3, int(round(5 * UI_S)))
+                    pygame.draw.circle(display, _lc,
+                                        (bx + _lr, by + bfh // 2), _lr)
+                    display.blit(panel_font.render(_lt, True, _lc),
+                                  (bx + 2 * _lr + int(round(6 * UI_S)), by))
+            else:
+                measure = lambda s: panel_font.size(s)[0]
+                strip_lines = (wrap_fields(status_fields, sw, measure)
+                               + wrap_fields(status_lines2, sw, measure))
+                # r42 Fork 3B: the leading is COMPUTED, not chosen. It was
+                # `get_height() + 1` and that +1 never scaled, so at 1.5x the lines
+                # sat one pixel apart and read as a solid block -- which is what
+                # the Maker reported. Raising it to a bigger fixed number is not
+                # available: a full game with ball in hand fills the strip, and a
+                # wider fixed gap would clip a line rather than space one out. So
+                # few lines share out the spare height, many lines tighten back to
+                # the old 1px floor, and the call row below is paid for up front
+                # instead of being clamped on top of the last line afterwards.
+                _fh = panel_font.get_height()
+                _top = int(round(6 * UI_S))
+                _led_h = _fh + int(round(4 * UI_S))
+                line_h = _fh + strip_leading(len(strip_lines), _fh,
+                                             STATUS_STRIP_H, top=_top,
+                                             reserve=_led_h, lo=1,
+                                             hi=int(round(6 * UI_S)))
+                sy = _top
+                for ln in strip_lines:
+                    if sy + line_h > STATUS_STRIP_H:
+                        break                      # clip; never spill onto the tabs
+                    display.blit(panel_font.render(ln, True, COL["hud"]), (sx, sy))
+                    sy += line_h
+                # r42: this clamp was `STATUS_STRIP_H - 14`, an UNSCALED literal
+                # inside a strip that scales. Measured before the fix: the call row
+                # overlapped the last line's ink by 4px at 1.5x and 12px at 1.25x
+                # and 1.0x, and spilled past the strip's own rule onto the tabstrip
+                # at every scale. It is the same defect as the +1 leading above and
+                # the same one r41 found in the button rects -- a fixed pixel
+                # inside a scaled layout, which looks correct at exactly one size.
+                _lr = max(3, int(round(5 * UI_S)))
+                _ly = min(sy + int(round(2 * UI_S)),
+                          STATUS_STRIP_H - _fh - int(round(3 * UI_S)))
+                _lcx, _lcy = sx + _lr, _ly + _fh // 2
+                pygame.draw.circle(display, _lc, (_lcx, _lcy), _lr)
+                pygame.draw.circle(display, (20, 22, 26), (_lcx, _lcy), _lr, 1)
+                display.blit(panel_font.render(_lt, True, _lc),
+                              (sx + 2 * _lr + int(round(6 * UI_S)), _ly))
+                pygame.draw.line(display, (68, 72, 80),
+                                  (win_w - PANEL_W, STATUS_STRIP_H - 3),
+                                  (win_w - 1, STATUS_STRIP_H - 3), 1)
             for w in panel_widgets[TAB_LABELS[panel_tab]]:
                 w.draw(display, panel_font)
         pygame.display.flip()
@@ -10176,6 +10275,47 @@ def selftest():
           and not [i for i in sim99.colours if i not in sim99.balls],
           f"(colours, balls) after each of three racks: {sizes99}; "
           f"composition {comp99}")
+
+    # 100. r47: where the readout lives is decided by the WINDOW, not the text.
+    #
+    # The table is fitted and centred, which leaves a band above it. That band
+    # is wide and short -- about 1734x126 on a 2160x1350 screen -- and it is
+    # the exact opposite shape to the panel's narrow, tall status strip. The
+    # same fields that wrap to six lines in a 370px strip pack into two across
+    # the band, which is what makes the move worth doing.
+    #
+    # THE RESTRAINT IS THE DESIGN: this is answered from geometry alone. If it
+    # consulted the live line count, the panel would relayout the moment an
+    # event line appeared and every tab below would jump a shot at a time.
+    #
+    # And it must survive there being NO band: at the F11 windowed size
+    # (1144x548) the table fills the window exactly, band height 0, and the
+    # panel strip has to carry on precisely as it did before r47.
+    fh100, lead100, pad100 = 21, 3, 6
+    caps100 = {name: band_capacity(b, f, ld, pd)
+               for name, b, f, ld, pd in (
+                   ("2160x1350", 126, 21, 3, 6),
+                   ("1920x1080", 45, 18, 2, 5),
+                   ("1024x768", 147, 14, 2, 4),
+                   ("1144x548", 0, 14, 2, 4))}
+    check("r47 the readout follows the window — the empty band above the "
+          "fitted table takes the status text when the window leaves room for "
+          "at least two lines, and the panel strip carries it unchanged when "
+          "it does not; decided from geometry alone, never from the text on "
+          "screen, or the tabs would jump every time an event line appeared",
+          caps100["1144x548"] == 0
+          and not status_goes_in_band(0, 14, 2, 4)
+          # exact counts, not just ">= 2" -- a version that ignored the leading
+          # would still clear a threshold test while packing lines too tightly
+          and caps100["2160x1350"] == 5 and caps100["1024x768"] == 8
+          and caps100["1920x1080"] == 2
+          and status_goes_in_band(126, 21, 3, 6)
+          and status_goes_in_band(45, 18, 2, 5)
+          and not status_goes_in_band(126, 21, 3, 6, need=99)
+          and band_capacity(-40, fh100, lead100, pad100) == 0
+          and band_capacity(126, 0, lead100, pad100) == 0,
+          f"band lines by window: {caps100}; "
+          f"no band -> in band? {status_goes_in_band(0, 14, 2, 4)}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

@@ -5,7 +5,51 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r46 — the Grannie (current)
+## r47 — the readout moves off the HUD (current)
+
+The Maker noticed the empty strip above the table and asked whether the HUD's
+text could live there instead, leaving the panel free to be controls. Measuring
+it made the case better than the idea already was.
+
+The band is what the table fit leaves over, and it is **wide and short** —
+about 1734 x 126 on a 2160x1350 screen. The panel strip is narrow and tall.
+They suit opposite content, and the difference is not marginal: the same status
+fields that wrap to **six lines** in a 370px strip pack into **two** across the
+band. A game with ball in hand, the worst case, needs two lines at 2160x1350
+and 1024x768 and one at 1920x1080.
+
+So the readout moves up and **the panel strip collapses to nothing**, handing
+113-170px back to the panel and lifting every tab with it. Measured at
+1920x1080: the Shot tab's headroom goes from **25px to 166px**.
+
+It also cures the overflow found in the Maker's screenshot rather than papering
+over it. `BALL IN HAND — drag cue in baulk` renders 416px against a 370px strip
+budget — `wrap_fields` packs several fields onto a line but cannot break a
+single field that is too long alone, so it ran clean off the panel edge. In a
+1734px band it is not remotely close. Better to give it a home that fits than
+to shorten the words.
+
+### Decided by the window, never by the text
+
+`status_goes_in_band()` answers from geometry alone. Had it consulted the live
+line count, the panel would relayout the moment an event line appeared and
+every tab below would jump a shot at a time. The window decides once; the
+content then flows into whichever home it was given.
+
+And it must survive there being no band at all: at the F11 windowed size
+(1144x548) the table fills the window exactly, the band is 0px, and the panel
+strip carries on precisely as it did before r47.
+
+### A feature the reclaimed space paid for
+
+At 1024x768 the panel gained five widgets nobody asked for. That is r30.2's
+fit-or-omit rule working: `spin_group_radius()` puts a second strike-point
+picker on the Shot tab when the window is tall enough, and at r46 the strip's
+113px meant it did not fit at that size. Collapsing the strip bought it.
+
+---
+
+## r46 — the Grannie
 
 A Scottish pub rule, and the first piece of league mode. If one player's
 **colour** never goes down while the opponent clears all seven of theirs and
