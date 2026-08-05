@@ -1,0 +1,47 @@
+{
+ "players": {
+  "PLAYER": {
+   "games": [
+    {
+     "mode": "tournament",
+     "opponent": "SHARK",
+     "shots": 0,
+     "won": true
+    },
+    {
+     "mode": "tournament",
+     "opponent": "SHARK",
+     "shots": 0,
+     "won": true
+    }
+   ],
+   "kind": "human",
+   "name": "PLAYER",
+   "params": null,
+   "schema": 1,
+   "trophies": []
+  },
+  "SHARK": {
+   "games": [
+    {
+     "mode": "tournament",
+     "opponent": "PLAYER",
+     "shots": 0,
+     "won": false
+    },
+    {
+     "mode": "tournament",
+     "opponent": "PLAYER",
+     "shots": 0,
+     "won": false
+    }
+   ],
+   "kind": "ai",
+   "name": "SHARK",
+   "params": null,
+   "schema": 1,
+   "trophies": []
+  }
+ },
+ "schema": 1
+}
