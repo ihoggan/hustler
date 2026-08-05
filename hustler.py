@@ -2468,6 +2468,161 @@ def status_goes_in_band(band_h, font_h, lead, pad, need=2):
     return band_capacity(band_h, font_h, lead, pad) >= need
 
 
+PROFILE_STORE_NAME = "hustler_profiles.json"
+
+
+def profile_store_path(script_path, env_override=None):
+    """r48: where the profiles live. Pure -- paths in, path out, no I/O.
+
+    Beside hustler.py and TRACKED, exactly like the shot log since r38, for the
+    reason the Maker gave then: a record that accumulates over months is not
+    scratch, and nothing that took months to build should live where a fresh
+    clone cannot see it. A league table you can lose by reinstalling is worth
+    nothing. They also asked for it tracked so they can open it and adjust it.
+
+    Resolved from the SCRIPT's directory so a second clone keeps its own
+    careers instead of writing into the first one's. $HUSTLER_PROFILES
+    overrides it outright, for experiments that should not touch the real file.
+    """
+    if env_override:
+        return env_override
+    return os.path.join(os.path.dirname(os.path.abspath(script_path)),
+                        PROFILE_STORE_NAME)
+
+
+def record_frame(profiles, winner, loser, grannie=False, mode="tournament",
+                 shots=0):
+    """r48: fold one finished frame into a STORE of profiles. Pure -- returns a
+    new dict and never mutates the one passed in.
+
+    This is a store around r32's per-profile model, NOT a replacement for it.
+    The first version written at r48 kept win/loss COUNTERS on each profile,
+    which is exactly what `new_profile`'s r32 docstring warns against: stored
+    aggregates cannot answer a question nobody thought to record, and the day
+    one is found to be computed wrongly every profile is wrong with it. r32
+    stores the frames and derives everything, so the counters were deleted and
+    this now appends game rows through `profile_record_game`.
+
+    Purity matters because the caller writes to a tracked file the instant a
+    frame ends: a half-applied update that had already mutated the in-memory
+    store would leave the two disagreeing with no way to tell which was right.
+    Building a new dict means a failed write loses the frame rather than
+    corrupting the record.
+
+    Unknown players are created here, so a new AI opponent joining a league
+    needs no separate registration step.
+    """
+    out = dict(profiles)
+    for who, won in ((winner, True), (loser, False)):
+        prof = out.get(who) or new_profile(who, kind="ai")
+        prof = profile_record_game(prof, opponent=(loser if won else winner),
+                                   won=won, mode=mode, shots=shots)
+        if grannie:
+            # r48: recorded on the FRAME ROW, not as a counter -- same reason
+            # as everything else here. The Maker's requirement was that a
+            # whitewash is recorded "for ever more", and a row that says which
+            # frame it happened in survives questions a tally cannot answer.
+            prof["games"] = list(prof["games"])
+            prof["games"][-1] = dict(prof["games"][-1])
+            prof["games"][-1]["grannie"] = "given" if won else "taken"
+        out[who] = prof
+    return out
+
+
+def award_trophy(profile, title, when):
+    """r48: add a trophy. Pure, returns a new profile.
+
+    A list of named, dated events rather than a count, because the name and the
+    date are the interesting part. Duplicates are allowed on purpose: winning
+    the same competition twice is two trophies.
+    """
+    out = dict(profile)
+    out["trophies"] = list(profile.get("trophies", [])) + [
+        {"title": str(title), "when": str(when)}]
+    return out
+
+
+def grannie_counts(profile):
+    """r48: (given, taken) derived from the frame rows. Pure.
+
+    Derived, never stored -- see record_frame. Counting on read costs nothing
+    at these sizes and cannot drift from the rows it counts.
+    """
+    games = profile.get("games", [])
+    return (sum(1 for g in games if g.get("grannie") == "given"),
+            sum(1 for g in games if g.get("grannie") == "taken"))
+
+
+def profile_table(profiles, mode="tournament"):
+    """r48: profiles as printable rows, best record first. Pure.
+
+    Every rate arrives with its Wilson interval, because `profile_record`
+    already refuses to hand one over without -- a ranking built on five frames
+    sits deep inside coin-flip noise, and this project's own --aigame output
+    calls twelve games inconclusive.
+
+    Sorted by wins, then rate, then name: a stable order, so the same store
+    always prints the same way. It is a RECORD, not a ranking. Ranking is a
+    separate question the Maker has asked for, it has to account for opponent
+    strength, and letting a sorted win column stand in for it would be the r43
+    mistake told backwards.
+    """
+    rows = []
+    for name in sorted(profiles):
+        p = profiles[name]
+        n, w, rate, lo, hi = profile_record(p, mode=mode)
+        given, taken = grannie_counts(p)
+        rows.append({"name": name, "kind": p.get("kind", "ai"),
+                     "played": n, "won": w, "rate": rate, "lo": lo, "hi": hi,
+                     "grannies_given": given, "grannies_taken": taken,
+                     "trophies": len(p.get("trophies", []))})
+    rows.sort(key=lambda r: (-r["won"], -r["rate"], r["name"]))
+    return rows
+
+
+def profiles_from_json(blob):
+    """r48: read a store, tolerating anything sensible. Pure.
+
+    The Maker asked for this file tracked precisely so they could open it and
+    adjust it, so a reader that threw on an unexpected field would punish the
+    exact use it was tracked for. Unknown keys survive untouched; malformed
+    entries are skipped rather than taking the file down with them.
+    """
+    if not isinstance(blob, dict):
+        return {}
+    players = blob.get("players", blob)
+    if not isinstance(players, dict):
+        return {}
+    out = {}
+    for name, p in players.items():
+        if not isinstance(p, dict):
+            continue
+        q = deserialise_profile(p)
+        if q is None:
+            # r32's deserialiser returns None for a malformed entry rather
+            # than raising -- a hand-edited profile should cost a row, not the
+            # game. The first r48 reader called .get() on that None and would
+            # have crashed on exactly the file the Maker keeps tracked so they
+            # can edit it. Assertion 102 caught it.
+            continue
+        q["name"] = q.get("name") or name
+        for k, v in p.items():
+            q.setdefault(k, v)
+        out[q["name"]] = q
+    return out
+
+
+def profiles_to_json(profiles):
+    """r48: the store as a plain dict ready for json.dump. Pure.
+
+    Wrapped under `players` with a schema number beside it so the file has
+    somewhere to grow -- the shot log needed a bump at r45 and was glad of the
+    one it already had.
+    """
+    return {"schema": PROFILE_SCHEMA,
+            "players": {k: serialise_profile(v) for k, v in profiles.items()}}
+
+
 def summarise_shots(rows, x1, y1):
     """r33.2: turn a shot log into the numbers a player actually wants. Pure --
     rows in, list of printable lines out, no file I/O and no pygame.
@@ -3176,12 +3331,23 @@ def serialise_profile(profile):
         "schema": PROFILE_SCHEMA,
         "name": str(profile.get("name", "")),
         "kind": "ai" if profile.get("kind") == "ai" else "human",
+        # r48: `grannie` rides on the FRAME ROW (given/taken/absent) and
+        # `trophies` on the profile. Both are new here, and both had to be
+        # added to this serialiser rather than written around it -- the r48
+        # smoke test found them being silently dropped on the round trip,
+        # because this rebuilds each row field by field rather than copying it.
         "games": [{"opponent": str(g.get("opponent", "")),
                    "won": bool(g.get("won")),
                    "mode": ("practice" if g.get("mode") == "practice"
                             else "tournament"),
-                   "shots": int(g.get("shots", 0))}
+                   "shots": int(g.get("shots", 0)),
+                   **({"grannie": g["grannie"]}
+                      if g.get("grannie") in ("given", "taken") else {})}
                   for g in profile.get("games", []) if isinstance(g, dict)],
+        "trophies": [{"title": str(t.get("title", "")),
+                      "when": str(t.get("when", ""))}
+                     for t in profile.get("trophies", [])
+                     if isinstance(t, dict)],
         "params": (dict(profile["params"]) if isinstance(profile.get("params"), dict)
                    else None),
     }
@@ -3194,12 +3360,22 @@ def deserialise_profile(data):
     if not isinstance(data, dict) or not data.get("name"):
         return None
     prof = new_profile(data["name"], data.get("kind", "human"))
-    for g in data.get("games", []) or []:
+    # r48: `games` was iterated without checking it was iterable, so a
+    # hand-edited `"games": 7` raised TypeError and took the game down with it
+    # -- on the one file the Maker keeps tracked in order to edit it by hand.
+    # The docstring above already promised this costs a row, not the game.
+    _games = data.get("games")
+    for g in (_games if isinstance(_games, list) else []):
         if not isinstance(g, dict) or "won" not in g:
             continue
         prof = profile_record_game(prof, g.get("opponent", "?"), g.get("won"),
                                     g.get("mode", "tournament"),
                                     g.get("shots", 0))
+        if g.get("grannie") in ("given", "taken"):
+            prof["games"][-1] = dict(prof["games"][-1])
+            prof["games"][-1]["grannie"] = g["grannie"]
+    prof["trophies"] = [dict(t) for t in (data.get("trophies") or [])
+                        if isinstance(t, dict)]
     if isinstance(data.get("params"), dict):
         prof["params"] = dict(data["params"])
     return prof
@@ -6644,6 +6820,53 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                               "grannie": grannie(
                                   sim.potted_colours_all(), _wc, _loc,
                                   game.reason == "black potted cleanly")}
+                    # r48: fold the result into the tracked profiles, here, at
+                    # the one moment the frame is decided. The Grannie count
+                    # rides along because the Maker's requirement was that a
+                    # whitewash is recorded "for ever more" -- r46 could only
+                    # announce one, having nowhere to put it.
+                    #
+                    # "YOU" is the SEAT, not the player, so it is translated to
+                    # the profile name BEFORE recording rather than merged
+                    # afterwards. The store is keyed on who is actually at the
+                    # table, which is what makes a second person on the same
+                    # clone build their own career instead of inheriting one.
+                    def _seat(i):
+                        n = game.names[i]
+                        return profile_name if (n == "YOU"
+                                                 and game.controllers[i]
+                                                 == "human") else n
+                    try:
+                        _pp = profile_store_path(
+                            __file__, os.environ.get("HUSTLER_PROFILES"))
+                        _cur = {}
+                        if os.path.exists(_pp):
+                            with open(_pp, "r", encoding="utf-8") as _f:
+                                _cur = profiles_from_json(json.load(_f))
+                        _cur = record_frame(_cur, _seat(game.winner),
+                                            _seat(1 - game.winner),
+                                            grannie=finale["grannie"])
+                        for _i in (0, 1):
+                            if game.controllers[_i] == "human":
+                                _cur[_seat(_i)]["kind"] = "human"
+                        with open(_pp, "w", encoding="utf-8") as _f:
+                            json.dump(profiles_to_json(_cur), _f, indent=1,
+                                       sort_keys=True)
+                            _f.write("\n")
+                    except OSError:
+                        # A frame is not worth losing the game over. The record
+                        # matters but it is not the point of playing, and the
+                        # shot log holds the shots either way.
+                        pass
+                        with open(_pp, "w", encoding="utf-8") as _f:
+                            json.dump(profiles_to_json(_cur), _f, indent=1,
+                                       sort_keys=True)
+                            _f.write("\n")
+                    except OSError:
+                        # A frame is not worth losing the game over. The record
+                        # is valuable but it is not the point of playing, and
+                        # the shot log already holds the shots either way.
+                        pass
             if (not game.over and not pending
                     and game.controllers[game.current] == "ai"):
                 if ai_plan is None:
@@ -10317,6 +10540,81 @@ def selftest():
           f"band lines by window: {caps100}; "
           f"no band -> in band? {status_goes_in_band(0, 14, 2, 4)}")
 
+    # 101. r48: a frame is recorded as a FRAME, never as a counter.
+    #
+    # The first version of this stored win/loss tallies on each profile. That
+    # is precisely what new_profile's r32 docstring warns against, and the
+    # warning is not abstract: r16 found pot_estimate five times over-confident
+    # and every conclusion drawn from it had to be thrown away. Aggregates on
+    # disk would have had to be migrated or discarded; functions over raw rows
+    # just get rewritten and re-run. So the counters were deleted and this
+    # appends game rows through r32's own `profile_record_game`.
+    #
+    # The Grannie rides on the row, given on one side and taken on the other,
+    # which is what makes "recorded for ever more" answerable in a way a tally
+    # never could be -- it says WHICH frame.
+    st101 = {}
+    st101 = record_frame(st101, "IAIN", "SHARK", grannie=True)
+    st101 = record_frame(st101, "SHARK", "IAIN")
+    st101 = record_frame(st101, "IAIN", "STEADY", mode="practice")
+    frozen101 = record_frame(st101, "IAIN", "SHARK")     # must not mutate st101
+    n101, w101, _, _, _ = profile_record(st101["IAIN"])
+    check("r48 profiles record frames, not tallies — every result is appended "
+          "as a row so any aggregate can be recomputed later, including one "
+          "nobody has thought of yet; a Grannie is marked on the frame it "
+          "happened in, given on one side and taken on the other; practice is "
+          "kept out of the tournament record; and recording returns a new "
+          "store rather than mutating the one on the way to disk",
+          n101 == 2 and w101 == 1
+          and profile_record(st101["IAIN"], mode="practice")[0] == 1
+          and grannie_counts(st101["IAIN"]) == (1, 0)
+          and grannie_counts(st101["SHARK"]) == (0, 1)
+          and grannie_counts(st101["STEADY"]) == (0, 0)
+          and profile_record(frozen101["IAIN"])[0] == 3
+          and profile_record(st101["IAIN"])[0] == 2
+          and st101["SHARK"]["games"][0]["opponent"] == "IAIN",
+          f"IAIN tournament {w101}/{n101}, practice "
+          f"{profile_record(st101['IAIN'], mode='practice')[0]}; grannies "
+          f"IAIN {grannie_counts(st101['IAIN'])} SHARK "
+          f"{grannie_counts(st101['SHARK'])}; store unmutated: "
+          f"{profile_record(st101['IAIN'])[0] == 2}")
+
+    # 102. r48: the store survives the trip to disk and back.
+    #
+    # It is TRACKED and the Maker asked for that so they can open it and adjust
+    # it by hand, which makes both halves of this load-bearing: a hand-edited
+    # file must not be able to take the game down, and nothing the game wrote
+    # may quietly vanish on the way back in.
+    #
+    # Both losses below were real and found by the r48 smoke test, not by
+    # reasoning: `serialise_profile` rebuilds each game row field by field
+    # rather than copying it, so the new `grannie` marker and the `trophies`
+    # list were being dropped in silence. The serialiser had to be extended
+    # rather than written around.
+    st102 = award_trophy(st101["IAIN"], "Summer League", "2026-08-02")
+    back102 = profiles_from_json(json.loads(json.dumps(
+        profiles_to_json(dict(st101, IAIN=st102)))))
+    junk102 = profiles_from_json({"players": {"A": "not a dict", "B": {},
+                                              "C": {"name": "C", "games": 7}}})
+    check("r48 the profile store round-trips without loss — trophies and the "
+          "Grannie markers survive JSON, which they did not in the first cut "
+          "because the r32 serialiser rebuilds rows field by field; and a "
+          "hand-edited file costs at most the malformed entry rather than "
+          "taking the game down, since the Maker keeps it tracked precisely "
+          "to edit it",
+          grannie_counts(back102["IAIN"]) == (1, 0)
+          and grannie_counts(back102["SHARK"]) == (0, 1)
+          and len(back102["IAIN"].get("trophies", [])) == 1
+          and back102["IAIN"]["trophies"][0]["title"] == "Summer League"
+          and profile_record(back102["IAIN"]) == profile_record(st102)
+          and isinstance(junk102, dict) and "A" not in junk102
+          and profiles_from_json("nonsense") == {}
+          and profiles_from_json({"players": []}) == {},
+          f"after JSON: grannies {grannie_counts(back102['IAIN'])}, trophies "
+          f"{len(back102['IAIN'].get('trophies', []))}, record "
+          f"{profile_record(back102['IAIN'])[:2]}; junk store keys "
+          f"{sorted(junk102)}")
+
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
 
@@ -10359,6 +10657,9 @@ def main():
     ap.add_argument("--batch", type=int, metavar="N", help="run N random strikes headless")
     ap.add_argument("--breaks", type=int, metavar="N", help="break analyser, N trials per config")
     ap.add_argument("--aigame", type=int, metavar="N", help="run N headless AI vs AI games")
+    ap.add_argument("--profiles", nargs="?", const="", metavar="FILE",
+                    help="show player profiles (default: hustler_profiles.json "
+                         "beside hustler.py; $HUSTLER_PROFILES overrides)")
     ap.add_argument("--stats", nargs="?", const="", metavar="FILE",
                     help="summarise a shot log (default: hustler_shots.jsonl "
                          "beside hustler.py; $HUSTLER_SHOT_LOG overrides)")
@@ -10374,6 +10675,43 @@ def main():
                     help="write every sound voice to WAV (no mixer, no game) "
                          "so they can be auditioned directly")
     args = ap.parse_args()
+
+    if args.profiles is not None:
+        # r48: same resolver as the writer, so the two cannot drift apart and
+        # leave --profiles reading a file nothing writes to (the r38 lesson).
+        ppath = args.profiles or profile_store_path(
+            __file__, os.environ.get("HUSTLER_PROFILES"))
+        try:
+            with open(ppath, encoding="utf-8") as fh:
+                profs = profiles_from_json(json.load(fh))
+        except OSError as exc:
+            print(f"no profiles at {ppath}: {exc}")
+            sys.exit(1)
+        except ValueError as exc:
+            print(f"profiles at {ppath} are not readable JSON: {exc}")
+            sys.exit(1)
+        rows = profile_table(profs)
+        print(f"HUSTLER profiles — {len(rows)} player(s), {ppath}")
+        if not rows:
+            print("  nothing recorded yet")
+        for r in rows:
+            print("  %-12s %-5s  %3d played %3d won  %5.1f%% [%4.1f-%4.1f]"
+                  % (r["name"], r["kind"], r["played"], r["won"],
+                     r["rate"] * 100, r["lo"] * 100, r["hi"] * 100))
+            extra = []
+            if r["grannies_given"]:
+                extra.append("%d grannie(s) given" % r["grannies_given"])
+            if r["grannies_taken"]:
+                extra.append("%d taken" % r["grannies_taken"])
+            if r["trophies"]:
+                extra.append("%d trophy(s)" % r["trophies"])
+            if extra:
+                print("               " + ", ".join(extra))
+        # A record, not a ranking -- see profile_table. Ranking has to account
+        # for opponent strength and the Maker has asked for it separately.
+        print("  (a record, not a ranking — intervals are Wilson, "
+              "and a ranking must weigh opponent strength)")
+        sys.exit(0)
 
     if args.stats is not None:
         # r38: same resolver as the writer, so the two cannot drift apart and

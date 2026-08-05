@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r47 — playable, validated, no known blocking bugs.
+**Status:** r48 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r47
+## Validation snapshot at r48
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 100 assertions |
+| `--selftest` | ALL PASS — 102 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -209,6 +209,34 @@ and the r42 constants block stay with their controls — a slider without its
 value is unusable, and the constants block was deliberately placed beside the
 sliders that change it (r42 Fork 1B).
 
+## What r48 changed (as built)
+
+**A tracked profile store**, `hustler_profiles.json`, beside hustler.py like
+the shot log since r38 and for the same reason. `profile_store_path()` mirrors
+`shot_log_path()`; `$HUSTLER_PROFILES` overrides. `--profiles` prints the table.
+
+**Built ON r32's model, not beside it.** Profiles already existed —
+`new_profile`, `profile_record_game`, `profile_record`, `serialise_profile`,
+`deserialise_profile` — and pyflakes caught the duplicate on first compile. r32
+stores FRAMES and derives aggregates; the first r48 cut stored counters, which
+is what r32's docstring warns against. Counters deleted; `record_frame()` is now
+a store-level wrapper that appends rows via `profile_record_game`.
+
+**A Grannie is a marker on the frame row** (`given`/`taken`), not a counter, so
+the record says which frame. `grannie_counts()` derives the totals.
+`award_trophy()` appends a named, dated event.
+
+**Two real bugs found by assertion 102, both in serialisation:**
+`serialise_profile` rebuilds rows field by field and was silently dropping the
+`grannie` marker and `trophies`; and `deserialise_profile` returned None for a
+malformed entry (documented r32 behaviour) which the new reader dereferenced,
+then crashed iterating a non-list `games`. Both would have hit the file the
+Maker keeps tracked in order to hand-edit it.
+
+**Deliberately absent:** shot-level statistics. Those stay in the log and are
+computed by `--stats`. And `profile_table()` is a RECORD, not a ranking —
+ranking must weigh opponent strength, and is a separate ask.
+
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
 enforces the `--snap` md5 as well: the hash lives in one place, as a
@@ -352,7 +380,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 100 assertions, all
+  out) rather than the pygame wrapper around it. Currently 102 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -1265,10 +1293,10 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 >
 > > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **100 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **102 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.47.0.
+> > standalone, 36 primitives. `setup.py` says 0.48.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

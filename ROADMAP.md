@@ -1,14 +1,14 @@
 # Roadmap
 
-## Current status: r47 — playable, validated
+## Current status: r48 — playable, validated
 
-**Validation snapshot (r47, measured on nix5 and reproduced in a Linux
+**Validation snapshot (r48, measured on nix5 and reproduced in a Linux
 container):**
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 100 assertions |
+| `--selftest` | ALL PASS — 102 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -35,7 +35,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~10,420 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~10,760 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -338,8 +338,9 @@ are all zero. `serialise_layout()` already stores positions in metres and is
 covered by selftest 37 — that plus the rules state on `Game` is a resumable
 frame.
 
-Increments: r46 Grannie ✔ → r47 profiles → r48 menu/career shell → r49 league,
-fixtures, auto-resolve, resume → r50 play-offs and trophies → rankings.
+Increments: r46 Grannie ✔ → r47 readout to the band ✔ → r48 profiles ✔ →
+r49 menu/career shell → r50 league, fixtures, auto-resolve, resume →
+r51 play-offs and trophies → rankings.
 
 Still queued behind it: the style fit from shot selection, and tournament
 mode.

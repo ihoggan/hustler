@@ -5,7 +5,62 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r47 — the readout moves off the HUD (current)
+## r48 — everyone gets a profile (current)
+
+The first piece of league mode with a file behind it. Every player, human and
+AI, now carries a tracked profile: frames played, frames won with their Wilson
+interval, Grannies given and taken, and trophies. `--profiles` prints the
+table. It is keyed per player, so a second person on the same clone builds
+their own career rather than joining this one — which is what the Maker meant
+by every player getting their own tournament.
+
+It also finishes what r46 could only announce. A Grannie is now **recorded for
+ever more**, which was the requirement; r46 had nowhere to put one.
+
+### Written twice, because the first version was worse than what was here
+
+Profiles already existed. r32 built `new_profile`, `profile_record_game`,
+`profile_record`, `serialise_profile` and `deserialise_profile`, and pyflakes
+caught the collision the moment the duplicate was compiled.
+
+The r32 model is also the better one, for a reason its own docstring gives:
+**it stores the frames and derives every aggregate**, where the first r48 cut
+kept win/loss counters. That warning is not abstract — r16 found `pot_estimate`
+five times over-confident and every conclusion drawn from it had to be thrown
+away. Aggregates on disk would have had to be migrated or discarded; functions
+over raw rows just get rewritten and re-run. So the counters were deleted and
+r48 became a *store* around r32's per-profile model rather than a replacement
+for it. The Grannie rides on the frame row, which means the record says which
+frame it happened in — something a tally could never answer.
+
+### Two real bugs, both found by the round-trip assertion
+
+`serialise_profile` rebuilds each game row field by field rather than copying
+it, so the new `grannie` marker and the `trophies` list were being **silently
+dropped** on the way to disk. The serialiser had to be extended rather than
+written around.
+
+And `deserialise_profile` returned `None` for a malformed entry — r32's
+documented behaviour, "a hand-edited profile should cost you a row, not the
+game" — which the new reader then called `.get()` on. A second pass found it
+iterating `games` without checking it was a list, so `"games": 7` raised
+TypeError. Both would have crashed on exactly the file the Maker asked to have
+tracked **so they could edit it by hand**. Assertion 102 exists for that file.
+
+### What a profile deliberately does not carry
+
+No pot rates, no cut-angle bands, no foul counts. All of that lives in the shot
+log and is computed on demand by `--stats`, over the whole history rather than
+from whenever a profile happened to be created. One place per fact.
+
+And the table is a **record, not a ranking**. Ranking has to weigh opponent
+strength — beating the strongest AI is not the same as beating the weakest —
+and letting a sorted win column stand in for it would be the r43 mistake told
+backwards. The Maker has asked for rankings separately.
+
+---
+
+## r47 — the readout moves off the HUD
 
 The Maker noticed the empty strip above the table and asked whether the HUD's
 text could live there instead, leaving the panel free to be controls. Measuring
