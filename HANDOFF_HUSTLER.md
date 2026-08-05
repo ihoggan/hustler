@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r48 — playable, validated, no known blocking bugs.
+**Status:** r49 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r48
+## Validation snapshot at r49
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 102 assertions |
+| `--selftest` | ALL PASS — 103 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -237,6 +237,27 @@ Maker keeps tracked in order to hand-edit it.
 computed by `--stats`. And `profile_table()` is a RECORD, not a ranking —
 ranking must weigh opponent strength, and is a separate ask.
 
+## What r49 changed (as built)
+
+**THE HUMAN'S OPPONENT WAS NOT THE ONE NAMED.** `names = ("YOU", "SHARK")` came
+from one list, the players from `default_ais()` = `[SHARK, STEADY]`, and the AI
+is indexed by seat — so seat 1 was STEADY while everything on screen said
+SHARK. r48 made it damaging: profiles record under `game.names[...]` into a
+tracked file.
+
+**`seat_lineup(mode_name, human_opponent)`** now returns names, controllers and
+AI names together, resolved BY MODE NAME (r30's rule, never the literal 1).
+**`ais_for_seats()`** looks each player up by the name shown in that seat, and
+returns None for a human seat — unreachable behind the `controllers[...] ==
+"ai"` guard, and a crash beats a silent second personality. Assertion 103.
+
+**Default opponent is SHARK**, held in the single module constant
+`DEFAULT_OPPONENT`. It nearly existed twice (default argument plus a literal in
+`run_gui`); a mutation test caught that the assertion did not notice, so 103
+now pins both.
+
+`seat_lineup` already accepts STEADY — the opponent picker is a UI away.
+
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
 enforces the `--snap` md5 as well: the hash lives in one place, as a
@@ -380,7 +401,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 102 assertions, all
+  out) rather than the pygame wrapper around it. Currently 103 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -1293,10 +1314,10 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 >
 > > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **102 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **103 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.48.0.
+> > standalone, 36 primitives. `setup.py` says 0.49.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

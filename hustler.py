@@ -2623,6 +2623,57 @@ def profiles_to_json(profiles):
             "players": {k: serialise_profile(v) for k, v in profiles.items()}}
 
 
+HUMAN_SEAT_NAME = "YOU"
+# r49: the human's default opponent, in ONE place. It was about to be two --
+# a default argument here and a separate literal inside run_gui -- which is
+# precisely the two-sources fault this revision exists to remove. A mutation
+# test caught it: changing run_gui's copy left assertion 103 passing.
+DEFAULT_OPPONENT = "SHARK"
+
+
+def seat_lineup(mode_name, human_opponent=DEFAULT_OPPONENT):
+    """r49: who sits in which seat, as (names, controllers, ai_names). Pure.
+
+    THE BUG THIS EXISTS TO KILL: the human game set `names = ("YOU", "SHARK")`
+    while the AI list came from `default_ais()`, which returns SHARK then
+    STEADY. The AI is indexed BY SEAT -- `ais[game.current]` -- so seat 1 got
+    `ais[1]`, which is STEADY. Every readout, every event line and every win
+    message said SHARK; the opponent was STEADY, with a completely different
+    temperament (threshold 0.24 against 0.10, caution 0.70 against 0.35).
+
+    It went unnoticed because both lists were the right length and the wrong
+    one still played a perfectly good frame. That is the same shape as the r23
+    find where `controllers[...] == "you"` compared a name to a controller
+    value and silently never matched: two parallel lists, one truth, no check.
+
+    r48 made it urgent rather than merely wrong. Profiles are recorded under
+    `game.names[...]` and the store is TRACKED, so the first finished frame
+    would have credited SHARK with a result STEADY earned and committed it.
+
+    So both come from here, together, and assertion 103 checks that the name
+    shown in an AI seat is the AI actually sitting in it.
+    """
+    ai_names = {"SHARK", "STEADY"}
+    if mode_name == "YOU vs AI":
+        opp = (human_opponent if human_opponent in ai_names
+               else DEFAULT_OPPONENT)
+        return ((HUMAN_SEAT_NAME, opp), ("human", "ai"), (None, opp))
+    return (("SHARK", "STEADY"), ("ai", "ai"), ("SHARK", "STEADY"))
+
+
+def ais_for_seats(ai_names, rng=None):
+    """r49: the AI object for each seat, looked up BY NAME. Pure-ish (it builds
+    PoolAIs, but takes no globals and touches nothing).
+
+    `None` for a human seat, deliberately, rather than a spare AI: the caller
+    only ever reaches for `ais[current]` when that seat's controller is "ai",
+    so a None there can never be used -- and if it ever were, a crash is a far
+    better outcome than an unnoticed second personality quietly taking shots.
+    """
+    pool = {a.name: a for a in default_ais(rng)}
+    return [pool.get(n) if n else None for n in ai_names]
+
+
 def summarise_shots(rows, x1, y1):
     """r33.2: turn a shot log into the numbers a player actually wants. Pure --
     rows in, list of printable lines out, no file I/O and no pygame.
@@ -5839,14 +5890,22 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                # frames after the actual capture) still knows
                                # where to keep the glow lit
     finale = None              # dict or None, Increment 4c (slow-mo black)
+    # r49: who the human plays. SHARK by default -- the Maker's call, and the
+    # livelier frame: it attempts more, plays for position and risks more,
+    # where STEADY demands a better chance and plays safe. It is also what the
+    # HUD had been claiming all along.
+    human_opponent = DEFAULT_OPPONENT
     frames = 0
     running = True
     last_shown = screen
     def start_game(m):
-        controllers = ("human", "ai") if m == 1 else ("ai", "ai")
-        names = ("YOU", "SHARK") if m == 1 else ("SHARK", "STEADY")
+        # r49: names AND the AI in each seat come from ONE source now. They
+        # were two parallel lists before, and they disagreed: the HUD said
+        # SHARK while STEADY actually played. Resolved by MODE NAME rather than
+        # by the literal 1, same rule as SOLO above (r30).
+        names, controllers, ai_names = seat_lineup(MODES[m], human_opponent)
         s, g = new_game(controllers=controllers, names=names)
-        return s, g, default_ais()
+        return s, g, ais_for_seats(ai_names)
 
     # ------------------------------------------------------------------
     # Shared actions (Increment 3b): SPACE / M / T / X / G and the panel's
@@ -10614,6 +10673,53 @@ def selftest():
           f"{len(back102['IAIN'].get('trophies', []))}, record "
           f"{profile_record(back102['IAIN'])[:2]}; junk store keys "
           f"{sorted(junk102)}")
+
+    # 103. r49: the name in a seat IS the player in that seat.
+    #
+    # It was not. The human game set names ("YOU", "SHARK") from one list and
+    # took its AIs from default_ais(), which is [SHARK, STEADY]. The AI is
+    # indexed BY SEAT, so seat 1 got STEADY while every readout, event line and
+    # win message said SHARK -- a completely different temperament, threshold
+    # 0.24 against 0.10 and caution 0.70 against 0.35.
+    #
+    # Nothing caught it because both lists were the right length and the wrong
+    # AI still played a perfectly good frame. Same shape as r23's find where
+    # `controllers[...] == "you"` compared a name to a controller value and
+    # silently never matched: two parallel lists, one truth, no check.
+    #
+    # r48 turned it from wrong into damaging. Profiles are recorded under
+    # game.names[...] into a TRACKED file, so the first finished frame would
+    # have credited SHARK with a result STEADY earned, and committed it.
+    seats103 = []
+    for mode103 in ("YOU vs AI", "AI vs AI"):
+        nm, ct, an = seat_lineup(mode103)
+        got = ais_for_seats(an)
+        for i in range(2):
+            seats103.append(ct[i] != "ai"
+                            or (got[i] is not None and got[i].name == nm[i]))
+    nm_you, ct_you, an_you = seat_lineup("YOU vs AI")
+    steady103 = seat_lineup("YOU vs AI", "STEADY")[0]
+    bogus103 = seat_lineup("YOU vs AI", "NIGEL")[0]
+    check("r49 the name in a seat is the player in that seat — the AI shown in "
+          "a seat is the AI that takes the shots there, in every mode, because "
+          "the names and the players now come from one source instead of two "
+          "lists that agreed on length and disagreed on content; the human's "
+          "opponent is SHARK by default and an unknown name falls back rather "
+          "than seating nobody",
+          all(seats103)
+          and nm_you == ("YOU", "SHARK") and ct_you == ("human", "ai")
+          and ais_for_seats(an_you)[0] is None
+          and ais_for_seats(an_you)[1].name == "SHARK"
+          and steady103 == ("YOU", "STEADY")
+          and bogus103 == ("YOU", "SHARK")
+          # the default lives in ONE place; run_gui must not carry its own
+          and DEFAULT_OPPONENT == "SHARK"
+          and inspect.getsource(run_gui).count('human_opponent = ') == 1
+          and 'human_opponent = DEFAULT_OPPONENT' in inspect.getsource(run_gui),
+          f"seat/name agreement {sum(seats103)}/{len(seats103)}; "
+          f"human game seats {nm_you} -> AI "
+          f"{[a.name if a else None for a in ais_for_seats(an_you)]}; "
+          f"chosen STEADY -> {steady103}; unknown -> {bogus103}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

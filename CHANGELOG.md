@@ -5,7 +5,52 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r48 — everyone gets a profile (current)
+## r49 — you were never playing SHARK (current)
+
+The Maker asked whether they could swap between the two AI opponents. Checking
+the answer turned up something worse: **the opponent was not the one named on
+screen.**
+
+The human game set `names = ("YOU", "SHARK")` from one list and took its
+players from `default_ais()`, which returns `[SHARK, STEADY]`. The AI is
+indexed BY SEAT — `ais[game.current]` — so seat 1 got `ais[1]`, which is
+**STEADY**. Every readout, every event line and every win message said SHARK.
+The opponent had the opposite temperament: threshold 0.24 against 0.10, greed
+0.25 against 0.55, caution 0.70 against 0.35. Where SHARK takes on anything and
+plays for position, STEADY demands a better chance and plays safe.
+
+Nothing caught it because both lists were the right length and the wrong AI
+still played a perfectly good frame. It is the same shape as the r23 find where
+`controllers[...] == "you"` compared a name to a controller value and silently
+never matched: two parallel lists, one truth, no check between them.
+
+**r48 turned it from wrong into damaging.** Profiles are recorded under
+`game.names[...]` into a file that is tracked, so the first finished frame would
+have credited SHARK with a result STEADY earned — and committed it. Found the
+day after r48 shipped and before any real frame was played into the store.
+
+Names and players now come from a single `seat_lineup()`, resolved BY MODE NAME
+rather than by the literal 1 (the r30 rule), with `ais_for_seats()` looking each
+player up by the name shown in that seat. A human seat gets `None` rather than a
+spare AI: it can never be reached, and if it somehow were, a crash beats a
+second personality quietly taking shots. Assertion 103 checks every seat in
+every mode.
+
+The Maker's choice for the default is **SHARK** — the livelier frame, and what
+the HUD had been claiming all along. `seat_lineup()` also accepts STEADY, which
+is the beginning of the opponent picker the league needs.
+
+One more source of truth removed on the way: the default opponent was about to
+exist twice, as a default argument and a literal inside `run_gui`. A mutation
+test caught it — changing `run_gui`'s copy left the assertion passing — so it
+is now one module constant that the assertion pins in both places.
+
+`--aigame 12 --seed 4200` still returns SHARK 9–3, unchanged: AI-vs-AI was
+always seated correctly, and the fix touches only the human game.
+
+---
+
+## r48 — everyone gets a profile
 
 The first piece of league mode with a file behind it. Every player, human and
 AI, now carries a tracked profile: frames played, frames won with their Wilson
