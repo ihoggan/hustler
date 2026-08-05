@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r49 — playable, validated, no known blocking bugs.
+**Status:** r49.1 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -257,6 +257,18 @@ returns None for a human seat — unreachable behind the `controllers[...] ==
 now pins both.
 
 `seat_lineup` already accepts STEADY — the opponent picker is a UI away.
+
+## What r49.1 added
+
+**The opponent picker** — Game tab button plus the **O** key, cycling
+`OPPONENT_ROSTER` via pure `next_opponent()`. Restarts the frame (same reason a
+mode change does); inert outside YOU vs AI but still cycles for the next game.
+
+**`restart_frame()`** extracted from `do_cycle_mode` so the picker restarts by
+the same path rather than a copy — the r49 fault reappearing three inches left.
+
+**Assertion 103's guard changed** from "assigned once" to "no literal ever
+assigned". A guard that forbids the fix rather than the fault is the wrong guard.
 
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
@@ -1317,7 +1329,7 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 > > `py_compile` → `--selftest` ALL PASS, **103 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.49.0.
+> > standalone, 36 primitives. `setup.py` says 0.49.1.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

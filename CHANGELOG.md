@@ -5,7 +5,43 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r49 — you were never playing SHARK (current)
+## r49.1 — and now you can actually swap (current)
+
+r49 fixed *which* AI sits in the seat and shipped no way to choose it.
+`human_opponent` was assigned once and nothing on earth ever touched it. The
+Maker put it plainly: "I dont see anyway to switch opponents."
+
+**Opponent picker on the Game tab, beside Mode, and the O key.** It restarts
+the frame exactly as a mode change does, because swapping opponents halfway
+through a frame is not a thing that happens — the record would be half one
+player's and half another's, and r48 writes that record to a tracked file.
+Outside YOU vs AI it still cycles, so the next human game uses the choice, but
+it does not tear down an AI-vs-AI frame that has nothing to do with it.
+
+`next_opponent()` walks a roster and wraps, rather than flipping a boolean: the
+league needs eight of these, and a two-way toggle would be thrown away the
+moment the roster grows.
+
+**One source of truth, again.** Standing up a fresh frame was about to exist
+twice — `do_cycle_mode`'s tail and a copy inside the picker. That is precisely
+the fault r49 spent a whole revision removing, reappearing three inches to the
+left. Extracted to `restart_frame()`, which both now call. Four `nonlocal`
+declarations in `do_cycle_mode` became dead in the process and pyflakes said so.
+
+Assertion 103's guard had to change, and the reason is worth recording. It
+demanded `human_opponent` be assigned exactly once in `run_gui` — which the
+picker legitimately broke. The thing that actually matters is that no *literal*
+name is ever assigned, so that is what it checks now: `'human_opponent = "'`
+must not appear at all, and `human_opponent = DEFAULT_OPPONENT` exactly once. A
+guard that forbids the fix rather than the fault is the wrong guard.
+
+Measured: `Opponent: STEADY (O)` renders 260px against a 348px button at 1.5x
+and 160px against 232px at 1.0x, so it fits at every size, and the Game tab's
+headroom is unchanged.
+
+---
+
+## r49 — you were never playing SHARK
 
 The Maker asked whether they could swap between the two AI opponents. Checking
 the answer turned up something worse: **the opponent was not the one named on

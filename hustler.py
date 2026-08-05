@@ -2623,6 +2623,27 @@ def profiles_to_json(profiles):
             "players": {k: serialise_profile(v) for k, v in profiles.items()}}
 
 
+OPPONENT_ROSTER = ("SHARK", "STEADY")
+
+
+def next_opponent(current, roster=OPPONENT_ROSTER):
+    """r49.1: the next opponent in the roster, wrapping. Pure.
+
+    A list rather than a toggle because the league needs eight of these and a
+    two-way flip would have to be thrown away the moment the roster grows.
+    An unrecognised current name starts from the top rather than raising --
+    the same forgiving fallback `seat_lineup` uses, so a hand-edited or
+    out-of-date value costs a cycle, not a crash.
+    """
+    if not roster:
+        return current
+    try:
+        i = roster.index(current)
+    except ValueError:
+        return roster[0]
+    return roster[(i + 1) % len(roster)]
+
+
 HUMAN_SEAT_NAME = "YOU"
 # r49: the human's default opponent, in ONE place. It was about to be two --
 # a default argument here and a separate literal inside run_gui -- which is
@@ -2653,7 +2674,7 @@ def seat_lineup(mode_name, human_opponent=DEFAULT_OPPONENT):
     So both come from here, together, and assertion 103 checks that the name
     shown in an AI seat is the AI actually sitting in it.
     """
-    ai_names = {"SHARK", "STEADY"}
+    ai_names = set(OPPONENT_ROSTER)
     if mode_name == "YOU vs AI":
         opp = (human_opponent if human_opponent in ai_names
                else DEFAULT_OPPONENT)
@@ -6043,7 +6064,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         return (call_on, balls, call_ball, call_pocket)
 
     def do_cycle_mode():
-        nonlocal mode, sim, game, ais, ai_plan, ai_wait, pending, sandbox_bih
+        # r49.1: sim/game/ais/sandbox_bih moved to restart_frame(), which now
+        # owns standing a frame up. Leaving them declared here would be a
+        # nonlocal that never assigns -- pyflakes says so, and it would mislead
+        # the next reader about where the game gets built.
+        nonlocal mode, ai_plan, ai_wait, pending
         nonlocal solo_run, solo_start_t, solo_stop_t, next_is_break
         mode = (mode + 1) % len(MODES)
         ai_plan, ai_wait, pending = None, 0, False
@@ -6054,6 +6079,17 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # a clock that had been stopped for minutes.
         solo_run, solo_start_t, solo_stop_t = new_solo_run(), None, None
         next_is_break = True          # r39: a new mode starts from a rack
+        restart_frame()
+
+    def restart_frame():
+        """r49.1: stand up a fresh frame for the current mode.
+
+        Extracted from do_cycle_mode so the opponent picker restarts the frame
+        by the SAME path rather than a copy of it. Two routines standing up a
+        game and drifting apart is exactly the fault r49 spent a revision
+        removing, and it would have been reintroduced three inches to the left.
+        """
+        nonlocal sim, game, ais, pending, sandbox_bih
         if human_shooting():
             sim, game, ais = Sim(), None, None
             sim.auto_respot = False       # r23: sandbox places its own cue
@@ -6065,6 +6101,27 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 pending = True
             else:
                 game.last_event = "your break — aim at the pack"
+
+    def do_cycle_opponent():
+        """r49.1: pick who the human plays.
+
+        r49 fixed WHICH AI sits in the seat but shipped no way to choose it --
+        `human_opponent` was assigned once and nothing ever touched it. The
+        Maker said so plainly: "I dont see anyway to switch opponents."
+
+        Restarts the frame, exactly as a mode change does, because swapping
+        opponents halfway through a frame is not a thing that happens: the
+        record would be half one player's and half another's, and r48 writes
+        that record to a tracked file.
+        """
+        nonlocal human_opponent, ai_plan, ai_wait, pending, next_is_break
+        human_opponent = next_opponent(human_opponent)
+        if mode == MODES.index("YOU vs AI"):
+            ai_plan, ai_wait, pending = None, 0, False
+            trail_history.clear()
+            pot_anims.clear()
+            next_is_break = True
+            restart_frame()
 
     def do_rack():
         # r31 BUG FIX: `finale` was missing from this list, so the reset below
@@ -6550,6 +6607,15 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         game_w.append(Button((px, y3, pw, U(28)),
                               lambda: f"Mode: {MODES[mode]} (M)", do_cycle_mode))
         y3 += U(36)
+        # r49.1: the opponent picker. On the Game tab beside Mode, because it
+        # is the same kind of choice and restarts the frame the same way.
+        # Inert outside YOU vs AI -- it still cycles, so the next human game
+        # uses the choice, but it does not tear down an AI-vs-AI frame that
+        # has nothing to do with it.
+        game_w.append(Button((px, y3, pw, U(28)),
+                              lambda: f"Opponent: {human_opponent} (O)",
+                              do_cycle_opponent))
+        y3 += U(36)
         game_w.append(Button((px, y3, pw, U(28)), "Rack up (T)", do_rack))
         y3 += U(36)
         game_w.append(Button((px, y3, pw, U(28)), "Toggle overlay (G)", do_toggle_overlay))
@@ -6632,6 +6698,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     trail_history.clear()
                     pot_anims.clear()
                     finale = None
+                elif ev.key == pygame.K_o:
+                    do_cycle_opponent()
                 elif ev.key == pygame.K_g and (ev.mod & pygame.KMOD_SHIFT):
                     # r46.1: preview the Grannie without having to earn one.
                     # A real whitewash is rare and hard to stage on demand, and
@@ -10712,10 +10780,20 @@ def selftest():
           and ais_for_seats(an_you)[1].name == "SHARK"
           and steady103 == ("YOU", "STEADY")
           and bogus103 == ("YOU", "SHARK")
-          # the default lives in ONE place; run_gui must not carry its own
+          # r49.1: the default lives in ONE place. The guard used to demand a
+          # single assignment, which the opponent picker legitimately broke --
+          # what actually matters is that no LITERAL name is ever assigned, so
+          # that is what is checked now. Cycling wraps and an unknown current
+          # name starts from the top rather than raising.
           and DEFAULT_OPPONENT == "SHARK"
-          and inspect.getsource(run_gui).count('human_opponent = ') == 1
-          and 'human_opponent = DEFAULT_OPPONENT' in inspect.getsource(run_gui),
+          and 'human_opponent = "' not in inspect.getsource(run_gui)
+          and inspect.getsource(run_gui).count(
+              'human_opponent = DEFAULT_OPPONENT') == 1
+          and next_opponent("SHARK") == "STEADY"
+          and next_opponent("STEADY") == "SHARK"
+          and next_opponent("NIGEL") == "SHARK"
+          and all(next_opponent(n) in OPPONENT_ROSTER
+                  for n in OPPONENT_ROSTER),
           f"seat/name agreement {sum(seats103)}/{len(seats103)}; "
           f"human game seats {nm_you} -> AI "
           f"{[a.name if a else None for a in ais_for_seats(an_you)]}; "
