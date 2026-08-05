@@ -1181,6 +1181,16 @@ class Sim:
         for bid in [i for i in self.balls if i != self.CUE_ID]:
             body, shape = self.balls.pop(bid)
             self.space.remove(body, shape)
+            # r46: the colour map was never pruned here, so it grew by a full
+            # rack every time the table was cleared -- 4 entries, then 19, then
+            # 34, against a space correctly holding 16 bodies. Benign so far,
+            # because ball ids are never reused and `remaining()` iterates
+            # `self.balls` rather than this map, so nothing ever computed a
+            # wrong answer. It becomes a real bug the moment anything walks
+            # `colours` instead of `balls` -- and league mode racks hundreds of
+            # frames in a single run, so it is cleaned now rather than left to
+            # be found later. Selftest 99 pins it.
+            self.colours.pop(bid, None)
         self.black_id = None
         self.reset_potted_history()
 
@@ -2383,6 +2393,39 @@ def sessions(rows, limit=None):
         groups.setdefault(r.get("session"), []).append(r)
     out = sorted(groups.items(), key=lambda kv: (kv[0] is not None, kv[0] or ""))
     return out[-limit:] if limit else out
+
+
+def grannie(potted_colours, winner_colour, loser_colour, clean_black,
+            per_colour=7):
+    """r46: was this frame a GRANNIE -- the Scottish whitewash? Pure.
+
+    The Maker's rule, in their words: it happens only if one player's COLOUR
+    does not get potted, and the opposing player pots all of theirs and the
+    black.
+
+    THE IMPORTANT WORD IS *COLOUR*, NOT *PLAYER*. This is judged on what went
+    down, never on who sent it down, and that is what makes it computable from
+    state the game already keeps -- `potted_colours_all()` plus the colour
+    assignment. Nothing needs to track which player potted which ball.
+
+    It also settles the case that decides the rule: if the winner knocks in one
+    of the loser's balls by accident, the loser's colour HAS been potted, and
+    there is no Grannie. The loser never potted a thing themselves, so a
+    shooter-based reading would still call it a whitewash -- but the rule is
+    about the colour, so it is off. Confirmed with the Maker before building.
+
+    `clean_black` must be the frame ending on a legally potted black. A win
+    handed over by an opponent's foul on the black is not a clearance and
+    cannot be a Grannie, however one-sided the frame was.
+    """
+    if not clean_black or winner_colour is None or loser_colour is None:
+        return False
+    if winner_colour == loser_colour:
+        return False
+    if loser_colour in potted_colours:
+        return False
+    return (potted_colours.count(winner_colour) >= per_colour
+            and "black" in potted_colours)
 
 
 def summarise_shots(rows, x1, y1):
@@ -4931,6 +4974,54 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         sprite_cache[key] = surf
         return surf
 
+    def draw_grannie(surf, rect, scale=1.0):
+        """r46: the Grannie payoff, drawn from pygame primitives.
+
+        The Maker wants a granny on screen and big writing when a whitewash
+        happens. The standing no-asset-files rule means she is drawn rather than
+        loaded -- everything in HUSTLER is synthesised from code, and one
+        photograph would be the first exception in the project's history.
+
+        Their brief on quality was explicit and worth recording: it does not matter
+        if she is naff for now, as long as she is there and the whitewash is
+        recorded on the profile for ever more. So this aims for legible and
+        characterful rather than accomplished, and it is expected to get another
+        pass once it has been seen on a real screen.
+        """
+        cx, cy = rect.centerx, rect.centery
+        u = max(1.0, scale)
+
+        def px(v):
+            return int(round(v * u))
+        # shawl
+        pygame.draw.ellipse(surf, (86, 62, 108),
+                            (cx - px(58), cy - px(6), px(116), px(96)))
+        # face
+        pygame.draw.circle(surf, (240, 208, 186), (cx, cy - px(14)), px(44))
+        # hair bun and curls
+        pygame.draw.circle(surf, (226, 226, 232), (cx, cy - px(62)), px(20))
+        for dx in (-46, -30, 30, 46):
+            pygame.draw.circle(surf, (226, 226, 232),
+                               (cx + px(dx), cy - px(34)), px(14))
+        pygame.draw.arc(surf, (226, 226, 232),
+                        (cx - px(48), cy - px(62), px(96), px(70)),
+                        0.15, 2.99, px(10))
+        # spectacles
+        for dx in (-18, 18):
+            pygame.draw.circle(surf, (60, 60, 66),
+                               (cx + px(dx), cy - px(16)), px(14), max(1, px(3)))
+        pygame.draw.line(surf, (60, 60, 66), (cx - px(5), cy - px(16)),
+                         (cx + px(5), cy - px(16)), max(1, px(3)))
+        # eyes, nose, a small satisfied smile
+        for dx in (-18, 18):
+            pygame.draw.circle(surf, (40, 40, 48),
+                               (cx + px(dx), cy - px(16)), max(1, px(4)))
+        pygame.draw.line(surf, (198, 158, 140), (cx, cy - px(10)),
+                         (cx, cy + px(2)), max(1, px(3)))
+        pygame.draw.arc(surf, (150, 84, 84),
+                        (cx - px(20), cy - px(6), px(40), px(28)),
+                        3.34, 6.08, max(1, px(3)))
+
     def draw_ball(kind, pos, r_px):
         spr = ball_sprite(kind, r_px)
         screen.blit(spr, (pos[0] - r_px - sprite_pad, pos[1] - r_px - sprite_pad))
@@ -6238,6 +6329,27 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     trail_history.clear()
                     pot_anims.clear()
                     finale = None
+                elif ev.key == pygame.K_g and (ev.mod & pygame.KMOD_SHIFT):
+                    # r46.1: preview the Grannie without having to earn one.
+                    # A real whitewash is rare and hard to stage on demand, and
+                    # the Maker cannot judge whether the drawn granny is any
+                    # good until they have seen her. This reuses the FINALE
+                    # PATH rather than a special preview renderer, so what this
+                    # shows is exactly what a real Grannie shows -- fade,
+                    # placement, type and all. A separate preview would be free
+                    # to drift from the real thing and would then be worse than
+                    # useless, because it would be trusted.
+                    #
+                    # `cup` is None: there is no black to glow around, and the
+                    # finale already handles that case for a frame that ends
+                    # without one being captured.
+                    #
+                    # ORDERING IS LOAD-BEARING: this arm must come BEFORE the
+                    # plain K_g arm below, or the overlay toggle swallows it.
+                    # Plain G has toggled the aim overlay since r14 and is not
+                    # being taken away.
+                    finale = {"start_frame": frames, "cup": None,
+                              "grannie": True}
                 elif ev.key == pygame.K_g:
                     do_toggle_overlay()
                 elif ev.key == pygame.K_F11 and not smoke:
@@ -6452,8 +6564,18 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 # branch. Gated `not smoke` at the point it's actually
                 # drawn, same doctrine as 4a/4b.
                 if not smoke and not was_over and game.over:
+                    # r46: the Grannie is decided HERE, at the moment the frame
+                    # resolves, because `potted_colours_all()` still holds the
+                    # whole rack's history and the colour assignment is still
+                    # standing. It is a pure question asked of state that
+                    # already exists -- nothing new is tracked during play.
+                    _wc = game.colours.get(game.winner)
+                    _lc = game.colours.get(1 - game.winner)
                     finale = {"start_frame": frames,
-                              "cup": last_black_cup}
+                              "cup": last_black_cup,
+                              "grannie": grannie(
+                                  sim.potted_colours_all(), _wc, _lc,
+                                  game.reason == "black potted cleanly")}
             if (not game.over and not pending
                     and game.controllers[game.current] == "ai"):
                 if ai_plan is None:
@@ -6731,6 +6853,21 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     glow_r = max(3, int(0.05 * S * (1.0 + fade)))
                     gcol = lerp3((40, 40, 44), (255, 235, 190), fade)
                     pygame.draw.circle(screen, gcol, w2s(cup), glow_r)
+                # r46: the Grannie payoff. Drawn on top of the finale's own
+                # fade so it arrives with the win rather than after it, and
+                # inside the same `not smoke` gate as everything else in this
+                # block -- the --snap baseline must not learn about it.
+                if finale.get("grannie"):
+                    gs = max(1.0, H / 900.0)
+                    gr = pygame.Rect(0, 0, int(260 * gs), int(260 * gs))
+                    gr.center = (W // 2, int(H * 0.42))
+                    draw_grannie(screen, gr, gs)
+                    gf = pygame.font.SysFont(
+                        "consolas,menlo,monospace", int(46 * gs), bold=True)
+                    msg = gf.render("YOU'VE BEEN GRANNIED", True,
+                                    (255, 226, 140))
+                    screen.blit(msg, msg.get_rect(
+                        center=(W // 2, gr.bottom + int(46 * gs))))
             elif age >= CFG["FINALE_FRAMES"]:
                 finale = None
 
@@ -9974,6 +10111,71 @@ def selftest():
           f"keys {keys97}; unknown bucket holds {len(got97[0][1])}; "
           f"latest sitting span {span97}s; single-shot span "
           f"{session_span_s([{'t': '2026-08-02T19:00:00Z'}])}")
+
+    # 98. r46: the Grannie, and the one case that defines it.
+    #
+    # The Maker's rule: it happens only if one player's COLOUR does not get
+    # potted, and the opposing player pots all of theirs and the black. The
+    # load-bearing word is COLOUR, not PLAYER -- which is why no per-player pot
+    # attribution had to be built, and why the accidental pot below is NOT a
+    # Grannie. If the winner knocks in one of the loser's balls, the loser's
+    # colour has been potted even though the loser never struck a ball in
+    # anger, and a shooter-based reading would wrongly call that a whitewash.
+    # Confirmed with the Maker before a line was written.
+    #
+    # A win handed over by a foul on the black is also not a clearance, however
+    # one-sided the frame looked.
+    clean98 = ["red"] * 7 + ["black"]
+    stray98 = ["red"] * 7 + ["yellow", "black"]
+    check("r46 the Grannie — a whitewash is judged on the COLOUR that never "
+          "went down, not on who potted it, so the winner accidentally "
+          "knocking in one of the loser's balls kills it even though the loser "
+          "never potted a thing; and a frame won by the opponent fouling on "
+          "the black is not a clearance and cannot be one",
+          grannie(clean98, "red", "yellow", True)
+          and not grannie(stray98, "red", "yellow", True)
+          and not grannie(clean98, "red", "yellow", False)
+          and not grannie(["red"] * 6 + ["black"], "red", "yellow", True)
+          and not grannie(["red"] * 7, "red", "yellow", True)
+          and not grannie(clean98, "red", "red", True)
+          and not grannie(clean98, None, "yellow", True),
+          f"clean clearance -> {grannie(clean98, 'red', 'yellow', True)}; "
+          f"one stray loser ball -> {grannie(stray98, 'red', 'yellow', True)}; "
+          f"won on a foul -> {grannie(clean98, 'red', 'yellow', False)}; "
+          f"six of seven -> {grannie(['red'] * 6 + ['black'], 'red', 'yellow', True)}")
+
+    # 99. r46: clearing the table clears the colour map with it.
+    #
+    # `clear_objects()` removed balls from `self.balls` and the physics space
+    # but left `self.colours` alone, so the map grew by a full rack every time
+    # the table was cleared -- 4 entries, then 19, then 34, against a space
+    # correctly holding 16. It never produced a wrong answer, because ball ids
+    # are never reused and `remaining()` walks `balls` rather than `colours`,
+    # which is exactly why it survived this long unnoticed.
+    #
+    # League mode racks hundreds of frames in one run, and the day something
+    # walks `colours` instead of `balls` it becomes a real bug with a plausible
+    # wrong answer. Pinned as an invariant rather than a one-off fix.
+    sim99 = Sim()
+    sizes99 = []
+    for _ in range(3):
+        sim99.rack()
+        sizes99.append((len(sim99.colours), len(sim99.balls)))
+    comp99 = {}
+    for c in sim99.colours.values():
+        comp99[c] = comp99.get(c, 0) + 1
+    check("r46 the colour map never outgrows the table — clearing the objects "
+          "prunes their colours too, so racking repeatedly cannot leave stale "
+          "entries behind; the map held 34 entries against 16 live balls after "
+          "three racks before this, harmless only because ids are never reused "
+          "and nothing walked the map instead of the ball set",
+          all(c == b for c, b in sizes99)
+          and sizes99[0] == sizes99[-1]
+          and comp99.get("red") == 7 and comp99.get("yellow") == 7
+          and comp99.get("black") == 1 and comp99.get("cue") == 1
+          and not [i for i in sim99.colours if i not in sim99.balls],
+          f"(colours, balls) after each of three racks: {sizes99}; "
+          f"composition {comp99}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

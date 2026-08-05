@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r45 — playable, validated, no known blocking bugs.
+**Status:** r46 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,12 +16,12 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r45
+## Validation snapshot at r46
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 97 assertions |
+| `--selftest` | ALL PASS — 99 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -149,6 +149,33 @@ reasoning.
 **Assertion 39 relaxed** from `STUDY_SCHEMA == 6` to `>= 6`. `break_shot()` was
 always keyed on field presence, so only the assertion pinned the number, and
 assertion 47 already used `>=`.
+
+## What r46 changed (as built)
+
+**`grannie(potted_colours, winner_colour, loser_colour, clean_black)`** — pure,
+no new state. Judged on the COLOUR that never went down, not on who potted it,
+which is why no per-player attribution exists anywhere. The winner accidentally
+potting a loser's ball kills it; a win handed over by a foul on the black is
+not a clearance and cannot be one. Assertion 98.
+
+**`draw_grannie()`** lives inside `run_gui` (pygame is not imported at module
+scope) and is called from the existing black-pot finale, inside its `not smoke`
+gate — the `--snap` baseline stays `62c87ddb…`. Drawn from primitives per the
+no-asset rule. Deliberately rough for now; the Maker's brief was that she just
+has to be there.
+
+**Shift+G previews the Grannie** by building the same `finale` dict the real
+path builds (`cup` None, `grannie` True), so preview and reality cannot drift.
+The Shift arm must stay ABOVE the plain `K_g` arm or the aim-overlay toggle
+swallows it.
+
+**`clear_objects()` now prunes `self.colours`.** It never did, so the map grew
+by a rack each time the table was cleared (4 → 19 → 34 against 16 live balls).
+Harmless only because ids are never reused and `remaining()` walks `balls`.
+Assertion 99 pins the invariant, because league mode racks at volume.
+
+**Not in r46:** the permanent record of a Grannie. That needs profiles, which
+are r47.
 
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
@@ -293,7 +320,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 97 assertions, all
+  out) rather than the pygame wrapper around it. Currently 99 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -1206,10 +1233,10 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 >
 > > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **97 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **99 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.45.0.
+> > standalone, 36 primitives. `setup.py` says 0.46.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

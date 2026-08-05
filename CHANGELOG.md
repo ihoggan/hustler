@@ -5,7 +5,53 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r45 — the log learns what a sitting is (current)
+## r46 — the Grannie (current)
+
+A Scottish pub rule, and the first piece of league mode. If one player's
+**colour** never goes down while the opponent clears all seven of theirs and
+the black, that is a Grannie — a whitewash, and socially the results are
+unpleasant.
+
+The Maker's wording settled the design before a line was written: it is judged
+on the **colour that never got potted, not on who potted it**. That is what
+makes it computable from state the game already keeps — `potted_colours_all()`
+plus the colour assignment — with no per-player pot attribution to build.
+
+It also settles the case that decides the rule. If the winner knocks one of the
+loser's balls in by accident, the loser's colour *has* been potted, so there is
+no Grannie — even though the loser never sent a ball down themselves. A
+shooter-based reading would call that a whitewash. Confirmed with the Maker
+before building, and assertion 98 pins it. A frame won because the opponent
+fouled on the black is not a clearance either, however one-sided it looked.
+
+The payoff is a granny drawn from pygame primitives with big writing, on the
+existing black-pot finale and inside its `not smoke` gate, so the `--snap`
+baseline never learns about her. **Shift+G previews her** without having to
+earn a whitewash first — a real one is rare and awkward to stage, and she
+cannot be judged unseen. The preview drives the actual finale path rather than
+a separate renderer, so what it shows is what a real Grannie shows; a parallel
+preview would be free to drift and would then be worse than useless, because it
+would be believed. Plain G still toggles the aim overlay, as it has since r14. On quality the brief was explicit: it does not
+matter if she is naff for now, as long as she is there and the whitewash is
+recorded for ever more. She will get another pass once she has been seen on a
+real screen; the permanent record arrives with profiles at r47.
+
+### A leak found while checking the rule
+
+`clear_objects()` removed balls from the table and the physics space but never
+pruned `self.colours`, so the map grew by a full rack every time the table was
+cleared — 4 entries, then 19, then 34, against a space correctly holding 16.
+
+It never produced a wrong answer, which is why it survived this long: ball ids
+are never reused, and `remaining()` walks `self.balls` rather than the colour
+map. But league mode racks hundreds of frames in a single run, and the day
+something walks `colours` instead of `balls` it becomes a real bug with a
+plausible wrong answer. Fixed, and assertion 99 pins the invariant rather than
+the one-off symptom.
+
+---
+
+## r45 — the log learns what a sitting is
 
 Everything the report said was a lifetime aggregate, which cannot tell a bad
 Tuesday from a decline. Worse, the before-and-after comparison run at r44 was

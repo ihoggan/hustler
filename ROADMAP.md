@@ -1,14 +1,14 @@
 # Roadmap
 
-## Current status: r45 — playable, validated
+## Current status: r46 — playable, validated
 
-**Validation snapshot (r45, measured on nix5 and reproduced in a Linux
+**Validation snapshot (r46, measured on nix5 and reproduced in a Linux
 container):**
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 97 assertions |
+| `--selftest` | ALL PASS — 99 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -35,7 +35,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~10,080 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~10,260 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -306,7 +306,43 @@ must not offer one.
 > retired that technique without failing a test. Assertion 96 fails if the
 > fields ever move off the human path.
 
-**Next session: LEAGUE MODE, and it starts with a conversation, not a design.**
+> **The Grannie (r46) is done** — the first piece of league mode. Judged on the
+> colour that never went down rather than on who potted it, which needs no new
+> tracking at all. The permanent record arrives with profiles at r47.
+
+**LEAGUE MODE is under way, and the Maker has now set the requirements.**
+A league of **eight** (expandable), **one frame per fixture** (expandable). The
+Maker is the only human; every other player is AI. They play only their own
+fixtures and **AI-vs-AI games auto-resolve in real physics** — measured at
+~3.7s per frame on one core, so a single round-robin's 21 AI fixtures is about
+78 seconds before any multi-core help. Timing r17's Pool on real hardware is
+finally worth doing.
+
+Then **play-offs** — quarter-finals, semi-finals, final — with a trophy added
+to the winner's profile, and a Grannie recorded there too. **Every player,
+human and AI, carries a tracked profile with stats**, keyed per player, so
+anyone else playing the game gets their own career rather than joining this
+one. **Rankings** are wanted alongside the league, and are not yet scoped.
+
+A **start menu / career mode** hosts all of it. That is not decoration: the tab
+strip divides the panel evenly and centres labels with no shrinking, so at 1.5x
+a seventh tab gets a 55px cell while "League" renders at 78 — there is no room
+for a League tab, and a standings table and a knockout bracket never belonged
+in a 260px column anyway. **The menu must be gated `if not smoke:`** — `--snap`
+runs `run_gui(smoke=True)` and saves the presented frame, so an ungated menu
+would rewrite the sacred baseline.
+
+Mid-frame **save and resume** is wanted, and is cheaper than it sounds: save
+only at rest between shots and there are no velocities to store, because they
+are all zero. `serialise_layout()` already stores positions in metres and is
+covered by selftest 37 — that plus the rules state on `Game` is a resumable
+frame.
+
+Increments: r46 Grannie ✔ → r47 profiles → r48 menu/career shell → r49 league,
+fixtures, auto-resolve, resume → r50 play-offs and trophies → rankings.
+
+Still queued behind it: the style fit from shot selection, and tournament
+mode.
 The Maker has points they want to discuss. It has been offered three times as a
 side option and they have never yet set out their own requirements, so the
 first job is to hear them.
