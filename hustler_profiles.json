@@ -17,8 +17,9 @@
    ],
    "kind": "human",
    "name": "PLAYER",
+   "nickname": "PLAYER",
    "params": null,
-   "schema": 1,
+   "schema": 2,
    "trophies": []
   },
   "SHARK": {
@@ -34,14 +35,61 @@
      "opponent": "PLAYER",
      "shots": 0,
      "won": false
+    },
+    {
+     "mode": "tournament",
+     "opponent": "STEADY",
+     "shots": 50,
+     "won": true
+    },
+    {
+     "mode": "tournament",
+     "opponent": "STEADY",
+     "shots": 76,
+     "won": true
+    },
+    {
+     "mode": "tournament",
+     "opponent": "STEADY",
+     "shots": 58,
+     "won": false
     }
    ],
    "kind": "ai",
-   "name": "SHARK",
+   "name": "Ronnie Vance",
+   "nickname": "SHARK",
    "params": null,
-   "schema": 1,
+   "schema": 2,
+   "trophies": []
+  },
+  "STEADY": {
+   "games": [
+    {
+     "mode": "tournament",
+     "opponent": "SHARK",
+     "shots": 50,
+     "won": false
+    },
+    {
+     "mode": "tournament",
+     "opponent": "SHARK",
+     "shots": 76,
+     "won": false
+    },
+    {
+     "mode": "tournament",
+     "opponent": "SHARK",
+     "shots": 58,
+     "won": true
+    }
+   ],
+   "kind": "ai",
+   "name": "Alan Prosser",
+   "nickname": "STEADY",
+   "params": null,
+   "schema": 2,
    "trophies": []
   }
  },
- "schema": 1
+ "schema": 2
 }
