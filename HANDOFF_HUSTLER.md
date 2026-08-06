@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r50.1 — playable, validated, no known blocking bugs.
+**Status:** r51 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -21,7 +21,7 @@ source of truth.
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 106 assertions |
+| `--selftest` | ALL PASS — 108 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -330,6 +330,27 @@ full-power knob hung half off the panel edge at every scale.
 Assertion 106 pins scaling, the inset at both ends, taller-rect behaviour, and
 label clearance at every scale and rect height.
 
+## What r51 changed (as built)
+
+**The career shell.** `menu_on` (skippable, Escape plays), drawn over the table
+behind a scrim by `draw_menu()`; `menu_rects()` is the single source for
+drawing AND hit-testing so a button cannot be drawn where it cannot be pressed.
+**Escape now returns to the menu** from the table; Q quits from anywhere.
+
+**`text_edit(buf, key_name, char, maxlen)`** — pure, the first text entry here.
+A focused field takes the keyboard WHOLE, because every letter is a global
+shortcut. Filters on the CHARACTER, not key names: arrows/modifiers arrive with
+empty `unicode`, Return/Backspace with control codes, and neither may reach a
+name written to a tracked file.
+
+**`rename_profile(profiles, old, new, real_name)`** — pure, MERGES rather than
+overwrites. Naming yourself moves the `PLAYER` career instead of orphaning it
+(the Maker's two committed frames).
+
+**TWO smoke gates, both pinned in source by assertion 107.** A mutation test
+showed removing either alone leaves the snap byte-identical, so the md5 cannot
+catch it.
+
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
 enforces the `--snap` md5 as well: the hash lives in one place, as a
@@ -473,7 +494,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 106 assertions, all
+  out) rather than the pygame wrapper around it. Currently 108 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -1386,10 +1407,10 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 >
 > > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **106 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **108 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.50.1.
+> > standalone, 36 primitives. `setup.py` says 0.51.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

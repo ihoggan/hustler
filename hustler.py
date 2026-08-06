@@ -2428,6 +2428,72 @@ def grannie(potted_colours, winner_colour, loser_colour, clean_black,
             and "black" in potted_colours)
 
 
+def text_edit(buf, key_name, char, maxlen=24):
+    """r51: one keystroke applied to a text field. Pure -- string in, string
+    out, no pygame, no state.
+
+    This is the first text entry in the project. Everything until now has been
+    a button, a slider, a dial or a tab strip, which is exactly why the game
+    could treat EVERY letter key as a global shortcut: M cycles the mode, T
+    racks up, G toggles the overlay, O swaps opponent, and a dozen more.
+
+    That is the hazard this function exists to contain. While a field has
+    focus, keystrokes must reach the buffer and NOTHING else -- otherwise
+    typing "Steady" racks up, cycles the mode and toggles the overlay on the
+    way past. Keeping the buffer logic pure means the focus rule at the call
+    site is the only thing that can get it wrong, and it is one line.
+
+    Accepts printable characters only. `char` is pygame's `ev.unicode`, which
+    is empty for arrows and modifiers and carries a control code for Return and
+    Backspace -- so the filter is on the character, not a list of key names.
+    """
+    if key_name == "backspace":
+        return buf[:-1]
+    if not char or not char.isprintable():
+        return buf
+    if len(buf) >= maxlen:
+        return buf
+    return buf + char
+
+
+def rename_profile(profiles, old_key, new_key, real_name=None):
+    """r51: move a career to a new key, keeping its history. Pure.
+
+    The Maker played two frames before there was any way to enter a name, so
+    they are recorded under the default key `PLAYER`. Their instruction was
+    "Rename for me and I will keep that profile" -- so entering a name for the
+    first time must CARRY THE CAREER OVER rather than start a fresh one beside
+    it and orphan the frames that are already committed.
+
+    Merges rather than overwrites if the new key already exists: the frames of
+    both are kept, because a career is a list of frames and losing some of them
+    to a rename would be the one thing this is supposed to prevent.
+
+    A rename onto itself, or from a key that is not there, returns the store
+    unchanged. Both happen in normal use -- retyping the same name, or naming
+    yourself before you have played a frame.
+    """
+    if old_key == new_key or old_key not in profiles:
+        out = dict(profiles)
+        if new_key in out and real_name:
+            out[new_key] = dict(out[new_key])
+            out[new_key]["name"] = real_name
+        return out
+    out = dict(profiles)
+    moving = dict(out.pop(old_key))
+    if new_key in out:
+        target = dict(out[new_key])
+        target["games"] = (list(target.get("games", []))
+                           + list(moving.get("games", [])))
+        target["trophies"] = (list(target.get("trophies", []))
+                              + list(moving.get("trophies", [])))
+        moving = target
+    moving["nickname"] = new_key
+    moving["name"] = real_name or moving.get("name") or new_key
+    out[new_key] = moving
+    return out
+
+
 def slider_geometry(rect_x, rect_y, rect_w, rect_h, ui_s):
     """r50.1: where a slider's track and knob sit inside its rect. Pure.
 
@@ -6029,6 +6095,19 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # HUD had been claiming all along.
     human_opponent = DEFAULT_OPPONENT
     frames = 0
+    # r51: the career shell. `menu_on` is the screen the game boots into --
+    # SKIPPABLE, per the Maker, so a knock-about is one keypress away.
+    #
+    # GATED ON `smoke` FROM THE FIRST LINE, and this is not decoration:
+    # --snap runs run_gui(smoke=True) and saves the presented frame. A menu
+    # that could appear there would rewrite a baseline that has survived
+    # twelve releases unchanged. If the snap md5 ever moves after touching
+    # this, the gate is wrong -- do not re-bless the baseline.
+    menu_on = not smoke
+    menu_focus = None          # None, "name" or "nick" -- see text_edit()
+    menu_name = ""
+    menu_nick = ""
+    menu_msg = ""
     running = True
     last_shown = screen
     def start_game(m):
@@ -6234,6 +6313,124 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             pot_anims.clear()
             next_is_break = True
             restart_frame()
+
+    def menu_rects():
+        """r51: the menu's clickable boxes. One source for drawing and hitting,
+        so a button cannot be drawn somewhere it cannot be pressed."""
+        w = min(int(560 * UI_S), win_w - int(80 * UI_S))
+        h = int(300 * UI_S)
+        x = (win_w - w) // 2
+        y = (win_h - h) // 2
+        rw = w - int(40 * UI_S)
+        rx = x + int(20 * UI_S)
+        fh = int(34 * UI_S)
+        return {
+            "panel": pygame.Rect(x, y, w, h),
+            "name": pygame.Rect(rx, y + int(70 * UI_S), rw, fh),
+            "nick": pygame.Rect(rx, y + int(114 * UI_S), rw, fh),
+            "save": pygame.Rect(rx, y + int(162 * UI_S),
+                                 rw // 2 - int(6 * UI_S), fh),
+            "play": pygame.Rect(rx + rw // 2 + int(6 * UI_S),
+                                 y + int(162 * UI_S),
+                                 rw // 2 - int(6 * UI_S), fh),
+        }
+
+    def draw_menu():
+        """r51: the career shell, drawn OVER the table rather than instead of
+        it -- the table stays visible behind a scrim, so skipping the menu
+        feels like stepping forward rather than loading a level.
+
+        Never reached under `smoke`: see the gate at the call site and at
+        menu_on's definition. The --snap baseline must not learn this exists.
+        """
+        r = menu_rects()
+        scrim = pygame.Surface((win_w, win_h), pygame.SRCALPHA)
+        scrim.fill((10, 12, 16, 205))
+        display.blit(scrim, (0, 0))
+        pygame.draw.rect(display, (30, 33, 39), r["panel"], border_radius=8)
+        pygame.draw.rect(display, (70, 76, 88), r["panel"], 1, border_radius=8)
+        big = pygame.font.SysFont("consolas,menlo,monospace",
+                                   int(26 * UI_S), bold=True)
+        display.blit(big.render("HUSTLER — CAREER", True, (232, 226, 200)),
+                      (r["panel"].x + int(20 * UI_S),
+                       r["panel"].y + int(18 * UI_S)))
+        for key, label, val in (("name", "name", menu_name),
+                                ("nick", "nickname", menu_nick)):
+            box = r[key]
+            focused = menu_focus == key
+            pygame.draw.rect(display, (18, 20, 24), box, border_radius=4)
+            pygame.draw.rect(display,
+                              (150, 190, 240) if focused else (70, 76, 88),
+                              box, 2 if focused else 1, border_radius=4)
+            display.blit(panel_font.render(label, True, (150, 154, 162)),
+                          (box.x, box.y - int(18 * UI_S)))
+            shown_txt = val + ("_" if focused else "")
+            display.blit(panel_font.render(shown_txt, True, COL["hud"]),
+                          (box.x + int(8 * UI_S),
+                           box.y + (box.h - panel_font.get_height()) // 2))
+        for key, label in (("save", "Save name"), ("play", "Play (Esc)")):
+            box = r[key]
+            pygame.draw.rect(display, (58, 92, 64), box, border_radius=4)
+            t = panel_font.render(label, True, (235, 240, 235))
+            display.blit(t, t.get_rect(center=box.center))
+        foot = menu_msg or f"playing as {profile_name}"
+        display.blit(panel_font.render(foot, True, (150, 205, 160)),
+                      (r["panel"].x + int(20 * UI_S),
+                       r["panel"].bottom - int(46 * UI_S)))
+        display.blit(panel_font.render(
+            "Esc plays / returns here   Q quits", True, (140, 144, 152)),
+            (r["panel"].x + int(20 * UI_S), r["panel"].bottom - int(26 * UI_S)))
+
+    def menu_click(pos):
+        nonlocal menu_focus, menu_on
+        r = menu_rects()
+        if r["name"].collidepoint(pos):
+            menu_focus = "name"
+        elif r["nick"].collidepoint(pos):
+            menu_focus = "nick"
+        elif r["save"].collidepoint(pos):
+            menu_commit()
+        elif r["play"].collidepoint(pos):
+            menu_focus, menu_on = None, False
+
+    def menu_commit():
+        """r51: accept the name and nickname, carrying the career with them.
+
+        The Maker played two frames before there was any way to enter a name,
+        so they sit under the default key `PLAYER`. Their instruction was
+        "Rename for me and I will keep that profile" -- so naming yourself
+        MOVES the existing career rather than starting a fresh one beside it
+        and orphaning frames that are already committed to the repo.
+
+        Written straight through to the tracked store, because the alternative
+        is holding a rename in memory until the next frame ends and losing it
+        if the game is closed first.
+        """
+        nonlocal menu_focus, menu_msg, profile_name
+        menu_focus = None
+        nick = (menu_nick or menu_name).strip().upper()
+        if not nick:
+            menu_msg = "enter a nickname"
+            return
+        try:
+            pp = profile_store_path(__file__, os.environ.get("HUSTLER_PROFILES"))
+            cur = {}
+            if os.path.exists(pp):
+                with open(pp, "r", encoding="utf-8") as fh:
+                    cur = profiles_from_json(json.load(fh))
+            cur = rename_profile(cur, profile_name, nick,
+                                 real_name=menu_name.strip() or nick)
+            if nick not in cur:
+                cur[nick] = new_profile(menu_name.strip() or nick,
+                                        kind="human", nickname=nick)
+            cur[nick]["kind"] = "human"
+            with open(pp, "w", encoding="utf-8") as fh:
+                json.dump(profiles_to_json(cur), fh, indent=1, sort_keys=True)
+                fh.write("\n")
+            profile_name = nick
+            menu_msg = f"playing as {nick}"
+        except OSError as exc:
+            menu_msg = f"could not save: {exc}"
 
     def do_rack():
         # r31 BUG FIX: `finale` was missing from this list, so the reset below
@@ -6802,7 +6999,32 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 running = False
             elif ev.type == pygame.KEYDOWN:
                 shift = ev.mod & pygame.KMOD_SHIFT
-                if ev.key in (pygame.K_ESCAPE, pygame.K_q):
+                # r51: a text field takes the keyboard whole while it has
+                # focus. Every letter in this file is a global shortcut, so
+                # without this typing "Steady" would rack up, cycle the mode
+                # and toggle the overlay on the way past. One line, and it is
+                # the only thing standing between the two.
+                if menu_focus is not None:
+                    if ev.key == pygame.K_RETURN:
+                        menu_commit()
+                    elif ev.key == pygame.K_ESCAPE:
+                        menu_focus = None
+                    elif menu_focus == "name":
+                        menu_name = text_edit(menu_name, pygame.key.name(ev.key),
+                                              ev.unicode)
+                    else:
+                        menu_nick = text_edit(menu_nick, pygame.key.name(ev.key),
+                                              ev.unicode)
+                    continue
+                # r51: Escape returns to the menu (the Maker's call). Q still
+                # quits outright, and Escape from the menu quits too, so there
+                # is always a one-key way out from wherever you are.
+                if ev.key == pygame.K_ESCAPE:
+                    if menu_on:
+                        running = False
+                    else:
+                        menu_on = True
+                elif ev.key == pygame.K_q:
                     running = False
                 elif ev.key == pygame.K_SPACE:
                     do_shoot()
@@ -6878,6 +7100,14 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 build_panel_widgets()
             elif (ev.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
                               pygame.MOUSEMOTION) and not smoke):
+                if menu_on:
+                    # r51: the menu takes the mouse whole while it is up, for
+                    # the same reason it takes the keyboard -- it is drawn OVER
+                    # the table and the panel, so anything underneath would be
+                    # clicked through a scrim it cannot see.
+                    if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                        menu_click(ev.pos)
+                    continue
                 # Panel widgets only claim events inside their own rects
                 # (each widget hit-tests itself) -- everything left of the
                 # panel (aiming, SPACE) is untouched.
@@ -7713,6 +7943,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                   (win_w - 1, STATUS_STRIP_H - 3), 1)
             for w in panel_widgets[TAB_LABELS[panel_tab]]:
                 w.draw(display, panel_font)
+        if menu_on and not smoke:
+            draw_menu()
         pygame.display.flip()
         last_shown = shown
         clock.tick(CFG["FPS"])
@@ -11091,6 +11323,90 @@ def selftest():
           f"1.5x track h {t15[3]} knob {k15} grab {g15}; "
           f"inset {t10[0] - 100}px each end; label clears at every "
           f"scale/height: {clears106}")
+
+    # 107. r51: a focused text field takes the keyboard whole.
+    #
+    # This is the first text entry in the project, and the hazard is specific:
+    # every letter in this file is already a global shortcut. M cycles the
+    # mode, T racks up, G toggles the overlay, O swaps opponent. Typing
+    # "Steady" into an unfocused-by-accident field would rack up, cycle the
+    # mode and toggle the overlay on the way past.
+    #
+    # The buffer logic is pure so that the focus rule at the call site is the
+    # only thing that can get it wrong, and it is one line. What this pins is
+    # that the buffer takes printable characters and NOTHING else -- arrows,
+    # modifiers and Return arrive with an empty or control `unicode`, and a
+    # field that accepted those would put control codes in a tracked file.
+    typed107 = ""
+    for ch in "Bullet":
+        typed107 = text_edit(typed107, "x", ch)
+    check("r51 text entry — a focused field takes printable characters only, "
+          "so the arrows, modifiers and Return that arrive with no usable "
+          "character cannot land control codes in a name that gets written to "
+          "a tracked file; backspace removes one and stops at empty; and the "
+          "field refuses to grow past its cap rather than silently truncating "
+          "on save",
+          typed107 == "Bullet"
+          and text_edit("Bullet", "backspace", "\x08") == "Bulle"
+          and text_edit("", "backspace", "\x08") == ""
+          and text_edit("ab", "up", "") == "ab"
+          and text_edit("ab", "return", "\r") == "ab"
+          and text_edit("ab", "tab", "\t") == "ab"
+          and len(text_edit("x" * 24, "y", "y", maxlen=24)) == 24
+          and text_edit("ok", "space", " ") == "ok "
+          # THE GATE. --snap runs run_gui(smoke=True) and saves the presented
+          # frame, so a menu that could appear there would rewrite a baseline
+          # unchanged across thirteen releases. There are TWO gates on purpose,
+          # which is why removing either one alone leaves the snap intact -- a
+          # mutation test showed exactly that, so both are pinned here rather
+          # than trusted to the md5.
+          and "menu_on = not smoke" in inspect.getsource(run_gui)
+          and "if menu_on and not smoke:" in inspect.getsource(run_gui),
+          f"typed -> {typed107!r}; backspace -> "
+          f"{text_edit('Bullet', 'backspace', chr(8))!r}; return ignored -> "
+          f"{text_edit('ab', 'return', chr(13))!r}; at cap -> "
+          f"{len(text_edit('x' * 24, 'y', 'y', maxlen=24))}")
+
+    # 108. r51: naming yourself MOVES the career, it does not start a new one.
+    #
+    # The Maker played two frames before there was any way to enter a name, so
+    # they are recorded under the default key `PLAYER`, committed to the repo.
+    # Their instruction: "Rename for me and I will keep that profile."
+    #
+    # So this merges rather than overwrites. A career is a list of frames, and
+    # dropping some of them to a rename would be the one thing it exists to
+    # prevent. Renaming onto an existing key keeps both sets -- that happens if
+    # someone plays, names themselves, plays again under the old default, and
+    # names themselves a second time.
+    st108 = {}
+    st108 = record_frame(st108, "PLAYER", "SHARK", shots=50)
+    st108 = record_frame(st108, "PLAYER", "SHARK", shots=44)
+    moved108 = rename_profile(st108, "PLAYER", "BULLET",
+                              real_name="Tommy Fenn")
+    merged108 = rename_profile(moved108 | {"PLAYER": st108["PLAYER"]},
+                               "PLAYER", "BULLET")
+    check("r51 naming yourself carries the career — the frames already played "
+          "under the default key move to the new one rather than being "
+          "orphaned beside a fresh profile, the nickname becomes the store key "
+          "and the real name rides along; renaming onto a key that already "
+          "exists MERGES both sets of frames, because losing frames to a "
+          "rename is the one thing this exists to prevent",
+          "PLAYER" not in moved108
+          and profile_record(moved108["BULLET"])[0] == 2
+          and moved108["BULLET"]["nickname"] == "BULLET"
+          and moved108["BULLET"]["name"] == "Tommy Fenn"
+          and [g["shots"] for g in moved108["BULLET"]["games"]] == [50, 44]
+          and profile_record(merged108["BULLET"])[0] == 4
+          # no-ops: renaming to itself, or from a key that was never there
+          and rename_profile(st108, "PLAYER", "PLAYER") == st108
+          and "GHOST" not in rename_profile(st108, "GHOST", "OTHER")
+          and profile_record(rename_profile(st108, "GHOST", "OTHER")
+                             ["PLAYER"])[0] == 2,
+          f"moved: PLAYER gone {('PLAYER' not in moved108)}, BULLET has "
+          f"{profile_record(moved108['BULLET'])[0]} frames "
+          f"{[g['shots'] for g in moved108['BULLET']['games']]}, as "
+          f"{moved108['BULLET']['name']!r}; merge -> "
+          f"{profile_record(merged108['BULLET'])[0]} frames")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

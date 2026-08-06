@@ -5,7 +5,55 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r50.1 — the power slider stops being dwarfed (current)
+## r51 — the career shell (current)
+
+The game boots into a menu now: your name, your nickname, and a way onto the
+table. **Skippable**, per the Maker — Escape plays. Escape from the table
+returns here, which is a change of meaning after eleven revisions of it
+quitting outright, so Q still quits from anywhere.
+
+It is drawn OVER the table behind a scrim rather than instead of it, so
+skipping the menu feels like stepping forward rather than loading a level.
+
+### The first text entry in the project
+
+Everything until now has been a button, a slider, a dial or a tab strip — which
+is precisely why the game could treat **every letter key as a global
+shortcut**. M cycles the mode, T racks up, G toggles the overlay, O swaps the
+opponent. Typing "Steady" into a field that had not properly taken the keyboard
+would rack up, cycle the mode and toggle the overlay on the way past.
+
+So a focused field takes the keyboard whole, and `text_edit()` is pure — the
+focus rule at the call site is then the only thing that can get it wrong, and
+it is one line. The filter is on the CHARACTER rather than a list of key names,
+because arrows and modifiers arrive with an empty `unicode` and Return and
+Backspace arrive with control codes, and a name written to a tracked file must
+not be able to contain either.
+
+### Naming yourself moves your career
+
+The Maker played two frames before there was any way to enter a name, so they
+are recorded under the default key `PLAYER` and already committed. Their
+instruction was "Rename for me and I will keep that profile", so
+`rename_profile()` MOVES the career rather than starting a fresh one beside it.
+It merges if the target already exists: a career is a list of frames, and
+dropping some to a rename would be the one thing it exists to prevent.
+
+### The gate
+
+`--snap` runs `run_gui(smoke=True)` and saves the presented frame. A menu that
+could appear there would rewrite a baseline unchanged across thirteen releases.
+There are **two** gates — on `menu_on` and on the draw call — and a mutation
+test showed why that matters: removing either one alone leaves the snap
+byte-identical, because the other still holds. The md5 could not have caught
+it, so assertion 107 pins both in source.
+
+Still to come: league fixtures and standings, which is what the shell was built
+to hold.
+
+---
+
+## r50.1 — the power slider stops being dwarfed
 
 With the full-size dial and picker now sitting on the Shot tab, the power
 slider looked tiny beside them. It was: **every dimension of the widget was a
