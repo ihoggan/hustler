@@ -5,7 +5,62 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r49.2 — a real name and a nickname (current)
+## r50 — the cue controls live on the Shot tab (current)
+
+The Maker asked why spin and angle each had a whole tab when they belong where
+the shot is taken. Measuring it agreed, and turned up a defect on the way.
+
+**The Aim tab held nothing but a second copy of the dial** — and already the
+same radius as the Shot tab's at three of four window sizes. It cost a click
+and gave nothing.
+
+**The Spin tab looked like it earned its keep** — 150px against the Shot tab's
+100 at 1.5x — but that gap was a bug, not a decision. The Shot call passed no
+`r_max`/`r_min`/`extra`, so `spin_group_radius()` fell back to its UNSCALED
+defaults and capped the picker at 100px at every HUD scale, while the aim call
+three lines above always passed `U(100)`. A fixed pixel inside a scaled layout:
+the same family r41 and r42 kept finding, and missed because r41 scaled the
+literals inside `build_panel_widgets` and not the arguments handed to a pure
+function.
+
+Fixed, the Shot tab's picker reaches **150 at 1.5x and 125 at 1.25x**, matching
+what the dedicated tab used to give. So the tab had nothing left to offer:
+
+| window | aim, before / after | spin, before / after |
+|---|---|---|
+| 2160x1350 | 150 / **150** | 100 / **150** |
+| 1920x1080 | 125 / **125** | 100 / **125** |
+| 1024x768 | 100 / **100** | 83 / **83** |
+
+**What was Spin is now Call**, holding the nomination table alone. The caller
+was put under the picker at r33 for the room, never because it belonged there;
+it now starts at the top of its own tab rather than a third of the way down
+someone else's, which is why its fit-or-omit test almost always passes.
+
+Five tabs also un-crowds the strip. Six were overflowing their cells by 2-3px
+at 1.25x and 1.5x — the widest label rendered wider than its share. Five leaves
+10-13px spare at every size.
+
+**One capability is genuinely lost, at one window size.** At 1144x548 — the F11
+windowed size — the Shot tab cannot fit a spin picker, and there is no longer a
+Spin tab to fall back to. The aim dial there also runs at 73px rather than 100.
+Everything at desktop size is unaffected or better.
+
+### Two assertions that did not work first time
+
+Assertion 105's first cut failed with every value in its own diagnostic
+correct: it searched the raw source for `panel_tab == 3`, and this file's
+comments deliberately QUOTE that as r30's warning. Checking a warning about a
+fault reports the fault. It strips comment lines now.
+
+Then a mutation stripping the scaled arguments back off survived **twice** —
+first because the assertion tested the pure function rather than the call site,
+and then because the aim call three lines above carries the identical argument
+text, so the substring was still present. It counts both calls now.
+
+---
+
+## r49.2 — a real name and a nickname
 
 The first real career got written, and it read like a list of parameter sets:
 `PLAYER` beat `SHARK` twice. The Maker's model is how pub players actually

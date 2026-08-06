@@ -6437,7 +6437,19 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # inserting this moves every label after it, which is the r30 trap
     # (custom_active() tested `panel_tab == 3` for years) and the r37 trap
     # (eighteen sites testing `mode == 0`) in the same family.
-    TAB_LABELS = ["Shot", "Aim", "Spin", "Table", "Game", "Cust"]
+    # r50: the Maker's call -- "The cue controls for power direction and spin
+    # should be on the first tab. They dont need to be anywhere else. The
+    # nomination tab can be just for that purpose now."
+    #
+    # Aim held NOTHING but a second copy of the dial, already the same radius
+    # as the Shot tab's at three of four window sizes. Spin held its picker
+    # plus the caller, which was put there at r33 for the room, not because it
+    # belonged. So Aim goes, the picker moves to Shot for good, and what was
+    # Spin becomes Call: nomination and nothing else.
+    #
+    # Five tabs also un-crowds the strip, which was overflowing its cells by
+    # 2-3px at 1.25x and 1.5x with six.
+    TAB_LABELS = ["Shot", "Call", "Table", "Game", "Cust"]
     # r11: reserved height for the persistent status strip above the tabs. This
     # is where the old bottom-of-table HUD now lives (Maker's call), and unlike
     # the tab contents it is drawn on EVERY tab -- the readout has to be visible
@@ -6605,23 +6617,28 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # fit rule is the pure spin_group_radius(); None means the window is
         # too short and the Spin tab keeps sole custody, which is the honest
         # outcome rather than drawing a picker too small to aim with.
-        shot_spin_r = spin_group_radius(win_h - (y + 32) - 8, pw // 2 - 4)
+        # r50: r_max/r_min/extra were left at their UNSCALED defaults here,
+        # so the Shot tab's picker was capped at 100px at every HUD scale
+        # while the Spin tab's reached 150 at 1.5x. Not a design decision --
+        # a fixed pixel inside a scaled layout, the same family r41 and r42
+        # kept finding. The aim call directly above always passed U(100); this
+        # one never did, because r41 scaled the literals inside
+        # build_panel_widgets and not the arguments handed to a pure function.
+        shot_spin_r = spin_group_radius(win_h - (y + 32) - 8, pw // 2 - 4,
+                                        r_max=U(100), r_min=U(60),
+                                        extra=U(100))
         if shot_spin_r is not None:
             add_spin_group(shot, y + 32, shot_spin_r)
         panel_widgets["Shot"] = shot
 
-        aim_tab = []
-        add_aim_group(aim_tab, STATUS_STRIP_H + U(34), min(U(100), pw // 2 - 4))
-        panel_widgets["Aim"] = aim_tab   # key MUST match TAB_LABELS (r12.1)
-
+        # r50: the Call tab. Was "Spin", carrying the picker with the caller
+        # tucked underneath it in whatever room was left over (r33). The picker
+        # has gone to the Shot tab where the shot is actually taken, so the
+        # caller now starts at the top of its own tab instead of a third of
+        # the way down someone else's -- which is also why the fit-or-omit
+        # test below now almost always passes.
         spin_tab = []
-        y6 = add_spin_group(spin_tab, STATUS_STRIP_H + U(34),
-                             min(U(100), pw // 2 - 4))
-        # r33 (called shots): the caller lives here, in the room the Spin tab
-        # already had. Sized by the same fit-or-omit rule the picker uses --
-        # the table is 2:1, so the model needs half its width in height, plus
-        # a row for the toggle and a row of caption.
-        y6 += U(14)
+        y6 = STATUS_STRIP_H + U(34)
         mini_h = pw // 2 + 4
         if win_h - (y6 + mini_h + 34) > 8:
             spin_tab.append(MiniTable((px, y6, pw, mini_h), mini_state,
@@ -6631,7 +6648,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                     do_call_toggle))
             spin_tab.append(Button((px + pw // 2 + 4, y6, pw // 2 - 4, U(24)),
                                     "Clear call", do_call_clear))
-        panel_widgets["Spin"] = spin_tab   # key MUST match TAB_LABELS (r12.1)
+        panel_widgets["Call"] = spin_tab   # key MUST match TAB_LABELS (r12.1)
 
         table = []
         y2 = STATUS_STRIP_H + U(34)   # r11: below the persistent status strip
@@ -10920,6 +10937,65 @@ def selftest():
           f"{profile_record(up104['SHARK'])[0]}; off-roster human stays "
           f"{up104['PLAYER']['name']!r}; round trip "
           f"{trip104['nickname']!r}/{trip104['name']!r}")
+
+    # 105. r50: the cue controls live on the Shot tab and nowhere else.
+    #
+    # The Maker's call, and the measurements backed it: the Aim tab held
+    # NOTHING but a second copy of the dial, already the same radius as the
+    # Shot tab's at three of four window sizes. The Spin tab looked like it
+    # earned its keep -- 150 against the Shot tab's 100 at 1.5x -- but that gap
+    # was a DEFECT, not a design. The Shot call passed no r_max/r_min/extra, so
+    # `spin_group_radius` used its unscaled defaults and capped the picker at
+    # 100 at every HUD scale, while the aim call directly above it always
+    # passed U(100). A fixed pixel inside a scaled layout: the same family r41
+    # and r42 kept finding, missed because r41 scaled the literals inside
+    # build_panel_widgets and not the arguments handed to a pure function.
+    #
+    # What was Spin is now Call, holding the nomination table that r33 tucked
+    # under the picker for the room rather than because it belonged there.
+    # Comments in this file deliberately QUOTE the old bugs -- `panel_tab == 3`
+    # appears twice as a warning from r30. Checking the raw source therefore
+    # matches the warning about the fault and reports the fault. Strip comment
+    # lines first and check the code. (The first cut of this assertion failed
+    # for exactly that reason, with every value in its own diagnostic correct.)
+    src105 = "\n".join(ln for ln in inspect.getsource(run_gui).split("\n")
+                       if not ln.lstrip().startswith("#"))
+    labels105 = ["Shot", "Call", "Table", "Game", "Cust"]
+    keyed105 = all(f'panel_widgets["{lab}"]' in src105 for lab in labels105)
+    # the scaling fix: with room to spare, the picker must honour a scaled cap
+    big105 = spin_group_radius(2000, 500, r_max=150, r_min=90, extra=150)
+    unscaled105 = spin_group_radius(2000, 500)
+    check("r50 the cue controls live on the Shot tab alone — power, aim and "
+          "spin together where the shot is taken, the duplicate Aim tab gone "
+          "and what was Spin left holding only the nomination table; and the "
+          "Shot picker honours a SCALED cap, where it used to take the "
+          "function's unscaled default and sit at 100px on a 1.5x HUD while "
+          "the tab it duplicated reached 150",
+          'TAB_LABELS = ["Shot", "Call", "Table", "Game", "Cust"]' in src105
+          and 'panel_widgets["Aim"]' not in src105
+          and keyed105
+          and 'panel_widgets["Spin"]' not in src105
+          and big105 == 150 and unscaled105 == 100
+          # ...and the CALL SITE actually passes the scaled cap. Testing the
+          # function alone left the fix unguarded: a mutation that stripped the
+          # arguments back off went unnoticed, because the pure function still
+          # honoured a cap nobody was giving it. Same shape as r49.2's `shots`.
+          and "shot_spin_r = spin_group_radius(" in src105
+          # TWO scaled calls: the aim group and the spin group. Checking for
+          # the substring alone passed even with the spin arguments stripped,
+          # because the aim call above carries the identical text -- the
+          # mutation survived twice before this was counted rather than found.
+          and src105.count("r_max=U(100), r_min=U(60)") == 2
+          and "extra=U(100))" in src105
+          and spin_group_radius(0, 500, r_max=150, r_min=90, extra=150) is None
+          # every tab is resolved by NAME, never by a literal index (r30)
+          and "panel_tab == 0" not in src105
+          and "panel_tab == 1" not in src105
+          and "panel_tab == 2" not in src105
+          and "panel_tab == 3" not in src105,
+          f"tabs {labels105}, all keyed: {keyed105}; scaled cap honoured "
+          f"{big105} vs unscaled default {unscaled105}; no-room -> "
+          f"{spin_group_radius(0, 500, r_max=150, r_min=90, extra=150)}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

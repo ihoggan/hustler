@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r49.2 — playable, validated, no known blocking bugs.
+**Status:** r50 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -21,7 +21,7 @@ source of truth.
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 104 assertions |
+| `--selftest` | ALL PASS — 105 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -292,6 +292,27 @@ stored 0. Guarded at source (assertion 104) because the call is inside run_gui.
 letter key is a global shortcut, so it belongs in the menu where nothing is
 listening. `$HUSTLER_PLAYER` sets the key meanwhile.
 
+## What r50 changed (as built)
+
+**TAB_LABELS is now `["Shot", "Call", "Table", "Game", "Cust"]`.** The Aim tab
+is gone (it held only a duplicate dial); "Spin" became "Call" and holds only
+the nomination table. `panel_widgets` keys follow the labels (r12.1) and every
+tab still resolves BY NAME (r30).
+
+**The Shot tab's spin picker now scales.** `spin_group_radius()` was called
+without `r_max`/`r_min`/`extra`, so its unscaled defaults capped the picker at
+100px at every HUD scale. Now passes `U(100)`/`U(60)`/`U(100)`, reaching 150 at
+1.5x. Assertion 105 counts BOTH scaled call sites — checking for the substring
+alone passes even with the spin arguments removed, because the aim call carries
+identical text.
+
+**Known loss at 1144x548 only:** no spin picker (the Shot tab cannot fit one and
+there is no Spin tab now), and the aim dial runs at 73px. Desktop sizes gain.
+
+**Assertion note:** 105 strips comment lines before searching the source,
+because this file's comments quote `panel_tab == 3` as r30's warning and a
+search for the fault matched the warning about it.
+
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
 enforces the `--snap` md5 as well: the hash lives in one place, as a
@@ -435,7 +456,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 104 assertions, all
+  out) rather than the pygame wrapper around it. Currently 105 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -1348,10 +1369,10 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 >
 > > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **104 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **105 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.49.2.
+> > standalone, 36 primitives. `setup.py` says 0.50.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.
