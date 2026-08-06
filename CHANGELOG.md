@@ -5,7 +5,38 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r50 — the cue controls live on the Shot tab (current)
+## r50.1 — the power slider stops being dwarfed (current)
+
+With the full-size dial and picker now sitting on the Shot tab, the power
+slider looked tiny beside them. It was: **every dimension of the widget was a
+fixed pixel.** A 6px track, 20px down from the top of its rect, a radius-7
+knob, a 14px grab margin — identical at 1.0x and at 1.5x, while the dial next
+to it grew to 300px across.
+
+That is the fourth revision to find this same fault somewhere new: r41 in the
+button rects, r42 in the strip leading and the call clamp, r50 in the spin
+picker's cap, and now here. Each looked correct at exactly one HUD scale.
+
+At 1.5x the track goes **6px to 15px** and the knob **7 to 11**. The power
+slider also gets a taller rect than the Table tab's, because it is the one
+control used on every single shot.
+
+**Two changes to how the geometry is derived, both worth keeping.** The track
+is anchored to the BOTTOM of the widget rect rather than a fixed drop from the
+top, so a caller that wants a chunkier slider simply hands it a taller rect and
+the label keeps its room automatically. And the track is now INSET by the knob
+radius at each end — without that the knob's centre sits at the track's end, so
+at full power half of it hung off the panel edge. It always did, at every
+scale, unnoticed because 7px of a white circle over a dark panel reads as a
+rounded end rather than as a mistake.
+
+`slider_geometry()` is pure, so assertion 106 can pin all of it: scaling, the
+inset at both ends, a taller rect giving a lower track rather than a clipped
+label, and the label clearing the track at every scale and rect height.
+
+---
+
+## r50 — the cue controls live on the Shot tab
 
 The Maker asked why spin and angle each had a whole tab when they belong where
 the shot is taken. Measuring it agreed, and turned up a defect on the way.

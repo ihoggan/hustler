@@ -2428,6 +2428,37 @@ def grannie(potted_colours, winner_colour, loser_colour, clean_black,
             and "black" in potted_colours)
 
 
+def slider_geometry(rect_x, rect_y, rect_w, rect_h, ui_s):
+    """r50.1: where a slider's track and knob sit inside its rect. Pure.
+
+    Every dimension of the slider was a fixed pixel -- a 6px track 20px down
+    from the top, a radius-7 knob, a 14px grab margin -- so it stayed the same
+    physical size while the dial beside it grew to 300px across at 1.5x. The
+    Maker's word for the result was "dwarfed". Same family as r41's button
+    rects, r42's strip leading and r50's picker cap: a literal that looked
+    right at exactly one HUD scale.
+
+    Two properties are worth stating because they are what the assertion pins.
+
+    The track is anchored to the BOTTOM of the rect rather than a fixed offset
+    from its top, so a caller that wants a chunkier slider just hands it a
+    taller rect and the label keeps its room automatically.
+
+    The track is INSET by the knob radius at each end. Without that the knob's
+    centre sits at the track's end, so at full power half of it hung off the
+    panel edge -- which it always did, by 7px, at every scale.
+
+    Returns (track_rect, knob_r, grab) with track_rect as (x, y, w, h).
+    """
+    track_h = max(6, int(round(10 * ui_s)))
+    knob_r = max(5, track_h // 2 + int(round(3 * ui_s)))
+    grab = max(14, int(round(18 * ui_s)))
+    cy = rect_y + rect_h - max(knob_r, track_h // 2) - 1
+    track = (rect_x + knob_r, cy - track_h // 2,
+             max(1, rect_w - 2 * knob_r), track_h)
+    return (track, knob_r, grab)
+
+
 def band_capacity(band_h, font_h, lead, pad):
     """r47: how many lines of readout the empty strip above the table can
     hold. Pure.
@@ -5422,8 +5453,23 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             self.label, self.fmt, self.enabled = label, fmt, enabled
             self.dragging = False
 
+        # r50.1: every dimension in here was a fixed pixel -- a 6px track 20px
+        # down, a radius-7 knob, a 14px grab margin -- so the slider stayed the
+        # same physical size while the dial beside it grew to 300px across at
+        # 1.5x. The Maker's words: "dwarfed by the other widgets". Same family
+        # as r41's button rects, r42's strip leading and r50's picker cap.
+        #
+        # The track is anchored to the BOTTOM of the widget rect rather than a
+        # fixed offset from its top, so a caller that wants a chunkier slider
+        # just gives it a taller rect and the label keeps its room. It is also
+        # inset by the knob radius at each end, which stops the knob hanging
+        # off the panel edge at full power -- it always did, by 7px.
+        def _geom(self):
+            return slider_geometry(self.rect.x, self.rect.y,
+                                    self.rect.w, self.rect.h, UI_S)
+
         def _track(self):
-            return pygame.Rect(self.rect.x, self.rect.y + 20, self.rect.w, 6)
+            return pygame.Rect(self._geom()[0])
 
         def handle_event(self, ev):
             if not self.enabled():
@@ -5431,7 +5477,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 return
             track = self._track()
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-                if track.inflate(0, 14).collidepoint(ev.pos):
+                if track.inflate(0, self._geom()[2]).collidepoint(ev.pos):
                     self.dragging = True
                     self._apply(ev.pos[0], track)
             elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
@@ -5455,7 +5501,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                   (track.x, track.y, fill_w, track.h), border_radius=3)
             knob_col = (225, 230, 238) if en else (110, 112, 116)
             pygame.draw.circle(surf, knob_col,
-                                (track.x + fill_w, track.y + track.h // 2), 7)
+                                (track.x + fill_w, track.y + track.h // 2),
+                                self._geom()[1])
             txt_col = COL["hud"] if en else (120, 122, 126)
             txt = f"{self.label}: {self.fmt.format(self.get())}"
             surf.blit(font.render(txt, True, txt_col), (self.rect.x, self.rect.y))
@@ -6546,9 +6593,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         y += U(32)
 
         shot = []
-        shot.append(Slider((px, y, pw, U(34)), CFG["POWER_MIN"], CFG["POWER_MAX"],
+        # r50.1: the power slider gets a taller rect than the Table tab's, so
+        # it reads as the primary control it is. It is the one slider used on
+        # every single shot.
+        shot.append(Slider((px, y, pw, U(46)), CFG["POWER_MIN"], CFG["POWER_MAX"],
                             lambda: power, set_power, "power", "{:.2f} m/s"))
-        y += U(38)
+        y += U(50)
         # r29: power fine adjustment. The slider resolves ~0.028 m/s per pixel
         # against a readout showing two decimals, so a specific power was
         # simply unreachable by dragging -- the same problem r10 fixed for spin.
@@ -10996,6 +11046,51 @@ def selftest():
           f"tabs {labels105}, all keyed: {keyed105}; scaled cap honoured "
           f"{big105} vs unscaled default {unscaled105}; no-room -> "
           f"{spin_group_radius(0, 500, r_max=150, r_min=90, extra=150)}")
+
+    # 106. r50.1: the slider scales with the HUD, and its knob stays on screen.
+    #
+    # Every dimension was a fixed pixel -- a 6px track 20px from the top, a
+    # radius-7 knob, a 14px grab margin -- so the power slider stayed exactly
+    # the same size while the dial beside it grew to 300px across at 1.5x. The
+    # Maker's word for that was "dwarfed". It is the same fault as r41's button
+    # rects, r42's strip leading and r50's picker cap, and this is the fourth
+    # revision to find it somewhere new.
+    #
+    # THE KNOB INSET IS THE PART WORTH PINNING. Without it the knob's centre
+    # sits at the end of the track, so at full power half of it hung off the
+    # panel edge -- which it always did, at every scale, unnoticed because 7px
+    # of a white circle over a dark panel reads as a rounded end.
+    geoms106 = {}
+    for s106 in (1.0, 1.25, 1.5):
+        geoms106[s106] = slider_geometry(100, 200, 240, int(round(46 * s106)),
+                                         s106)
+    (t10, k10, g10) = geoms106[1.0]
+    (t15, k15, g15) = geoms106[1.5]
+    # the label must always clear the track, at every scale
+    clears106 = all(
+        slider_geometry(0, 0, 240, int(round(h * s)), s)[0][1]
+        > int(round(14 * s))
+        for s in (1.0, 1.25, 1.5) for h in (34, 46))
+    check("r50.1 the slider grows with the HUD — track and knob scale instead "
+          "of staying 6px and 7px beside a dial that reaches 300px across, a "
+          "taller rect makes a chunkier slider because the track is anchored "
+          "to the bottom rather than a fixed drop from the top, and the track "
+          "is inset by the knob radius so a full-power knob stops hanging off "
+          "the panel edge, which it did at every scale",
+          t15[3] > t10[3] and k15 > k10 and g15 > g10
+          and t10[3] == 10 and k10 == 8
+          and t15[3] == 15 and k15 == 11
+          # inset at BOTH ends, so the knob never crosses the rect edge
+          and t10[0] == 100 + k10
+          and t10[0] + t10[2] == 100 + 240 - k10
+          # a taller rect gives a lower track, not a clipped label
+          and (slider_geometry(0, 0, 240, 60, 1.0)[0][1]
+               > slider_geometry(0, 0, 240, 34, 1.0)[0][1])
+          and clears106,
+          f"1.0x track h {t10[3]} knob {k10} grab {g10}; "
+          f"1.5x track h {t15[3]} knob {k15} grab {g15}; "
+          f"inset {t10[0] - 100}px each end; label clears at every "
+          f"scale/height: {clears106}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
