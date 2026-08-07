@@ -2428,6 +2428,259 @@ def grannie(potted_colours, winner_colour, loser_colour, clean_black,
             and "black" in potted_colours)
 
 
+LEAGUE_STORE_NAME = "hustler_league.json"
+LEAGUE_SCHEMA = 1
+
+# r52: the seven AI a league is played against. SHARK and STEADY keep the
+# EXACT parameters `default_ais()` gives them -- that function is deliberately
+# untouched, because the AI-vs-AI study log is byte-reproducible for a fixed
+# seed and r17 proved three optimisations behaviour-preserving by diffing it.
+# A league that quietly re-tuned the study's two players would retire the
+# technique without failing anything.
+#
+# The other five are new, and DRAFTED like the names were -- expect them to be
+# re-tuned once there are results to tune against. `aim_jitter` is the SKILL
+# dial and r18 made it an independent axis on purpose, so the ladder is a
+# spread of jitter with strategy varied across it rather than a single line
+# from bad to good. That matters: eight players who differ only in straightness
+# would make the table a ranking of one number, and the whole point of r18 was
+# that strategy is a separate question from skill.
+LEAGUE_LADDER = (
+    #  nickname   jitter  threshold  greed  caution
+    ("SHARK",    0.011,   0.10,      0.55,  0.35),   # as default_ais()
+    ("STEADY",   0.011,   0.24,      0.25,  0.70),   # as default_ais()
+    ("BULLET",   0.009,   0.08,      0.62,  0.22),   # straighter, reckless
+    ("DOC",      0.010,   0.30,      0.20,  0.80),   # patient, safety-first
+    ("MAGPIE",   0.013,   0.14,      0.48,  0.40),   # scrappy all-rounder
+    ("CHALKY",   0.016,   0.20,      0.30,  0.55),   # club standard
+    ("SPIDER",   0.012,   0.26,      0.58,  0.30),   # picky but positional
+    ("DUCHESS",  0.014,   0.12,      0.35,  0.65),   # attacking, foul-shy
+)
+
+
+def league_ai(nickname, rng=None):
+    """r52: the PoolAI for a league nickname, or None if it is not on the
+    ladder (a human, or a name that has been retired).
+    """
+    for nick, jit, thr, greed, caution in LEAGUE_LADDER:
+        if nick == nickname:
+            return PoolAI(nick, aim_jitter=jit, threshold=thr, greed=greed,
+                          caution=caution, rng=rng or random.Random())
+    return None
+
+
+def league_fixtures(players):
+    """r52: a single round-robin, every player against every other once. Pure.
+
+    Order is deterministic -- the circle method with the first player pinned --
+    so the same league always produces the same fixture list. That is not
+    fussiness: the list is written to a tracked file, and a fixture order that
+    reshuffled on every read would make the file churn on every commit and
+    make "which round am I on" unanswerable.
+
+    Returns a list of rounds, each a list of (home, away) pairs. Rounds matter
+    because the Maker plays their own fixtures and the AI ones auto-resolve;
+    doing that a round at a time is what makes the waiting bounded and
+    explicable rather than a single long stall.
+    """
+    ps = list(players)
+    if len(ps) < 2:
+        return []
+    bye = None
+    if len(ps) % 2:
+        bye = "(bye)"
+        ps.append(bye)
+    n = len(ps)
+    rounds = []
+    order = list(ps)
+    for _ in range(n - 1):
+        pairs = [(order[i], order[n - 1 - i]) for i in range(n // 2)]
+        rounds.append([(a, b) for a, b in pairs if bye not in (a, b)])
+        order = [order[0]] + [order[-1]] + order[1:-1]
+    return rounds
+
+
+def new_league(players, name="Season 1"):
+    """r52: a fresh league. Pure -- no I/O, no clock.
+
+    Results are stored as a LIST OF PLAYED FIXTURES rather than a table of
+    counters, for the same reason profiles store frames: a table can only
+    answer the questions it was built for, and r16 is why this project does not
+    trust stored aggregates. The standings are computed on read.
+    """
+    return {"schema": LEAGUE_SCHEMA, "name": name, "players": list(players),
+            "rounds": league_fixtures(players), "results": []}
+
+
+def league_result_key(home, away):
+    """r52: the identity of a fixture, order-independent. Pure.
+
+    A fixture is the same fixture whichever way round it is written, and both
+    orders occur -- the round-robin generator decides one, and a caller
+    reporting a result may well pass the winner first without thinking.
+    """
+    return tuple(sorted((home, away)))
+
+
+def league_record(league, home, away, winner, grannie=False):
+    """r52: record one played fixture. Pure, returns a new league.
+
+    A fixture already played is NOT overwritten. The human can wander back into
+    a game against someone they have already beaten -- nothing stops them, and
+    nothing should -- but a league where the last frame played silently
+    replaces the recorded one is a league whose table depends on what you did
+    most recently rather than what you did.
+    """
+    key = league_result_key(home, away)
+    if any(league_result_key(r["home"], r["away"]) == key
+           for r in league.get("results", [])):
+        return league
+    out = dict(league)
+    out["results"] = list(league.get("results", [])) + [
+        {"home": home, "away": away, "winner": winner,
+         "grannie": bool(grannie)}]
+    return out
+
+
+def league_standings(league):
+    """r52: the table, computed from the played fixtures. Pure.
+
+    Two points a win, nil for a loss -- pub league scoring, and no draws exist
+    because a frame of blackball cannot be drawn. Sorted by points, then by
+    wins, then alphabetically so the order is stable for a tracked file.
+
+    Grannies given and taken are carried because the Maker asked for them to be
+    recorded for ever more, and a league table is exactly where a whitewash is
+    supposed to be visible to everyone.
+    """
+    rows = {p: {"player": p, "played": 0, "won": 0, "lost": 0, "points": 0,
+                "grannies_given": 0, "grannies_taken": 0}
+            for p in league.get("players", [])}
+    for r in league.get("results", []):
+        w, h, a = r.get("winner"), r.get("home"), r.get("away")
+        loser = a if w == h else h
+        for p in (h, a):
+            if p in rows:
+                rows[p]["played"] += 1
+        if w in rows:
+            rows[w]["won"] += 1
+            rows[w]["points"] += 2
+            if r.get("grannie"):
+                rows[w]["grannies_given"] += 1
+        if loser in rows:
+            rows[loser]["lost"] += 1
+            if r.get("grannie"):
+                rows[loser]["grannies_taken"] += 1
+    return sorted(rows.values(),
+                  key=lambda x: (-x["points"], -x["won"], x["player"]))
+
+
+def league_next_fixture(league, player):
+    """r52: the player's next unplayed fixture, or None when they are done.
+
+    Round order, so a career progresses through the season rather than jumping
+    to whichever opponent happens to sort first.
+    """
+    played = {league_result_key(r["home"], r["away"])
+              for r in league.get("results", [])}
+    for rnd in league.get("rounds", []):
+        for home, away in rnd:
+            if player in (home, away) \
+                    and league_result_key(home, away) not in played:
+                return (home, away)
+    return None
+
+
+def league_pending_ai(league, human):
+    """r52: fixtures with no human in them that have not been played yet.
+
+    These are the ones that auto-resolve. Measured at ~3.7s a frame on one
+    core, so a single round-robin of eight is 21 AI fixtures and a little over
+    a minute before any multi-core help.
+    """
+    played = {league_result_key(r["home"], r["away"])
+              for r in league.get("results", [])}
+    out = []
+    for rnd in league.get("rounds", []):
+        for home, away in rnd:
+            if human not in (home, away) \
+                    and league_result_key(home, away) not in played:
+                out.append((home, away))
+    return out
+
+
+def league_store_path(script_path, env_override=None):
+    """r52: where the league lives. Pure. Beside hustler.py and TRACKED, like
+    the shot log since r38 and the profiles since r48 -- a season that takes
+    weeks to play is not scratch, and the Maker asked for it tracked so they
+    can look at it and adjust.
+    """
+    if env_override:
+        return env_override
+    return os.path.join(os.path.dirname(os.path.abspath(script_path)),
+                        LEAGUE_STORE_NAME)
+
+
+def league_from_json(blob):
+    """r52: read a league, tolerating a hand-edited file. Pure.
+
+    Same posture as the profile reader: this file is tracked so it can be
+    opened and adjusted, and a reader that threw on an unexpected field would
+    punish the exact use it was tracked for. A malformed result costs that
+    result, not the season.
+    """
+    if not isinstance(blob, dict) or not isinstance(blob.get("players"), list):
+        return None
+    out = {"schema": int(blob.get("schema", LEAGUE_SCHEMA) or LEAGUE_SCHEMA),
+           "name": str(blob.get("name", "Season 1")),
+           "players": [str(p) for p in blob["players"]],
+           "rounds": [], "results": []}
+    rounds = blob.get("rounds")
+    if isinstance(rounds, list):
+        for rnd in rounds:
+            if isinstance(rnd, list):
+                out["rounds"].append([(str(a), str(b)) for a, b in rnd
+                                      if isinstance(a, str)
+                                      and isinstance(b, str)])
+    if not out["rounds"]:
+        out["rounds"] = league_fixtures(out["players"])
+    for r in blob.get("results") or []:
+        if isinstance(r, dict) and r.get("home") and r.get("away"):
+            out["results"].append({"home": str(r["home"]),
+                                   "away": str(r["away"]),
+                                   "winner": str(r.get("winner", "")),
+                                   "grannie": bool(r.get("grannie"))})
+    return out
+
+
+def league_resolve_ai(league, human, limit=None, seed_base=9000):
+    """r52: play out the fixtures the human is not in. Returns a new league.
+
+    Not pure -- it runs real frames -- and that is the point. The Maker's
+    requirement was that AI fixtures AUTO-RESOLVE, and resolving them
+    statistically would make the table a spreadsheet: an AI's record would no
+    longer be earned on the same table the human plays on. Measured at ~3.7s a
+    frame on one core, so a full round-robin of eight is 21 fixtures and a
+    little over a minute.
+
+    The seed is derived from the FIXTURE, not from a counter, so replaying a
+    season reproduces it and resolving in a different order changes nothing.
+    """
+    out = dict(league)
+    pending = league_pending_ai(out, human)
+    if limit is not None:
+        pending = pending[:limit]
+    for home, away in pending:
+        key = league_result_key(home, away)
+        seed = seed_base + (abs(hash(key)) % 100000)
+        rec = play_ai_game(seed=seed, names=(home, away))
+        if not rec.get("over"):
+            continue          # no result inside max_shots; leave it unplayed
+        out = league_record(out, home, away, rec.get("winner_name", home),
+                            grannie=bool(rec.get("grannie")))
+    return out
+
+
 def text_edit(buf, key_name, char, maxlen=24):
     """r51: one keystroke applied to a text field. Pure -- string in, string
     out, no pygame, no state.
@@ -3824,7 +4077,8 @@ def pot_calibration(shot_records, bins=5):
     return out
 
 
-def play_ai_game(seed=0, max_shots=300, verbose=False, log_shots=False):
+def play_ai_game(seed=0, max_shots=300, verbose=False, log_shots=False,
+                 names=None):
     """Headless AI-vs-AI game. Returns a result record.
 
     r15: with log_shots=True the record also carries a per-shot event log and
@@ -3832,8 +4086,18 @@ def play_ai_game(seed=0, max_shots=300, verbose=False, log_shots=False):
     parameters). Without those, an interesting outlier is a curiosity you can
     never reproduce."""
     rng = random.Random(seed)
-    sim, game = new_game()
-    ais = default_ais(rng)
+    if names is None:
+        # r52: DEFAULT PATH UNCHANGED, deliberately. The study log is
+        # byte-reproducible for a fixed seed and r17 proved three optimisations
+        # behaviour-preserving by diffing it; a league that re-tuned the two
+        # study players, or even reached them by a different route, would
+        # retire that technique without failing anything. `names=None` must
+        # keep running exactly the code it ran before.
+        sim, game = new_game()
+        ais = default_ais(rng)
+    else:
+        sim, game = new_game(controllers=("ai", "ai"), names=tuple(names))
+        ais = [league_ai(n, rng) for n in names]
     # Player 0 breaks
     sim.break_shot(power=6.0 * rng.gauss(1.0, 0.02),
                    aim_off=rng.gauss(0.0, 0.0015))
@@ -7346,19 +7610,32 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                             json.dump(profiles_to_json(_cur), _f, indent=1,
                                        sort_keys=True)
                             _f.write("\n")
+                        # r52: if this frame WAS the human's next league
+                        # fixture, it counts for the season. Matched on the
+                        # OPPONENT rather than on a "league mode" flag, so
+                        # there is no way to play your fixture and have it not
+                        # count, and no second mode to forget you are in.
+                        # `league_record` refuses to overwrite an already
+                        # played fixture, so a rematch is just a friendly.
+                        _lp = league_store_path(
+                            __file__, os.environ.get("HUSTLER_LEAGUE"))
+                        if os.path.exists(_lp):
+                            with open(_lp, "r", encoding="utf-8") as _f:
+                                _lg = league_from_json(json.load(_f))
+                            _nx = (league_next_fixture(_lg, profile_name)
+                                   if _lg else None)
+                            if (_nx and _seat(game.winner) in _nx
+                                    and _seat(1 - game.winner) in _nx):
+                                _lg = league_record(
+                                    _lg, _nx[0], _nx[1], _seat(game.winner),
+                                    grannie=finale["grannie"])
+                                with open(_lp, "w", encoding="utf-8") as _f:
+                                    json.dump(_lg, _f, indent=1)
+                                    _f.write("\n")
                     except OSError:
                         # A frame is not worth losing the game over. The record
                         # matters but it is not the point of playing, and the
                         # shot log holds the shots either way.
-                        pass
-                        with open(_pp, "w", encoding="utf-8") as _f:
-                            json.dump(profiles_to_json(_cur), _f, indent=1,
-                                       sort_keys=True)
-                            _f.write("\n")
-                    except OSError:
-                        # A frame is not worth losing the game over. The record
-                        # is valuable but it is not the point of playing, and
-                        # the shot log already holds the shots either way.
                         pass
             if (not game.over and not pending
                     and game.controllers[game.current] == "ai"):
@@ -11408,6 +11685,78 @@ def selftest():
           f"{moved108['BULLET']['name']!r}; merge -> "
           f"{profile_record(merged108['BULLET'])[0]} frames")
 
+    # 109. r52: the fixture list is a real round-robin, and a stable one.
+    #
+    # Everyone plays everyone once. The ORDER is deterministic on purpose --
+    # the list is written to a tracked file, so a fixture order that reshuffled
+    # on every read would churn the file on every commit and make "which round
+    # am I on" unanswerable.
+    #
+    # Odd player counts get a bye rather than a crash: the league is eight
+    # today, the Maker has said it will expand, and a round-robin that only
+    # works for even numbers is a trap laid for that.
+    ps109 = ["MAKER"] + [n for n, *_ in LEAGUE_LADDER][:7]
+    rounds109 = league_fixtures(ps109)
+    pairs109 = [league_result_key(a, b) for r in rounds109 for a, b in r]
+    odd109 = league_fixtures(["A", "B", "C"])
+    check("r52 the fixture list — a single round-robin where every player "
+          "meets every other exactly once, in a deterministic order because "
+          "the list lives in a tracked file and a reshuffle on every read "
+          "would churn the commit and make the round number meaningless; an "
+          "odd player count gets a bye rather than a crash, because the "
+          "league is expanding",
+          len(rounds109) == 7
+          and len(pairs109) == 28
+          and len(set(pairs109)) == 28
+          and all(len(r) == 4 for r in rounds109)
+          and league_fixtures(ps109) == rounds109
+          and sorted(league_result_key(a, b)
+                     for r in odd109 for a, b in r) == [("A", "B"), ("A", "C"),
+                                                        ("B", "C")]
+          and league_fixtures(["solo"]) == [] and league_fixtures([]) == [],
+          f"{len(rounds109)} rounds x 4 = {len(pairs109)} fixtures, "
+          f"{len(set(pairs109))} distinct; three players -> "
+          f"{sum(len(r) for r in odd109)} fixtures with byes dropped")
+
+    # 110. r52: the table is computed from played fixtures, never stored.
+    #
+    # Same reasoning as profiles storing frames rather than counters, and for
+    # the same scar: r16 found pot_estimate five times over-confident and every
+    # conclusion drawn from it had to be thrown away. A stored table can only
+    # answer the questions it was built for; a function over the results can be
+    # rewritten and re-run.
+    #
+    # The refusal to overwrite is the part with teeth. The human can wander
+    # back into a game against someone they have already played -- nothing
+    # stops them and nothing should -- but a league whose table depends on what
+    # you did most recently rather than what you did is not a league.
+    lg110 = new_league(["MAKER", "SHARK", "STEADY", "DOC"])
+    lg110 = league_record(lg110, "MAKER", "SHARK", "MAKER", grannie=True)
+    lg110 = league_record(lg110, "STEADY", "DOC", "DOC")
+    again110 = league_record(lg110, "SHARK", "MAKER", "SHARK")   # rematch
+    tbl110 = {r["player"]: r for r in league_standings(again110)}
+    check("r52 the league table — points come from the played fixtures on "
+          "every read rather than from a stored tally, so any question asked "
+          "later can still be answered; a fixture already played is never "
+          "overwritten, whichever way round the pairing is given, so a rematch "
+          "is a friendly and the table reflects what you did rather than what "
+          "you did last; and a Grannie shows on both sides of it",
+          len(again110["results"]) == 2
+          and tbl110["MAKER"]["points"] == 2
+          and tbl110["MAKER"]["won"] == 1 and tbl110["MAKER"]["played"] == 1
+          and tbl110["SHARK"]["points"] == 0
+          and tbl110["SHARK"]["grannies_taken"] == 1
+          and tbl110["MAKER"]["grannies_given"] == 1
+          and tbl110["DOC"]["points"] == 2
+          and [r["player"] for r in league_standings(again110)][:2]
+          == ["DOC", "MAKER"]
+          and league_next_fixture(again110, "MAKER") is not None
+          and league_result_key("A", "B") == league_result_key("B", "A"),
+          f"results kept {len(again110['results'])} after a rematch; "
+          f"MAKER {tbl110['MAKER']['points']}pts "
+          f"G+{tbl110['MAKER']['grannies_given']}, SHARK "
+          f"{tbl110['SHARK']['points']}pts G-{tbl110['SHARK']['grannies_taken']}")
+
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
 
@@ -11450,6 +11799,9 @@ def main():
     ap.add_argument("--batch", type=int, metavar="N", help="run N random strikes headless")
     ap.add_argument("--breaks", type=int, metavar="N", help="break analyser, N trials per config")
     ap.add_argument("--aigame", type=int, metavar="N", help="run N headless AI vs AI games")
+    ap.add_argument("--league", nargs="?", const="show", metavar="ACTION",
+                    help="league: 'show' (default), 'new' to start a season, "
+                         "or 'resolve' to play out the AI fixtures")
     ap.add_argument("--profiles", nargs="?", const="", metavar="FILE",
                     help="show player profiles (default: hustler_profiles.json "
                          "beside hustler.py; $HUSTLER_PROFILES overrides)")
@@ -11468,6 +11820,50 @@ def main():
                     help="write every sound voice to WAV (no mixer, no game) "
                          "so they can be auditioned directly")
     args = ap.parse_args()
+
+    if args.league is not None:
+        lpath = league_store_path(__file__, os.environ.get("HUSTLER_LEAGUE"))
+        me = os.environ.get("HUSTLER_PLAYER", "PLAYER")
+        lg = None
+        if os.path.exists(lpath):
+            try:
+                with open(lpath, encoding="utf-8") as fh:
+                    lg = league_from_json(json.load(fh))
+            except (OSError, ValueError) as exc:
+                print(f"league at {lpath} is unreadable: {exc}")
+                sys.exit(1)
+        if args.league == "new":
+            lg = new_league([me] + [n for n, *_ in LEAGUE_LADDER][:7])
+            print(f"new season: {len(lg['players'])} players, "
+                  f"{sum(len(r) for r in lg['rounds'])} fixtures")
+        elif lg is None:
+            print(f"no league at {lpath} — run --league new to start one")
+            sys.exit(1)
+        if args.league == "resolve":
+            todo = league_pending_ai(lg, me)
+            print(f"resolving {len(todo)} AI fixture(s) — about "
+                  f"{len(todo) * 3.7:.0f}s")
+            lg = league_resolve_ai(lg, me)
+        if args.league in ("new", "resolve"):
+            with open(lpath, "w", encoding="utf-8") as fh:
+                json.dump(lg, fh, indent=1)
+                fh.write("\n")
+        print(f"\n{lg['name']} — {lpath}")
+        print("  %-10s %3s %3s %3s %4s  %s"
+              % ("player", "P", "W", "L", "pts", "grannies"))
+        for row in league_standings(lg):
+            gr = ""
+            if row["grannies_given"] or row["grannies_taken"]:
+                gr = "+%d/-%d" % (row["grannies_given"], row["grannies_taken"])
+            print("  %-10s %3d %3d %3d %4d  %s"
+                  % (row["player"], row["played"], row["won"], row["lost"],
+                     row["points"], gr))
+        nxt = league_next_fixture(lg, me)
+        left = len(league_pending_ai(lg, me))
+        print(f"\n  your next fixture: "
+              f"{(nxt[0] + ' v ' + nxt[1]) if nxt else 'season complete'}")
+        print(f"  AI fixtures still to resolve: {left}")
+        sys.exit(0)
 
     if args.profiles is not None:
         # r48: same resolver as the writer, so the two cannot drift apart and

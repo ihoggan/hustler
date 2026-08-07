@@ -5,7 +5,66 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r51 — the career shell (current)
+## r52 — the league (current)
+
+Eight players, twenty-eight fixtures, a table. `--league new` starts a season,
+`--league resolve` plays out the AI ones, `--league` shows where you are.
+
+**Five new opponents.** The ladder needed eight and only two had parameter
+sets. BULLET, DOC, MAGPIE, CHALKY and SPIDER are drafted like their names
+were — expect re-tuning once there are results to tune against. `aim_jitter` is
+spread across them with strategy varied independently, because r18's whole
+point was that skill and strategy are separate axes; eight players differing
+only in straightness would make the table a ranking of one number.
+
+**SHARK and STEADY keep the exact parameters `default_ais()` gives them, and
+that function is untouched.** The study log is byte-reproducible for a fixed
+seed and r17 proved three optimisations behaviour-preserving by diffing it. A
+league that re-tuned the study's two players — or even reached them by a
+different route — would retire the technique without failing anything.
+`play_ai_game(names=None)` runs exactly the code it ran before; `--aigame 12
+--seed 4200` still returns SHARK 9-3.
+
+**AI fixtures resolve by playing real frames**, not statistically. Measured at
+~3.15s each here, so 21 fixtures is about a minute. The seed is derived from
+the fixture rather than a counter, so resolving in a different order changes
+nothing and a season replays identically.
+
+**Your own fixtures count automatically.** A finished frame is matched against
+your next league fixture by OPPONENT rather than by a "league mode" flag, so
+there is no way to play your fixture and have it not count, and no second mode
+to forget you are in. `league_record()` refuses to overwrite a fixture already
+played, so a rematch is just a friendly — a league whose table depends on what
+you did most recently rather than what you did is not a league.
+
+The table is computed from the played fixtures on every read, never stored.
+Same reasoning as profiles storing frames, and the same scar behind it: r16
+found `pot_estimate` five times over-confident and every conclusion drawn from
+a stored aggregate had to be thrown away.
+
+### A bug found on the way, and it was mine
+
+The profile write at frame end had a **duplicated exception handler**, shipped
+since r48 and carried through five releases:
+
+```
+except OSError:
+    pass
+    with open(...)      # a retry, inside the handler
+except OSError:         # a sibling handler, which cannot catch it
+    pass
+```
+
+So the "a frame is not worth losing the game over" guard was defeated by its
+own duplicate: a failed profile write retried inside the handler, and that
+second exception escaped uncaught and would have taken the game down at the end
+of a frame. It only fires when the disk write fails, which is why nobody has
+seen it. Introduced by my own r48 edit leaving the original block behind, and
+found only because r52 needed to write to that same spot.
+
+---
+
+## r51 — the career shell
 
 The game boots into a menu now: your name, your nickname, and a way onto the
 table. **Skippable**, per the Maker — Escape plays. Escape from the table

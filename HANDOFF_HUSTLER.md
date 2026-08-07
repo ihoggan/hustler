@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r51 — playable, validated, no known blocking bugs.
+**Status:** r52 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -21,7 +21,7 @@ source of truth.
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 108 assertions |
+| `--selftest` | ALL PASS — 110 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -351,6 +351,29 @@ overwrites. Naming yourself moves the `PLAYER` career instead of orphaning it
 showed removing either alone leaves the snap byte-identical, so the md5 cannot
 catch it.
 
+## What r52 changed (as built)
+
+**The league.** `LEAGUE_LADDER` (8 nicknames with parameters; SHARK/STEADY
+identical to `default_ais()`), `league_ai()`, `league_fixtures()` (circle-method
+round-robin, deterministic, byes for odd counts), `new_league()`,
+`league_record()` (refuses to overwrite a played fixture),
+`league_standings()` (computed on read, 2pts a win), `league_next_fixture()`,
+`league_pending_ai()`, `league_resolve_ai()` (real frames, seed derived from the
+fixture), `league_store_path()`, `league_from_json()`. CLI: `--league
+[show|new|resolve]`. Store `hustler_league.json`, TRACKED.
+
+**`play_ai_game(names=...)`** is new and OPTIONAL: `names=None` runs exactly the
+previous code path, because the study log's byte-reproducibility is how r17
+proved three optimisations safe. Verified: `--aigame 12 --seed 4200` unchanged.
+
+**The human's fixtures record themselves** at frame end, matched on OPPONENT
+rather than a mode flag.
+
+**FIXED: a duplicated `except OSError` handler in the profile write**, shipped
+since r48 through five releases. A failed write retried INSIDE the handler and
+the second exception escaped uncaught — the "not worth losing the game over"
+guard defeated by its own duplicate. Found only because r52 wrote to that spot.
+
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
 enforces the `--snap` md5 as well: the hash lives in one place, as a
@@ -494,7 +517,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 108 assertions, all
+  out) rather than the pygame wrapper around it. Currently 110 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -1407,10 +1430,10 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 >
 > > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **108 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **110 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.51.0.
+> > standalone, 36 primitives. `setup.py` says 0.52.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.
