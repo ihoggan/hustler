@@ -5,7 +5,48 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r52 — the league (current)
+## r52.1 — you can actually play your fixtures (current)
+
+r52 built a league of eight and left the opponent picker offering two. The
+Maker's first fixture was MAKER v SPIDER, and there was no way to put SPIDER on
+the table — asking for one silently seated SHARK, and since SHARK was not in
+the fixture the frame would not have counted either. The loop was open at
+exactly the point they would have walked into it.
+
+Three fixes, and the first two are the same lesson twice.
+
+**`OPPONENT_ROSTER` is DERIVED from the ladder**, not maintained beside it. It
+was `("SHARK", "STEADY")` from r49.1, when those were the only two AI with
+parameters, and r52 added five more without widening it. A hand-kept copy of a
+list that grows is the fault r49 spent a whole revision removing.
+
+**`ais_for_seats()` seats from the ladder too.** It looked players up in
+`default_ais()`, which only ever held SHARK and STEADY — so any other league
+opponent resolved to `None` and would have crashed the moment it took a shot.
+`default_ais()` itself is still untouched, because the study log's
+byte-reproducibility rests on it.
+
+**The fallback is no longer silent.** A name the seat cannot seat still falls
+back — a GUI must not crash because a stale name reached it — but it now says
+so, on screen. r49 was an entire revision about a seat whose name and occupant
+disagreed, and falling back without a word is precisely how that happened.
+
+**And the opponent now defaults to your next league fixture.** Walk in, press
+play, and you are playing the game the season is waiting on. The picker still
+cycles the whole ladder for a friendly.
+
+### An assertion that had baked in a size
+
+Widening the roster broke assertion 103, which asserted
+`next_opponent("STEADY") == "SHARK"` — true only while STEADY happened to be
+last in a two-name list. The code was right and the test was stale. It is
+stated against the roster now: every name maps to the next, the last wraps to
+the first, and an unknown name starts from the top, whatever length the ladder
+grows to.
+
+---
+
+## r52 — the league
 
 Eight players, twenty-eight fixtures, a table. `--league new` starts a season,
 `--league resolve` plays out the AI ones, `--league` shows where you are.

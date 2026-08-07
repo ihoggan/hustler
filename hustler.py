@@ -3017,7 +3017,13 @@ PLAYER_ROSTER = {
 
 # Only the two with parameter sets can actually take a shot yet, so the
 # playable roster stays a subset of the named one rather than a second list.
-OPPONENT_ROSTER = ("SHARK", "STEADY")
+# r53: DERIVED from the ladder, not a second list. It was ("SHARK", "STEADY")
+# -- written at r49.1 when those were the only two AI with parameter sets --
+# and r52 added five more without widening it. The result was a league whose
+# first fixture the Maker could not play: asking for SPIDER got SHARK, silently.
+# A hand-maintained copy of a list that grows is the same fault r49 spent a
+# revision removing; deriving it means the picker cannot fall behind again.
+OPPONENT_ROSTER = tuple(n for n, *_ in LEAGUE_LADDER)
 
 
 def real_name(nickname):
@@ -3080,10 +3086,16 @@ def seat_lineup(mode_name, human_opponent=DEFAULT_OPPONENT):
     """
     ai_names = set(OPPONENT_ROSTER)
     if mode_name == "YOU vs AI":
-        opp = (human_opponent if human_opponent in ai_names
-               else DEFAULT_OPPONENT)
-        return ((HUMAN_SEAT_NAME, opp), ("human", "ai"), (None, opp))
-    return (("SHARK", "STEADY"), ("ai", "ai"), ("SHARK", "STEADY"))
+        # r53: the fallback is still here -- a GUI must not crash because a
+        # stale name reached it -- but it is no longer SILENT. r49 was the
+        # whole revision about a seat whose name and occupant disagreed, and
+        # falling back without a word is precisely how that happened. The
+        # caller gets told, and tells the player.
+        opp = human_opponent if human_opponent in ai_names else None
+        seated = opp or DEFAULT_OPPONENT
+        return ((HUMAN_SEAT_NAME, seated), ("human", "ai"), (None, seated),
+                opp is not None)
+    return (("SHARK", "STEADY"), ("ai", "ai"), ("SHARK", "STEADY"), True)
 
 
 def ais_for_seats(ai_names, rng=None):
@@ -3095,8 +3107,12 @@ def ais_for_seats(ai_names, rng=None):
     so a None there can never be used -- and if it ever were, a crash is a far
     better outcome than an unnoticed second personality quietly taking shots.
     """
-    pool = {a.name: a for a in default_ais(rng)}
-    return [pool.get(n) if n else None for n in ai_names]
+    # r53: `default_ais()` only ever held SHARK and STEADY, so any other league
+    # opponent resolved to None and would have crashed the moment it took a
+    # shot. The ladder is the source now; `default_ais()` is still untouched,
+    # because the study log's byte-reproducibility depends on it.
+    rng = rng or random.Random()
+    return [league_ai(n, rng) if n else None for n in ai_names]
 
 
 def summarise_shots(rows, x1, y1):
@@ -6358,6 +6374,24 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # where STEADY demands a better chance and plays safe. It is also what the
     # HUD had been claiming all along.
     human_opponent = DEFAULT_OPPONENT
+    # r53: if a season is running, start set up for the fixture it wants
+    # rather than for whoever happens to be first on the ladder. The picker
+    # still works -- a friendly against anyone is one keypress -- but the
+    # default is the game the league is waiting on, so walking in and pressing
+    # play advances the season instead of playing a fixture that will not
+    # count.
+    try:
+        _lp0 = league_store_path(__file__, os.environ.get("HUSTLER_LEAGUE"))
+        if os.path.exists(_lp0):
+            with open(_lp0, encoding="utf-8") as _f0:
+                _lg0 = league_from_json(json.load(_f0))
+            _nx0 = league_next_fixture(_lg0, profile_name) if _lg0 else None
+            if _nx0:
+                _opp0 = _nx0[1] if _nx0[0] == profile_name else _nx0[0]
+                if _opp0 in OPPONENT_ROSTER:
+                    human_opponent = _opp0
+    except (OSError, ValueError):
+        pass
     frames = 0
     # r51: the career shell. `menu_on` is the screen the game boots into --
     # SKIPPABLE, per the Maker, so a knock-about is one keypress away.
@@ -6375,11 +6409,18 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     running = True
     last_shown = screen
     def start_game(m):
+        nonlocal menu_msg
         # r49: names AND the AI in each seat come from ONE source now. They
         # were two parallel lists before, and they disagreed: the HUD said
         # SHARK while STEADY actually played. Resolved by MODE NAME rather than
         # by the literal 1, same rule as SOLO above (r30).
-        names, controllers, ai_names = seat_lineup(MODES[m], human_opponent)
+        names, controllers, ai_names, ok = seat_lineup(MODES[m],
+                                                        human_opponent)
+        if not ok:
+            # r53: say so. A seat that quietly holds someone other than the
+            # name asked for is the r49 fault, and it cost a revision.
+            menu_msg = f"{human_opponent} is not on the ladder — playing " \
+                       f"{names[1]}"
         s, g = new_game(controllers=controllers, names=names)
         return s, g, ais_for_seats(ai_names)
 
@@ -11405,12 +11446,12 @@ def selftest():
     # have credited SHARK with a result STEADY earned, and committed it.
     seats103 = []
     for mode103 in ("YOU vs AI", "AI vs AI"):
-        nm, ct, an = seat_lineup(mode103)
+        nm, ct, an, _ok = seat_lineup(mode103)
         got = ais_for_seats(an)
         for i in range(2):
             seats103.append(ct[i] != "ai"
                             or (got[i] is not None and got[i].name == nm[i]))
-    nm_you, ct_you, an_you = seat_lineup("YOU vs AI")
+    nm_you, ct_you, an_you, ok_you = seat_lineup("YOU vs AI")
     steady103 = seat_lineup("YOU vs AI", "STEADY")[0]
     bogus103 = seat_lineup("YOU vs AI", "NIGEL")[0]
     check("r49 the name in a seat is the player in that seat — the AI shown in "
@@ -11425,6 +11466,20 @@ def selftest():
           and ais_for_seats(an_you)[1].name == "SHARK"
           and steady103 == ("YOU", "STEADY")
           and bogus103 == ("YOU", "SHARK")
+          # r53: the picker offers the WHOLE ladder. It offered two names
+          # while the league fielded seven, so the Maker's first fixture --
+          # against SPIDER -- could not be played at all, and asking for
+          # SPIDER silently seated SHARK. Derived from the ladder now, so it
+          # cannot fall behind it again.
+          and OPPONENT_ROSTER == tuple(n for n, *_ in LEAGUE_LADDER)
+          and len(OPPONENT_ROSTER) >= 8
+          and seat_lineup("YOU vs AI", "SPIDER")[0] == ("YOU", "SPIDER")
+          and ais_for_seats(seat_lineup("YOU vs AI", "SPIDER")[2])[1].name
+          == "SPIDER"
+          # and the fallback is LOUD -- a seat quietly holding someone other
+          # than the name asked for is the r49 fault, and it cost a revision
+          and ok_you and seat_lineup("YOU vs AI", "STEADY")[3]
+          and not seat_lineup("YOU vs AI", "NIGEL")[3]
           # r49.1: the default lives in ONE place. The guard used to demand a
           # single assignment, which the opponent picker legitimately broke --
           # what actually matters is that no LITERAL name is ever assigned, so
@@ -11434,11 +11489,17 @@ def selftest():
           and 'human_opponent = "' not in inspect.getsource(run_gui)
           and inspect.getsource(run_gui).count(
               'human_opponent = DEFAULT_OPPONENT') == 1
-          and next_opponent("SHARK") == "STEADY"
-          and next_opponent("STEADY") == "SHARK"
-          and next_opponent("NIGEL") == "SHARK"
-          and all(next_opponent(n) in OPPONENT_ROSTER
-                  for n in OPPONENT_ROSTER),
+          # r53: stated against the roster rather than against two hard-coded
+          # names. The first cut asserted next_opponent("STEADY") == "SHARK",
+          # which was only true while STEADY happened to be last -- widening
+          # the ladder broke the assertion rather than the code, which is a
+          # test that had baked in a size it was never promised.
+          and all(next_opponent(OPPONENT_ROSTER[i])
+                  == OPPONENT_ROSTER[(i + 1) % len(OPPONENT_ROSTER)]
+                  for i in range(len(OPPONENT_ROSTER)))
+          and next_opponent(OPPONENT_ROSTER[-1]) == OPPONENT_ROSTER[0]
+          and next_opponent("NIGEL") == OPPONENT_ROSTER[0]
+          and len(set(OPPONENT_ROSTER)) == len(OPPONENT_ROSTER),
           f"seat/name agreement {sum(seats103)}/{len(seats103)}; "
           f"human game seats {nm_you} -> AI "
           f"{[a.name if a else None for a in ais_for_seats(an_you)]}; "

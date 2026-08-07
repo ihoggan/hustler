@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current status: r52 — playable, validated
+## Current status: r52.1 — playable, validated
 
 **Validation snapshot (r49, measured on nix5 and reproduced in a Linux
 container):**

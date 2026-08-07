@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r52 — playable, validated, no known blocking bugs.
+**Status:** r52.1 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -373,6 +373,27 @@ rather than a mode flag.
 since r48 through five releases. A failed write retried INSIDE the handler and
 the second exception escaped uncaught — the "not worth losing the game over"
 guard defeated by its own duplicate. Found only because r52 wrote to that spot.
+
+## What r52.1 fixed
+
+**`OPPONENT_ROSTER` is derived from `LEAGUE_LADDER`**, not a hand-kept copy. It
+offered two names while the league fielded seven, so the Maker's first fixture
+could not be played and asking for SPIDER silently seated SHARK.
+
+**`ais_for_seats()` uses `league_ai()`**, not `default_ais()` — the latter holds
+only SHARK and STEADY, so every other opponent resolved to None and would have
+crashed on its first shot. `default_ais()` stays untouched (study
+reproducibility).
+
+**`seat_lineup()` returns a fourth value: whether the requested name was
+seated.** The fallback remains (a GUI must not crash on a stale name) but is
+reported on screen. Silent fallback is how r49's seat/name bug happened.
+
+**The opponent defaults to the human's next league fixture** when a season
+exists; the picker still cycles the whole ladder.
+
+**Assertion 103 had baked in a two-name roster** (`next_opponent("STEADY") ==
+"SHARK"`). Now stated against the roster at any length.
 
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
@@ -1433,7 +1454,7 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 > > `py_compile` → `--selftest` ALL PASS, **110 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.52.0.
+> > standalone, 36 primitives. `setup.py` says 0.52.1.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.
