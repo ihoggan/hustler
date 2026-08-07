@@ -5,7 +5,100 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r52.1 — you can actually play your fixtures (current)
+## r54 — walk away mid-frame and come back to it (current)
+
+The last item from the Maker's original league brief, designed at r52 and built
+after five other things. Their reason: walking away from a digital game and
+loading it back is the modern computer way.
+
+**The frame autosaves at rest, between shots, and only there.** That single
+constraint is what makes it small — at rest every velocity is zero by
+definition, so there is no momentum to capture and no physics to reconstruct.
+What is left is where the balls are and whose turn it is. Saving mid-shot would
+mean serialising a live pymunk space, and would be pointless besides: nobody
+walks away from a table with the balls still rolling.
+
+Positions ride on `serialise_layout()`, which has stored METRES since r10
+precisely so a layout saved at one window size loads at another — selftest 37
+has covered that round trip for forty revisions, and this inherits it.
+Alongside them go the colour assignment, whose turn it is, visits, fouls, shot
+count, free shot, visits left, ball in hand, and the fixture it belongs to.
+
+**Resume sits in the menu, and only when there is one.** A dead button that
+does nothing is a worse answer than no button, so it reads "no frame in
+progress" until there is one, and then names the fixture: `Resume MAKER v
+SPIDER (league)`.
+
+**A save that is missing anything is refused outright.** Not half-restored — a
+resume that quietly lost the colour assignment, or came back with the wrong
+player to shoot, would have you carrying on from a position that never existed
+and noticing several shots later, by which point it is unrecoverable either
+way.
+
+**Not tracked, deliberately.** `hustler_resume.json` joins the layout slots in
+`.gitignore`. The shot log, the profiles and the league are RECORDS that grow
+and get committed as they grow; a half-played frame is true only while you are
+away from the table and meaningless the moment you sit back down.
+
+**And a resumed frame is not a break.** r39's flag would otherwise mark the
+next shot as one, and the shot log would quietly report a second break in a
+frame that only ever had one.
+
+### The validator was written against an assumption
+
+`serialise_layout()` returns a dict, not a list. The reader checked for a list
+and therefore refused every real save. The round-trip assertion caught it on
+its first run — but only because it round-tripped through actual
+`serialise_layout()` output rather than a hand-built fixture, which is the
+whole reason to test against the real thing.
+
+---
+
+## r53 — the season moves into the shell
+
+"Can I not select league mode in the game?" — no, and the honest answer was
+worse than that. The league existed only at the command line. A fixture was set
+as your opponent without saying so, the result recorded without ever showing
+you a table, and starting or resolving a season meant dropping to a terminal.
+Career mode you cannot see is not career mode.
+
+The menu now carries the standings, your position highlighted, Grannies where
+they have happened, and two buttons: **New season** and **Resolve AI**, the
+latter showing how many fixtures are outstanding.
+
+**Resolving blocks, and says so.** Roughly 3.2 seconds a frame, so it goes a
+round at a time — four fixtures, about thirteen seconds — with the message
+drawn and flipped before the work starts. Bounded and explicable beats a single
+long stall with nothing on screen, and it is honest work rather than a progress
+bar over a statistical shortcut: the Maker's requirement was that AI results
+are earned on the same table they play on.
+
+**New season refuses while one is running.** A league is weeks of play, the
+button sits next to Play, and there is no undo behind a tracked file that has
+just been overwritten.
+
+**And the band says when a frame counts.** A league fixture is an ordinary YOU
+vs AI frame that happens to be the one the season is waiting on — which is what
+lets the result record with no second mode to be in, and also exactly what made
+it invisible. `LEAGUE — MAKER v SPIDER` now sits where the mode name was. That
+is also why league is NOT a mode: the modes describe how a frame is played, and
+a fixture is not a different kind of frame.
+
+### Two mutants that survived because the test matched the wrong line
+
+The new-season guard was checked by looking for
+`league_next_fixture(menu_league, profile_name)` in the source — which also
+appears in the band marker. Gutting the guard left the clause matching the
+other occurrence, and the mutation passed. Same for the batch size. Both are
+matched against text unique to each guard now.
+
+It is the third time this session a source-level assertion has been fooled by
+its own subject: r50's comments quoted the bug it searched for, r50's picker
+cap shared argument text with the aim call, and now this.
+
+---
+
+## r52.1 — you can actually play your fixtures
 
 r52 built a league of eight and left the opponent picker offering two. The
 Maker's first fixture was MAKER v SPIDER, and there was no way to put SPIDER on

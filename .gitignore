@@ -3,8 +3,13 @@ __pycache__/
 hustler_old*.py
 md
 
-# Runtime state, not source: custom-mode save slots and study logs.
+# Runtime state, not source: custom-mode save slots, study logs, and the
+# frame you walked away from. r54: hustler_resume.json is deliberately NOT
+# tracked -- the shot log, the profiles and the league are RECORDS that grow
+# and are committed as they grow, but a half-played frame is true only while
+# you are away from the table and meaningless once you sit back down.
 hustler_layout_*.json
+hustler_resume.json
 *.jsonl
 
 # ...except the human shot log, which is tracked ON PURPOSE (r38). It is not

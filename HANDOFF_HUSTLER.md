@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r52.1 — playable, validated, no known blocking bugs.
+**Status:** r54 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -21,7 +21,7 @@ source of truth.
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 110 assertions |
+| `--selftest` | ALL PASS — 112 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -395,6 +395,51 @@ exists; the picker still cycles the whole ladder.
 **Assertion 103 had baked in a two-name roster** (`next_opponent("STEADY") ==
 "SHARK"`). Now stated against the roster at any length.
 
+## What r53 added
+
+**The season in the career shell.** `draw_menu()` shows the standings (the
+player's row highlighted, Grannies as a net figure) plus **New season** and
+**Resolve AI (n)**. `menu_load_league()` / `menu_save_league()` /
+`menu_new_season()` / `menu_resolve_ai()`. The league is loaded once before the
+main loop -- a closure's name is not bound until its `def` has run, so calling
+it beside the variable declaration raised NameError.
+
+**Resolve goes a ROUND at a time** (`limit=4`, ~13s), message drawn and flipped
+before the work. **New season refuses while fixtures remain** -- no undo on a
+tracked file.
+
+**The band names a league fixture** (`LEAGUE — MAKER v SPIDER`) in place of the
+mode. League is deliberately NOT a mode: modes describe how a frame is played,
+and a fixture is an ordinary YOU vs AI frame that happens to count.
+
+**Assertion 111**, and note the trap it fell into: source-matching
+`league_next_fixture(menu_league, profile_name)` also matched the band marker,
+so gutting the guard passed. Match text UNIQUE to the thing being guarded.
+
+## What r54 added
+
+**Mid-frame save and resume.** `serialise_frame()` / `deserialise_frame()`
+(pure), `RESUME_GAME_FIELDS` naming the rules state ONCE so writer and reader
+cannot disagree, `resume_store_path()`, and in-GUI `resume_save()` /
+`resume_clear()` / `resume_available()` / `resume_load()`.
+
+**Saved AT REST only** — no velocities to store. Positions via
+`serialise_layout()` (metres since r10, covered by selftest 37).
+
+**The reader returns None rather than a half-restored frame.** A resume missing
+the colour assignment would be discovered several shots too late.
+
+**`hustler_resume.json` is NOT tracked** (added to .gitignore beside the layout
+slots): records grow and get committed, a half-played frame does not.
+
+**A resumed frame sets `next_is_break = False`** or r39's flag would report a
+second break in the same frame.
+
+**Gotcha:** `serialise_layout()` returns a DICT, not a list. The first
+validator checked for a list and refused every real save; the round-trip
+assertion caught it because it round-trips real output, not a hand-built
+fixture.
+
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
 enforces the `--snap` md5 as well: the hash lives in one place, as a
@@ -538,7 +583,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 110 assertions, all
+  out) rather than the pygame wrapper around it. Currently 112 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -1451,10 +1496,10 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 >
 > > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **110 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **112 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.52.1.
+> > standalone, 36 primitives. `setup.py` says 0.54.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.

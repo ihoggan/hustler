@@ -2681,6 +2681,96 @@ def league_resolve_ai(league, human, limit=None, seed_base=9000):
     return out
 
 
+RESUME_STORE_NAME = "hustler_resume.json"
+RESUME_SCHEMA = 1
+
+# r54: the rules state a frame needs to come back exactly as it was left.
+# Named once, here, so the writer and the reader cannot disagree about what a
+# saved frame contains -- two hand-kept lists of field names is the r49 seat
+# bug waiting to happen in a place where the symptom would be a frame that
+# resumes with the wrong player to shoot.
+RESUME_GAME_FIELDS = ("current", "over", "winner", "reason", "visits",
+                      "fouls", "shots", "last_event", "free_shot",
+                      "visits_left", "ball_in_hand")
+
+
+def resume_store_path(script_path, env_override=None):
+    """r54: where a frame in progress waits. Pure.
+
+    Beside the others but NOT tracked, and the distinction matters. The shot
+    log, the profiles and the league are RECORDS -- they grow, they are
+    committed as they grow, and losing them would lose months. A half-played
+    frame is runtime state: it is true for as long as you are away from the
+    table and meaningless the moment you sit back down. Committing it would
+    put a snapshot of one unfinished frame into the history of the project.
+    """
+    if env_override:
+        return env_override
+    return os.path.join(os.path.dirname(os.path.abspath(script_path)),
+                        RESUME_STORE_NAME)
+
+
+def serialise_frame(layout, game, mode, opponent, fixture=None):
+    """r54: a frame in progress, as a plain dict. Pure.
+
+    SAVED AT REST, BETWEEN SHOTS, AND ONLY THERE. That single constraint is
+    what makes this small: at rest every velocity is zero by definition, so
+    there is no momentum to capture and no physics to reconstruct -- just where
+    the balls are and whose turn it is. Trying to save mid-shot would mean
+    serialising a live pymunk space, and it would be pointless besides: nobody
+    walks away from a table with the balls still rolling.
+
+    `layout` comes from `serialise_layout()`, which has stored positions in
+    METRES since r10 precisely so a layout saved at one window size loads at
+    another -- selftest 37 covers that round trip, and this inherits it.
+    """
+    return {"schema": RESUME_SCHEMA, "layout": layout, "mode": str(mode),
+            "opponent": str(opponent),
+            "fixture": list(fixture) if fixture else None,
+            "game": {k: getattr(game, k) for k in RESUME_GAME_FIELDS},
+            "colours": {str(k): v for k, v in game.colours.items()},
+            "names": list(game.names)}
+
+
+def deserialise_frame(blob):
+    """r54: read a saved frame, or None if it cannot be trusted. Pure.
+
+    Returns None rather than a half-restored frame on anything unexpected. A
+    resume that silently drops the colour assignment, or comes back with the
+    wrong player to shoot, is worse than no resume at all: the player would
+    carry on from a position that never existed and only notice several shots
+    later, by which point the frame is unrecoverable either way.
+    """
+    if not isinstance(blob, dict) or not isinstance(blob.get("game"), dict):
+        return None
+    # `serialise_layout()` returns a DICT ({"version": 1, "balls": [...]}),
+    # not a list -- this validator was written against an assumption and
+    # rejected every real save until the round-trip assertion caught it.
+    lay = blob.get("layout")
+    if not isinstance(lay, dict) or not lay.get("balls"):
+        return None
+    g = blob["game"]
+    if any(k not in g for k in RESUME_GAME_FIELDS):
+        return None
+    colours = blob.get("colours")
+    if not isinstance(colours, dict):
+        return None
+    try:
+        cols = {int(k): v for k, v in colours.items()}
+    except (TypeError, ValueError):
+        return None
+    names = blob.get("names")
+    if not isinstance(names, list) or len(names) != 2:
+        return None
+    fix = blob.get("fixture")
+    return {"layout": blob["layout"], "mode": str(blob.get("mode", "")),
+            "opponent": str(blob.get("opponent", "")),
+            "fixture": tuple(fix) if isinstance(fix, list) and len(fix) == 2
+            else None,
+            "game": {k: g[k] for k in RESUME_GAME_FIELDS},
+            "colours": cols, "names": [str(n) for n in names]}
+
+
 def text_edit(buf, key_name, char, maxlen=24):
     """r51: one keystroke applied to a text field. Pure -- string in, string
     out, no pygame, no state.
@@ -6406,6 +6496,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     menu_name = ""
     menu_nick = ""
     menu_msg = ""
+    menu_league = None         # r53: the season, reloaded when it changes
     running = True
     last_shown = screen
     def start_game(m):
@@ -6622,23 +6713,54 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     def menu_rects():
         """r51: the menu's clickable boxes. One source for drawing and hitting,
         so a button cannot be drawn somewhere it cannot be pressed."""
-        w = min(int(560 * UI_S), win_w - int(80 * UI_S))
-        h = int(300 * UI_S)
+        w = min(int(620 * UI_S), win_w - int(80 * UI_S))
+        h = min(int(560 * UI_S), win_h - int(60 * UI_S))
         x = (win_w - w) // 2
         y = (win_h - h) // 2
         rw = w - int(40 * UI_S)
         rx = x + int(20 * UI_S)
         fh = int(34 * UI_S)
+        half = rw // 2 - int(6 * UI_S)
+        # r53: the standings sit below the identity fields, and the season
+        # buttons below those. Sizes are in scaled units and the panel is
+        # clamped to the window, so a small window shrinks the box rather than
+        # drawing it off the screen -- the fit-or-omit posture used everywhere
+        # else in this HUD.
         return {
             "panel": pygame.Rect(x, y, w, h),
-            "name": pygame.Rect(rx, y + int(70 * UI_S), rw, fh),
-            "nick": pygame.Rect(rx, y + int(114 * UI_S), rw, fh),
-            "save": pygame.Rect(rx, y + int(162 * UI_S),
-                                 rw // 2 - int(6 * UI_S), fh),
+            "name": pygame.Rect(rx, y + int(66 * UI_S), rw, fh),
+            "nick": pygame.Rect(rx, y + int(110 * UI_S), rw, fh),
+            "save": pygame.Rect(rx, y + int(154 * UI_S), half, fh),
             "play": pygame.Rect(rx + rw // 2 + int(6 * UI_S),
-                                 y + int(162 * UI_S),
-                                 rw // 2 - int(6 * UI_S), fh),
+                                 y + int(154 * UI_S), half, fh),
+            "table": pygame.Rect(rx, y + int(210 * UI_S), rw,
+                                  int(250 * UI_S)),
+            "season": pygame.Rect(rx, y + int(474 * UI_S), half, fh),
+            "resolve": pygame.Rect(rx + rw // 2 + int(6 * UI_S),
+                                    y + int(474 * UI_S), half, fh),
+            "resume": pygame.Rect(rx, y + int(516 * UI_S), rw, fh),
         }
+
+    def menu_load_league():
+        """r53: read the season, or None. Never raises into the frame loop."""
+        try:
+            lp = league_store_path(__file__, os.environ.get("HUSTLER_LEAGUE"))
+            if not os.path.exists(lp):
+                return None
+            with open(lp, encoding="utf-8") as fh:
+                return league_from_json(json.load(fh))
+        except (OSError, ValueError):
+            return None
+
+    def menu_save_league(lg):
+        try:
+            lp = league_store_path(__file__, os.environ.get("HUSTLER_LEAGUE"))
+            with open(lp, "w", encoding="utf-8") as fh:
+                json.dump(lg, fh, indent=1)
+                fh.write("\n")
+            return True
+        except OSError:
+            return False
 
     def draw_menu():
         """r51: the career shell, drawn OVER the table rather than instead of
@@ -6678,6 +6800,61 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             pygame.draw.rect(display, (58, 92, 64), box, border_radius=4)
             t = panel_font.render(label, True, (235, 240, 235))
             display.blit(t, t.get_rect(center=box.center))
+        # r53: the season, in the shell it was built for. Until now the league
+        # existed only at the command line: a fixture was set as your opponent
+        # without saying so, and the result recorded without showing you a
+        # table. Career mode you cannot see is not career mode.
+        tb = r["table"]
+        lg = menu_league
+        rowh = int(24 * UI_S)
+        if lg is None:
+            display.blit(panel_font.render(
+                "no season yet — New season starts one", True,
+                (150, 154, 162)), (tb.x, tb.y))
+        else:
+            hdr = "%-10s %3s %3s %3s %4s" % ("player", "P", "W", "L", "pts")
+            display.blit(panel_font.render(hdr, True, (150, 154, 162)),
+                          (tb.x, tb.y))
+            yy = tb.y + rowh
+            for row in league_standings(lg):
+                if yy + rowh > tb.bottom:
+                    break
+                mine = row["player"] == profile_name
+                col = (232, 226, 160) if mine else COL["hud"]
+                line = "%-10s %3d %3d %3d %4d" % (
+                    row["player"], row["played"], row["won"], row["lost"],
+                    row["points"])
+                gr = row["grannies_given"] - row["grannies_taken"]
+                if gr:
+                    line += "  G%+d" % gr
+                display.blit(panel_font.render(line, True, col), (tb.x, yy))
+                yy += rowh
+        for key, label in (("season", "New season"),
+                           ("resolve", "Resolve AI (%d)"
+                            % (len(league_pending_ai(lg, profile_name))
+                               if lg else 0))):
+            box = r[key]
+            live = lg is not None or key == "season"
+            pygame.draw.rect(display, (58, 92, 64) if live else (48, 50, 56),
+                              box, border_radius=4)
+            t = panel_font.render(label, True,
+                                   (235, 240, 235) if live else (120, 124, 132))
+            display.blit(t, t.get_rect(center=box.center))
+        # r54: the frame you walked away from. Only offered when there is one
+        # -- a dead button that does nothing is a worse answer than no button.
+        rb = r["resume"]
+        saved = resume_available()
+        pygame.draw.rect(display, (62, 78, 108) if saved else (48, 50, 56),
+                          rb, border_radius=4)
+        if saved:
+            lab = "Resume %s v %s" % (saved["names"][0], saved["names"][1])
+            if saved["fixture"]:
+                lab += "  (league)"
+        else:
+            lab = "no frame in progress"
+        t = panel_font.render(lab, True,
+                               (226, 232, 245) if saved else (120, 124, 132))
+        display.blit(t, t.get_rect(center=rb.center))
         foot = menu_msg or f"playing as {profile_name}"
         display.blit(panel_font.render(foot, True, (150, 205, 160)),
                       (r["panel"].x + int(20 * UI_S),
@@ -6697,6 +6874,150 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             menu_commit()
         elif r["play"].collidepoint(pos):
             menu_focus, menu_on = None, False
+        elif r["resume"].collidepoint(pos):
+            resume_load()
+        elif r["season"].collidepoint(pos):
+            menu_new_season()
+        elif r["resolve"].collidepoint(pos) and menu_league is not None:
+            menu_resolve_ai()
+
+    def resume_path():
+        return resume_store_path(__file__, os.environ.get("HUSTLER_RESUME"))
+
+    def resume_save():
+        """r54: write the frame in progress. Called AT REST only.
+
+        Silent on failure by design: an autosave that interrupts play to
+        complain is worse than one that quietly does not happen, and the frame
+        is still on the table in front of you either way.
+        """
+        if game is None or game.over or not sim.all_at_rest():
+            return
+        try:
+            fix = None
+            if menu_league is not None:
+                nx = league_next_fixture(menu_league, profile_name)
+                if nx and profile_name in nx and human_opponent in nx:
+                    fix = nx
+            blob = serialise_frame(serialise_layout(custom_balls()), game,
+                                    MODES[mode], human_opponent, fix)
+            with open(resume_path(), "w", encoding="utf-8") as fh:
+                json.dump(blob, fh, indent=1)
+                fh.write("\n")
+        except OSError:
+            pass
+
+    def resume_clear():
+        try:
+            p = resume_path()
+            if os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            pass
+
+    def resume_available():
+        try:
+            p = resume_path()
+            if not os.path.exists(p):
+                return None
+            with open(p, encoding="utf-8") as fh:
+                return deserialise_frame(json.load(fh))
+        except (OSError, ValueError):
+            return None
+
+    def resume_load():
+        """r54: put a saved frame back on the table.
+
+        Rebuilds the rack from the layout and then restores the rules state,
+        in that order -- the colour assignment and whose turn it is have to
+        land on a table that already has the right balls on it.
+        """
+        nonlocal sim, game, ais, menu_on, menu_msg, human_opponent
+        nonlocal pending, ai_plan, ai_wait, next_is_break
+        blob = resume_available()
+        if blob is None:
+            menu_msg = "nothing to resume"
+            return
+        human_opponent = blob["opponent"] or human_opponent
+        names, controllers, ai_names, _ok = seat_lineup("YOU vs AI",
+                                                         human_opponent)
+        sim, game = new_game(controllers=controllers, names=names)
+        ais = ais_for_seats(ai_names)
+        sim.auto_respot = False
+        trail_history.clear()
+        pot_anims.clear()
+        sim.clear_objects()
+        for (kind, pos) in deserialise_layout(blob["layout"]):
+            if kind == "cue":
+                cue = sim.cue()
+                if cue is not None:
+                    cue.position = pos
+                    cue.velocity = (0.0, 0.0)
+                else:
+                    sim._add_ball(Sim.CUE_ID, pos, "cue")
+            else:
+                bid = sim.alloc_id()
+                sim._add_ball(bid, pos, kind)
+                if kind == "black":
+                    sim.black_id = bid
+        for k, v in blob["game"].items():
+            setattr(game, k, v)
+        game.colours = dict(blob["colours"])
+        ai_plan, ai_wait, pending = None, 0, False
+        # r54: NOT a break. The frame is mid-way through, and r39's break flag
+        # would otherwise mark the next shot as one -- a resumed frame would
+        # quietly report a second break into the shot log.
+        next_is_break = False
+        menu_on = False
+        menu_msg = ""
+
+    def menu_new_season():
+        """r53: start a season from the shell, so a career never needs a
+        terminal. Refuses to wipe one that is still running -- a league is
+        weeks of play and a misclick should not cost it."""
+        nonlocal menu_league, menu_msg
+        if menu_league is not None \
+                and league_next_fixture(menu_league, profile_name):
+            menu_msg = "season still running — finish your fixtures first"
+            return
+        lg = new_league([profile_name]
+                        + [n for n in OPPONENT_ROSTER
+                           if n != profile_name][:7])
+        if menu_save_league(lg):
+            menu_league = lg
+            menu_msg = f"new season: {sum(len(r) for r in lg['rounds'])} fixtures"
+        else:
+            menu_msg = "could not write the league file"
+
+    def menu_resolve_ai():
+        """r53: play out the AI fixtures. This BLOCKS -- roughly 3.2s a frame,
+        so a full round is a quarter of a minute and a whole season a little
+        over one. It is honest work rather than a progress bar over a
+        statistical shortcut, and the Maker's requirement was that AI fixtures
+        are earned on the same table they play on.
+
+        A round at a time, so the wait is bounded and explicable rather than a
+        single long stall with nothing on screen.
+        """
+        nonlocal menu_league, menu_msg
+        if menu_league is None:
+            return
+        todo = league_pending_ai(menu_league, profile_name)
+        if not todo:
+            menu_msg = "no AI fixtures outstanding"
+            return
+        batch = min(len(todo), 4)
+        menu_msg = f"playing {batch} AI fixture(s)…"
+        draw_menu()
+        pygame.display.flip()
+        lg = league_resolve_ai(menu_league, profile_name, limit=batch)
+        if menu_save_league(lg):
+            menu_league = lg
+            left = len(league_pending_ai(lg, profile_name))
+            menu_msg = (f"{batch} played, {left} left"
+                        if left else "all AI fixtures played")
+        else:
+            menu_msg = "could not write the league file"
 
     def menu_commit():
         """r51: accept the name and nickname, carrying the career with them.
@@ -7298,6 +7619,15 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     else:
         build_panel_widgets()
 
+    if not smoke:
+        # r53: the menu opens on the season, so it is loaded before the first
+        # frame rather than on the first keypress. Placed HERE, after the
+        # nested defs, because a closure's name is not bound until its def has
+        # executed -- calling it beside the variable declaration raised
+        # NameError. Gated with everything else menu-related: --snap must not
+        # go looking for a league file.
+        menu_league = menu_load_league()
+
     while running:
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
@@ -7329,6 +7659,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                         running = False
                     else:
                         menu_on = True
+                        menu_league = menu_load_league()
                 elif ev.key == pygame.K_q:
                     running = False
                 elif ev.key == pygame.K_SPACE:
@@ -7601,7 +7932,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 # only way on_rest() ever sets game.over is the black-pot
                 # branch. Gated `not smoke` at the point it's actually
                 # drawn, same doctrine as 4a/4b.
+                if not smoke and game is not None and not game.over:
+                    # r54: autosave, at rest, between shots. The one moment a
+                    # frame can be captured with no momentum to capture.
+                    resume_save()
                 if not smoke and not was_over and game.over:
+                    resume_clear()
                     # r46: the Grannie is decided HERE, at the moment the frame
                     # resolves, because `potted_colours_all()` still holds the
                     # whole rack's history and the colour assignment is still
@@ -8055,7 +8391,18 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 left = f" {sim.remaining(col)} left" if col else ""
                 mark = ">" if (game.current == i and not game.over) else " "
                 return f"{mark}{game.names[i]}[{(col or 'open').upper()}{left}]"
-            status_lines2 = [MODES[mode], f"{ptxt(0)} vs {ptxt(1)}",
+            # r53: say when the frame COUNTS. A league fixture is an ordinary
+            # YOU vs AI frame that happens to be the one the season is waiting
+            # on -- which is what makes the result record with no second mode
+            # to be in, and also what made it invisible. The band has the room
+            # since r47, so the implicit thing becomes a stated one.
+            _lead = MODES[mode]
+            if menu_league is not None:
+                _lnx = league_next_fixture(menu_league, profile_name)
+                if _lnx and profile_name in _lnx \
+                        and human_opponent in _lnx:
+                    _lead = f"LEAGUE — {_lnx[0]} v {_lnx[1]}"
+            status_lines2 = [_lead, f"{ptxt(0)} vs {ptxt(1)}",
                              game.last_event]
             if game.ball_in_hand:
                 status_lines2.append("BALL IN HAND — drag cue in baulk")
@@ -11817,6 +12164,114 @@ def selftest():
           f"MAKER {tbl110['MAKER']['points']}pts "
           f"G+{tbl110['MAKER']['grannies_given']}, SHARK "
           f"{tbl110['SHARK']['points']}pts G-{tbl110['SHARK']['grannies_taken']}")
+
+    # 111. r53: the season is reachable from the shell, and cannot be lost to
+    # a misclick.
+    #
+    # Until now the league existed only at the command line: a fixture was set
+    # as the player's opponent without saying so, and the result recorded
+    # without ever showing them a table. Career mode you cannot see is not
+    # career mode, and the Maker said so -- "can I not select league mode in
+    # the game?"
+    #
+    # The guard with teeth is New season refusing while one is running. A
+    # league is weeks of play, the button sits next to Play, and there is no
+    # undo on a tracked file that has just been overwritten.
+    src111 = "\n".join(ln for ln in inspect.getsource(run_gui).split("\n")
+                       if not ln.lstrip().startswith("#"))
+    live111 = new_league(["MAKER"] + list(OPPONENT_ROSTER[:7]))
+    done111 = dict(live111)
+    for rnd in live111["rounds"]:
+        for a, b in rnd:
+            done111 = league_record(done111, a, b, a)
+    check("r53 the season lives in the shell — standings, a next fixture and "
+          "the outstanding AI count are all reachable without a terminal, the "
+          "AI fixtures resolve a round at a time so the wait is bounded and "
+          "explicable, and starting a new season REFUSES while the current "
+          "one still has fixtures in it, because a league is weeks of play "
+          "and the button sits next to Play with no undo behind it",
+          league_next_fixture(live111, "MAKER") is not None
+          and league_next_fixture(done111, "MAKER") is None
+          and len(league_pending_ai(live111, "MAKER")) == 21
+          and len(league_pending_ai(done111, "MAKER")) == 0
+          # These match text UNIQUE to each guard. The first cut checked for
+          # `league_next_fixture(menu_league, profile_name)`, which also
+          # appears in the band marker -- so gutting the new-season guard left
+          # the clause matching the wrong occurrence and the mutant survived.
+          # Two mutants passed before the strings were made specific.
+          and 'menu_msg = "season still running' in src111
+          and "and league_next_fixture(menu_league, profile_name):" in src111
+          and "batch = min(len(todo), 4)" in src111
+          and "limit=batch" in src111
+          # and the menu still cannot reach --snap
+          and "menu_on = not smoke" in src111
+          and "menu_league = menu_load_league()" in src111,
+          f"fresh season: next fixture "
+          f"{league_next_fixture(live111, 'MAKER')}, "
+          f"{len(league_pending_ai(live111, 'MAKER'))} AI outstanding; "
+          f"completed season: next {league_next_fixture(done111, 'MAKER')}, "
+          f"{len(league_pending_ai(done111, 'MAKER'))} outstanding")
+
+    # 112. r54: a frame you walked away from comes back exactly as it was.
+    #
+    # The Maker's requirement from the start of league mode, and their reason:
+    # walking away from a digital game and loading it back is the modern
+    # computer way. It was designed at r52 and built last, after five other
+    # things.
+    #
+    # SAVED AT REST, BETWEEN SHOTS, AND ONLY THERE. That one constraint is what
+    # makes it small: at rest every velocity is zero by definition, so there is
+    # no momentum to capture and no physics to reconstruct -- positions plus
+    # whose turn it is. Positions ride on `serialise_layout`, which has stored
+    # METRES since r10 so a frame saved at one window size loads at another.
+    #
+    # The reader returns None rather than a half-restored frame, and that is
+    # the part with teeth: a resume that silently lost the colour assignment,
+    # or came back with the wrong player to shoot, would have the player
+    # carrying on from a position that never existed and noticing several shots
+    # later, by which point it is unrecoverable either way.
+    g112 = Game(names=("MAKER", "SPIDER"), controllers=("human", "ai"))
+    g112.colours = {0: "red", 1: "yellow"}
+    g112.current, g112.visits, g112.fouls, g112.shots = 1, 4, 2, 17
+    g112.free_shot, g112.visits_left, g112.ball_in_hand = True, 2, False
+    g112.last_event = "SPIDER potted yellow"
+    layout112 = [("cue", (0.4, 0.5)), ("red", (0.9, 0.5)),
+                 ("black", (1.2, 0.45))]
+    blob112 = serialise_frame(serialise_layout(layout112), g112, "YOU vs AI",
+                              "SPIDER", ("MAKER", "SPIDER"))
+    back112 = deserialise_frame(json.loads(json.dumps(blob112)))
+    missing112 = dict(blob112)
+    missing112["game"] = {k: v for k, v in blob112["game"].items()
+                          if k != "ball_in_hand"}
+    nocol112 = dict(blob112)
+    nocol112["colours"] = "red and yellow"
+    check("r54 a frame survives being walked away from — saved at rest so "
+          "there are no velocities to store, and restored with the colour "
+          "assignment, whose turn it is, the visit and foul state and the "
+          "fixture it belongs to; a save missing any of that is refused "
+          "outright rather than half-restored, because carrying on from a "
+          "position that never existed is discovered several shots too late",
+          back112 is not None
+          and back112["game"]["current"] == 1
+          and back112["game"]["visits"] == 4
+          and back112["game"]["fouls"] == 2
+          and back112["game"]["shots"] == 17
+          and back112["game"]["free_shot"] is True
+          and back112["game"]["visits_left"] == 2
+          and back112["game"]["ball_in_hand"] is False
+          and back112["colours"] == {0: "red", 1: "yellow"}
+          and back112["fixture"] == ("MAKER", "SPIDER")
+          and back112["opponent"] == "SPIDER"
+          and len(deserialise_layout(back112["layout"])) == 3
+          and deserialise_frame(missing112) is None
+          and deserialise_frame(nocol112) is None
+          and deserialise_frame({"layout": [], "game": {}}) is None
+          and deserialise_frame("nonsense") is None,
+          f"restored: player {back112['game']['current']} to shoot, colours "
+          f"{back112['colours']}, {back112['game']['visits']} visits / "
+          f"{back112['game']['fouls']} fouls, fixture {back112['fixture']}, "
+          f"{len(deserialise_layout(back112['layout']))} balls; a save missing "
+          f"one field -> {deserialise_frame(missing112)}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
