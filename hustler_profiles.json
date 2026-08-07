@@ -1,6 +1,6 @@
 {
  "players": {
-  "PLAYER": {
+  "MAKER": {
    "games": [
     {
      "mode": "tournament",
@@ -16,8 +16,8 @@
     }
    ],
    "kind": "human",
-   "name": "PLAYER",
-   "nickname": "PLAYER",
+   "name": "Iain",
+   "nickname": "MAKER",
    "params": null,
    "schema": 2,
    "trophies": []
@@ -53,6 +53,24 @@
      "opponent": "STEADY",
      "shots": 58,
      "won": false
+    },
+    {
+     "mode": "tournament",
+     "opponent": "STEADY",
+     "shots": 43,
+     "won": true
+    },
+    {
+     "mode": "tournament",
+     "opponent": "STEADY",
+     "shots": 44,
+     "won": true
+    },
+    {
+     "mode": "tournament",
+     "opponent": "STEADY",
+     "shots": 45,
+     "won": true
     }
    ],
    "kind": "ai",
@@ -81,6 +99,24 @@
      "opponent": "SHARK",
      "shots": 58,
      "won": true
+    },
+    {
+     "mode": "tournament",
+     "opponent": "SHARK",
+     "shots": 43,
+     "won": false
+    },
+    {
+     "mode": "tournament",
+     "opponent": "SHARK",
+     "shots": 44,
+     "won": false
+    },
+    {
+     "mode": "tournament",
+     "opponent": "SHARK",
+     "shots": 45,
+     "won": false
     }
    ],
    "kind": "ai",
