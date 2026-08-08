@@ -1,0 +1,270 @@
+{
+ "schema": 1,
+ "name": "Season 1",
+ "players": [
+  "MAKER",
+  "SHARK",
+  "STEADY",
+  "BULLET",
+  "DOC",
+  "MAGPIE",
+  "CHALKY",
+  "SPIDER"
+ ],
+ "rounds": [
+  [
+   [
+    "MAKER",
+    "SPIDER"
+   ],
+   [
+    "SHARK",
+    "CHALKY"
+   ],
+   [
+    "STEADY",
+    "MAGPIE"
+   ],
+   [
+    "BULLET",
+    "DOC"
+   ]
+  ],
+  [
+   [
+    "MAKER",
+    "CHALKY"
+   ],
+   [
+    "SPIDER",
+    "MAGPIE"
+   ],
+   [
+    "SHARK",
+    "DOC"
+   ],
+   [
+    "STEADY",
+    "BULLET"
+   ]
+  ],
+  [
+   [
+    "MAKER",
+    "MAGPIE"
+   ],
+   [
+    "CHALKY",
+    "DOC"
+   ],
+   [
+    "SPIDER",
+    "BULLET"
+   ],
+   [
+    "SHARK",
+    "STEADY"
+   ]
+  ],
+  [
+   [
+    "MAKER",
+    "DOC"
+   ],
+   [
+    "MAGPIE",
+    "BULLET"
+   ],
+   [
+    "CHALKY",
+    "STEADY"
+   ],
+   [
+    "SPIDER",
+    "SHARK"
+   ]
+  ],
+  [
+   [
+    "MAKER",
+    "BULLET"
+   ],
+   [
+    "DOC",
+    "STEADY"
+   ],
+   [
+    "MAGPIE",
+    "SHARK"
+   ],
+   [
+    "CHALKY",
+    "SPIDER"
+   ]
+  ],
+  [
+   [
+    "MAKER",
+    "STEADY"
+   ],
+   [
+    "BULLET",
+    "SHARK"
+   ],
+   [
+    "DOC",
+    "SPIDER"
+   ],
+   [
+    "MAGPIE",
+    "CHALKY"
+   ]
+  ],
+  [
+   [
+    "MAKER",
+    "SHARK"
+   ],
+   [
+    "STEADY",
+    "SPIDER"
+   ],
+   [
+    "BULLET",
+    "CHALKY"
+   ],
+   [
+    "DOC",
+    "MAGPIE"
+   ]
+  ]
+ ],
+ "results": [
+  {
+   "home": "SHARK",
+   "away": "CHALKY",
+   "winner": "CHALKY",
+   "grannie": false
+  },
+  {
+   "home": "STEADY",
+   "away": "MAGPIE",
+   "winner": "MAGPIE",
+   "grannie": false
+  },
+  {
+   "home": "BULLET",
+   "away": "DOC",
+   "winner": "DOC",
+   "grannie": false
+  },
+  {
+   "home": "SPIDER",
+   "away": "MAGPIE",
+   "winner": "MAGPIE",
+   "grannie": false
+  },
+  {
+   "home": "SHARK",
+   "away": "DOC",
+   "winner": "DOC",
+   "grannie": false
+  },
+  {
+   "home": "STEADY",
+   "away": "BULLET",
+   "winner": "BULLET",
+   "grannie": false
+  },
+  {
+   "home": "CHALKY",
+   "away": "DOC",
+   "winner": "DOC",
+   "grannie": false
+  },
+  {
+   "home": "SPIDER",
+   "away": "BULLET",
+   "winner": "SPIDER",
+   "grannie": false
+  },
+  {
+   "home": "SHARK",
+   "away": "STEADY",
+   "winner": "SHARK",
+   "grannie": false
+  },
+  {
+   "home": "MAGPIE",
+   "away": "BULLET",
+   "winner": "BULLET",
+   "grannie": false
+  },
+  {
+   "home": "CHALKY",
+   "away": "STEADY",
+   "winner": "CHALKY",
+   "grannie": false
+  },
+  {
+   "home": "SPIDER",
+   "away": "SHARK",
+   "winner": "SHARK",
+   "grannie": false
+  },
+  {
+   "home": "DOC",
+   "away": "STEADY",
+   "winner": "DOC",
+   "grannie": false
+  },
+  {
+   "home": "MAGPIE",
+   "away": "SHARK",
+   "winner": "MAGPIE",
+   "grannie": false
+  },
+  {
+   "home": "CHALKY",
+   "away": "SPIDER",
+   "winner": "SPIDER",
+   "grannie": false
+  },
+  {
+   "home": "BULLET",
+   "away": "SHARK",
+   "winner": "BULLET",
+   "grannie": false
+  },
+  {
+   "home": "DOC",
+   "away": "SPIDER",
+   "winner": "DOC",
+   "grannie": false
+  },
+  {
+   "home": "MAGPIE",
+   "away": "CHALKY",
+   "winner": "CHALKY",
+   "grannie": false
+  },
+  {
+   "home": "STEADY",
+   "away": "SPIDER",
+   "winner": "SPIDER",
+   "grannie": false
+  },
+  {
+   "home": "BULLET",
+   "away": "CHALKY",
+   "winner": "BULLET",
+   "grannie": false
+  },
+  {
+   "home": "DOC",
+   "away": "MAGPIE",
+   "winner": "DOC",
+   "grannie": false
+  }
+ ]
+}
