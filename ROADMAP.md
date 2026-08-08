@@ -35,7 +35,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~10,830 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~12,610 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -310,37 +310,42 @@ must not offer one.
 > colour that never went down rather than on who potted it, which needs no new
 > tracking at all. The permanent record arrives with profiles at r47.
 
-**LEAGUE MODE is under way, and the Maker has now set the requirements.**
-A league of **eight** (expandable), **one frame per fixture** (expandable). The
-Maker is the only human; every other player is AI. They play only their own
-fixtures and **AI-vs-AI games auto-resolve in real physics** — measured at
-~3.7s per frame on one core, so a single round-robin's 21 AI fixtures is about
-78 seconds before any multi-core help. Timing r17's Pool on real hardware is
-finally worth doing.
+> **LEAGUE MODE IS BUILT** — every item of the Maker's original brief: the
+> Grannie (r46), profiles (r48), correct seating and an opponent picker (r49),
+> the career shell (r51), the league itself (r52), the season inside the shell
+> (r53), mid-frame save and resume (r54), and a ladder matched on jitter with
+> Play starting your fixture (r55).
 
-Then **play-offs** — quarter-finals, semi-finals, final — with a trophy added
-to the winner's profile, and a Grannie recorded there too. **Every player,
-human and AI, carries a tracked profile with stats**, keyed per player, so
-anyone else playing the game gets their own career rather than joining this
-one. **Rankings** are wanted alongside the league, and are not yet scoped.
+**Next: PLAY-OFFS AND TROPHIES.** Eight players, so everyone qualifies and the
+final table seeds the bracket — 1v8, 2v7, 3v6, 4v5. The human's ties play at the
+table; AI ties auto-resolve as league fixtures do. `award_trophy()` has existed
+since r48 and nothing calls it yet.
 
-A **start menu / career mode** hosts all of it. That is not decoration: the tab
-strip divides the panel evenly and centres labels with no shrinking, so at 1.5x
-a seventh tab gets a 55px cell while "League" renders at 78 — there is no room
-for a League tab, and a standings table and a knockout bracket never belonged
-in a 260px column anyway. **The menu must be gated `if not smoke:`** — `--snap`
-runs `run_gui(smoke=True)` and saves the presented frame, so an ungated menu
-would rewrite the sacred baseline.
+Two things to settle first. When the human loses a tie, does the tournament
+carry on without them — a trophy you cannot lose is not worth winning — or stop
+because it is their career? And must the league be finished before a bracket
+appears, which is strictly right but means seven fixtures before you see one.
 
-Mid-frame **save and resume** is wanted, and is cheaper than it sounds: save
-only at rest between shots and there are no velocities to store, because they
-are all zero. `serialise_layout()` already stores positions in metres and is
-covered by selftest 37 — that plus the rules state on `Game` is a resumable
-frame.
+Then a **profiles view in the menu** (an opponent's record is command-line only
+today), and **rankings**, where the Elo-versus-Wilson question is still open.
+Elo makes beating the top of the table count for more than beating the bottom;
+a matched ladder means that difference is about temperament rather than
+straightness, which is what makes it worth ranking at all.
 
-Increments: r46 Grannie ✔ → r47 readout to the band ✔ → r48 profiles ✔ →
-r49 menu/career shell → r50 league, fixtures, auto-resolve, resume →
-r51 play-offs and trophies → rankings.
+**The matched ladder changed the answer, and that is the point.** On the first
+ladder jitter varied as well as strategy, and DOC went unbeaten — but DOC also
+had the second-straightest cue, so the table could not say which had won it.
+With every player on `STUDY_JITTER`, threshold correlates with wins at **−0.91**
+across seven temperaments: BULLET at 0.08 takes six from six, DOC at 0.30 takes
+one. SPIDER is the tell — second-highest greed on the ladder and still bottom,
+because being ambitious about position does not help if you will not take the
+shot on. r18 needed sixty games to establish that with two players; this is
+twenty-one fixtures across seven. Six games each, so no single record is
+significant; what carries weight is that the ordering is almost perfect.
+
+Worth revisiting once a season has been played: the ladder is a straight line
+from reckless to passive, which may make the league a foregone conclusion.
+Varying the axes independently would make it less predictable.
 
 Still queued behind it: the style fit from shot selection, and tournament
 mode.
