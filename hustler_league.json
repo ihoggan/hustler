@@ -155,7 +155,7 @@
   {
    "home": "BULLET",
    "away": "DOC",
-   "winner": "DOC",
+   "winner": "BULLET",
    "grannie": false
   },
   {
@@ -167,7 +167,7 @@
   {
    "home": "SHARK",
    "away": "DOC",
-   "winner": "DOC",
+   "winner": "SHARK",
    "grannie": false
   },
   {
@@ -179,13 +179,13 @@
   {
    "home": "CHALKY",
    "away": "DOC",
-   "winner": "DOC",
+   "winner": "CHALKY",
    "grannie": false
   },
   {
    "home": "SPIDER",
    "away": "BULLET",
-   "winner": "SPIDER",
+   "winner": "BULLET",
    "grannie": false
   },
   {
@@ -221,13 +221,13 @@
   {
    "home": "MAGPIE",
    "away": "SHARK",
-   "winner": "MAGPIE",
+   "winner": "SHARK",
    "grannie": false
   },
   {
    "home": "CHALKY",
    "away": "SPIDER",
-   "winner": "SPIDER",
+   "winner": "CHALKY",
    "grannie": false
   },
   {
@@ -239,19 +239,19 @@
   {
    "home": "DOC",
    "away": "SPIDER",
-   "winner": "DOC",
+   "winner": "SPIDER",
    "grannie": false
   },
   {
    "home": "MAGPIE",
    "away": "CHALKY",
-   "winner": "CHALKY",
+   "winner": "MAGPIE",
    "grannie": false
   },
   {
    "home": "STEADY",
    "away": "SPIDER",
-   "winner": "SPIDER",
+   "winner": "STEADY",
    "grannie": false
   },
   {
@@ -263,7 +263,7 @@
   {
    "home": "DOC",
    "away": "MAGPIE",
-   "winner": "DOC",
+   "winner": "MAGPIE",
    "grannie": false
   }
  ]
