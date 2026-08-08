@@ -5,7 +5,61 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r54 — walk away mid-frame and come back to it (current)
+## r55 — a league you can play, and fouls that get written (current)
+
+Three fixes, all of them things the first season exposed.
+
+### Play now starts your fixture
+
+The menu showed a league table and then handed over a **sandbox**. `mode = 0` at
+startup, so Play dropped you on a practice table with no game, no opponent and
+no fixture — the league marker could never appear, because sandbox has no Game
+at all. To play your fixture you had to know to press M twice, and nothing said
+so. Career mode you can read and cannot play.
+
+Play now sets YOU vs AI (resolved by NAME, r30's rule), seats the fixture's
+opponent and racks up, and the button says which fixture: `Play MAKER v SPIDER`.
+**Practice** gets its own line, doing what Play did before.
+
+### The ladder matches on jitter, so the league tests temperament
+
+The first ladder spread `aim_jitter` as well as strategy, and the first season
+showed precisely what r18 warned it would: the two straightest cues finished
+first and second, and the table could not say whether DOC went unbeaten for
+being patient or for aiming better. The jitter/wins correlation was −0.20 across
+21 fixtures — weak, and pointing the wrong way for a league that is supposed to
+be about how people play.
+
+Every player now shares `STUDY_JITTER`, which is r18's own constant, introduced
+to remove this exact confound from the two-player study. Strategy is the only
+difference between eight players. The eight strategies stay distinct — matching
+the skill must not flatten the personalities into eight copies of one player,
+and assertion 113 checks that too. `default_ais()` is untouched, so the study
+log stays byte-reproducible.
+
+**The cost, stated plainly:** every opponent aims equally straight now. A weaker
+player who misses more is a *skill ladder*, which is a different feature — and
+mixing the two is what made the first table unreadable.
+
+### KNOWN_ISSUES #5, closed
+
+The `foul` field was null on every human row. The diagnosis at r44 was right —
+the log write sits above the game block, so `on_rest()` has not decided the foul
+and `last_event` still describes the previous shot — and the dismissal was
+wrong. It was filed as "harmless because the log has no game-mode rows". The
+league produced fifty, every one logging a null foul in the mode the Maker would
+now be playing most.
+
+The row is HELD now and flushed once the rules have spoken, using the same
+fouls-delta the AI study path has always used. Sandbox and solo rows still go
+straight out: there is no Game to wait for.
+
+**"Harmless because nothing exercises it" is a statement with a shelf life.**
+This one expired the moment a feature started exercising it.
+
+---
+
+## r54 — walk away mid-frame and come back to it
 
 The last item from the Maker's original league brief, designed at r52 and built
 after five other things. Their reason: walking away from a digital game and

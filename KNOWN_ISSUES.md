@@ -1,6 +1,6 @@
 # Known Issues
 
-The honest state of the open threads as of r44. None of these stop the game
+The honest state of the open threads as of r55. None of these stop the game
 being playable. Each is written up with its diagnosis so the next person to
 touch it (quite possibly future me) starts from the answer, not the symptom.
 
@@ -156,7 +156,24 @@ So a ball called into the top-left and rattled into the middle still scores.
 The pocket-accurate figure will arrive as its own number alongside the existing
 one, with the shot-diagnosis work, so nothing that exists changes meaning.
 
-## 5. The schema's `foul` field is never filled in on a human shot
+## 5. The schema's `foul` field is never filled in on a human shot — FIXED at r55
+
+**Closed.** The diagnosis below was right and the dismissal was wrong. It was
+filed as "only bites in game modes, and the log has no game-mode rows" — then
+the league arrived, fifty tournament rows were written, and every one of them
+logged a null foul in exactly the mode the Maker would now be playing most.
+
+The fix is the one the diagnosis implied: the row is HELD rather than written
+above the game block, and flushed once `on_rest()` has decided the foul and
+written the event. `flush_human_row()` uses the same fouls-delta the AI study
+path has always used. Sandbox and solo rows still go straight out — there is no
+Game to wait for, and r44's `foul_summary()` derives solo fouls from `potted`
+and `first_contact` regardless.
+
+**Lesson worth keeping:** "harmless because nothing exercises it" is a statement
+with a shelf life. This one expired the moment a feature started exercising it.
+
+### The original diagnosis, kept for the record
 
 **Symptom:** `foul` is null on every human row in the log — all 244 of them at
 r44, including rows written by the newest schema version. `event` is null too.

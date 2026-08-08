@@ -2438,23 +2438,32 @@ LEAGUE_SCHEMA = 1
 # A league that quietly re-tuned the study's two players would retire the
 # technique without failing anything.
 #
-# The other five are new, and DRAFTED like the names were -- expect them to be
-# re-tuned once there are results to tune against. `aim_jitter` is the SKILL
-# dial and r18 made it an independent axis on purpose, so the ladder is a
-# spread of jitter with strategy varied across it rather than a single line
-# from bad to good. That matters: eight players who differ only in straightness
-# would make the table a ranking of one number, and the whole point of r18 was
-# that strategy is a separate question from skill.
+# r55: EVERY PLAYER SHARES `STUDY_JITTER`, so the league tests TEMPERAMENT and
+# nothing else. The first ladder spread the jitter as well, and the first season
+# showed exactly what r18 warned it would: the two straightest cues finished
+# first and second, and the table could not say whether DOC won because it was
+# patient or because it aimed better. Correlation between jitter and wins was
+# -0.20 on 21 fixtures -- weak, and pointing the wrong way for a league that is
+# supposed to be about how people play.
+#
+# STUDY_JITTER is r18's own constant, introduced to remove this confound from
+# the two-player study. Matching the ladder to it makes strategy the only
+# difference between eight players and leaves `default_ais()` untouched, so the
+# study log stays byte-reproducible.
+#
+# The cost, stated: every opponent now aims equally straight. A weaker player
+# who misses more is a different feature (a skill ladder), and mixing the two
+# is what made the first table unreadable.
 LEAGUE_LADDER = (
-    #  nickname   jitter  threshold  greed  caution
-    ("SHARK",    0.011,   0.10,      0.55,  0.35),   # as default_ais()
-    ("STEADY",   0.011,   0.24,      0.25,  0.70),   # as default_ais()
-    ("BULLET",   0.009,   0.08,      0.62,  0.22),   # straighter, reckless
-    ("DOC",      0.010,   0.30,      0.20,  0.80),   # patient, safety-first
-    ("MAGPIE",   0.013,   0.14,      0.48,  0.40),   # scrappy all-rounder
-    ("CHALKY",   0.016,   0.20,      0.30,  0.55),   # club standard
-    ("SPIDER",   0.012,   0.26,      0.58,  0.30),   # picky but positional
-    ("DUCHESS",  0.014,   0.12,      0.35,  0.65),   # attacking, foul-shy
+    #  nickname   jitter        threshold  greed  caution
+    ("SHARK",    STUDY_JITTER,  0.10,      0.55,  0.35),
+    ("STEADY",   STUDY_JITTER,  0.24,      0.25,  0.70),
+    ("BULLET",   STUDY_JITTER,  0.08,      0.62,  0.22),   # reckless
+    ("DOC",      STUDY_JITTER,  0.30,      0.20,  0.80),   # safety-first
+    ("MAGPIE",   STUDY_JITTER,  0.14,      0.48,  0.40),   # all-rounder
+    ("CHALKY",   STUDY_JITTER,  0.20,      0.30,  0.55),   # club standard
+    ("SPIDER",   STUDY_JITTER,  0.26,      0.58,  0.30),   # picky, positional
+    ("DUCHESS",  STUDY_JITTER,  0.12,      0.35,  0.65),   # attacking, foul-shy
 )
 
 
@@ -6394,9 +6403,26 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     call_pocket = None      # nominated pocket, world metres
     shot_pending = False    # a struck shot awaits its LOG row
     shot_pre = None         # geometry captured before the balls moved
+    pending_row = None      # r55: a logged shot waiting on the rules
     logged_frame = None     # r33.1: frame a row was last written, for the LED
     logged_made = None      # r34.1: did that call come off? None = uncalled
     profile_name = os.environ.get("HUSTLER_PLAYER", "PLAYER")
+
+    def flush_human_row(fouled, event):
+        """r55: write the deferred row now the rules have decided it."""
+        nonlocal pending_row
+        if pending_row is None:
+            return
+        rec, pending_row = pending_row, None
+        rec["foul"] = bool(fouled)
+        rec["event"] = event
+        try:
+            with open(shot_log_path(__file__,
+                                    os.environ.get("HUSTLER_SHOT_LOG")),
+                      "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec) + "\n")
+        except OSError:
+            pass
 
     def log_human_shot(rec):
         """r33: append one shot to the ledger. Best-effort by design -- a
@@ -6420,6 +6446,22 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # record builder.
         rec["session"] = SESSION_ID
         rec["t"] = stamp_utc(time.time())
+        # r55: KNOWN_ISSUES #5, closed. This block runs ABOVE the game block,
+        # so at this point `on_rest()` has not yet looked at the shot: the foul
+        # is undecided and `game.last_event` still describes the PREVIOUS shot.
+        # Passing them here wrote a null foul and a stale event, and until the
+        # league arrived there were no game-mode rows for anyone to notice on.
+        # There are now, and every league frame was logging fouls as null.
+        #
+        # So the row WAITS. In a game mode it is held until the rules have
+        # spoken and then flushed with the truth; with no Game in play --
+        # sandbox and solo -- there is nothing further to learn, so it goes
+        # straight out. r44's foul_summary derives solo fouls from `potted` and
+        # `first_contact` regardless, and still does.
+        if game is not None:
+            nonlocal pending_row
+            pending_row = rec
+            return
         try:
             with open(shot_log_path(__file__,
                                     os.environ.get("HUSTLER_SHOT_LOG")), "a",
@@ -6733,12 +6775,14 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             "save": pygame.Rect(rx, y + int(154 * UI_S), half, fh),
             "play": pygame.Rect(rx + rw // 2 + int(6 * UI_S),
                                  y + int(154 * UI_S), half, fh),
-            "table": pygame.Rect(rx, y + int(210 * UI_S), rw,
-                                  int(250 * UI_S)),
+            "table": pygame.Rect(rx, y + int(246 * UI_S), rw,
+                                  int(214 * UI_S)),
             "season": pygame.Rect(rx, y + int(474 * UI_S), half, fh),
             "resolve": pygame.Rect(rx + rw // 2 + int(6 * UI_S),
                                     y + int(474 * UI_S), half, fh),
             "resume": pygame.Rect(rx, y + int(516 * UI_S), rw, fh),
+            "practice": pygame.Rect(rx + rw // 2 + int(6 * UI_S),
+                                     y + int(198 * UI_S), half, fh),
         }
 
     def menu_load_league():
@@ -6795,7 +6839,19 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             display.blit(panel_font.render(shown_txt, True, COL["hud"]),
                           (box.x + int(8 * UI_S),
                            box.y + (box.h - panel_font.get_height()) // 2))
-        for key, label in (("save", "Save name"), ("play", "Play (Esc)")):
+        # r55: Play means PLAY THE FIXTURE. It used to drop you wherever the
+        # mode happened to be -- which was SANDBOX at startup, so the menu
+        # showed a league table and then handed over a practice table with no
+        # game, no opponent and no fixture. The Maker had to be told to press M
+        # twice. Naming the fixture on the button is half the fix; the other
+        # half is that it now starts one.
+        _fx = None
+        if menu_league is not None:
+            _fx = league_next_fixture(menu_league, profile_name)
+        for key, label in (("save", "Save name"),
+                           ("play", ("Play %s v %s" % _fx) if _fx
+                            else "Play (Esc)"),
+                           ("practice", "Practice (Esc)")):
             box = r[key]
             pygame.draw.rect(display, (58, 92, 64), box, border_radius=4)
             t = panel_font.render(label, True, (235, 240, 235))
@@ -6873,6 +6929,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         elif r["save"].collidepoint(pos):
             menu_commit()
         elif r["play"].collidepoint(pos):
+            menu_play_fixture()
+        elif r["practice"].collidepoint(pos):
             menu_focus, menu_on = None, False
         elif r["resume"].collidepoint(pos):
             resume_load()
@@ -6970,6 +7028,35 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         next_is_break = False
         menu_on = False
         menu_msg = ""
+
+    def menu_play_fixture():
+        """r55: put the league fixture on the table.
+
+        Sets the mode to YOU vs AI by NAME (r30's rule -- never the literal 1),
+        seats the fixture's opponent, and racks up. With no season running it
+        behaves as Play always did and just steps onto whatever mode is
+        current, so the button is never a dead end.
+        """
+        nonlocal menu_on, menu_focus, mode, human_opponent, menu_msg
+        nonlocal ai_plan, ai_wait, pending, next_is_break
+        menu_focus = None
+        fx = (league_next_fixture(menu_league, profile_name)
+              if menu_league is not None else None)
+        if fx:
+            opp = fx[1] if fx[0] == profile_name else fx[0]
+            if opp in OPPONENT_ROSTER:
+                human_opponent = opp
+                mode = MODES.index("YOU vs AI")
+                ai_plan, ai_wait, pending = None, 0, False
+                trail_history.clear()
+                pot_anims.clear()
+                next_is_break = True
+                restart_frame()
+                menu_msg = ""
+            else:
+                menu_msg = f"{opp} is not on the ladder"
+                return
+        menu_on = False
 
     def menu_new_season():
         """r53: start a season from the shell, so a career never needs a
@@ -7921,7 +8008,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         if game is not None and sim.all_at_rest():
             if pending:
                 was_over = game.over
+                _fouls_before = game.fouls
                 game.on_rest(sim)
+                # r55: the row held above is flushed HERE, with the foul the
+                # rules just decided and the event they just wrote. Same
+                # fouls-delta the AI study path has always used.
+                flush_human_row(game.fouls > _fouls_before, game.last_event)
                 pending = False
                 ai_plan, ai_wait = None, 0
                 # Increment 4c: the finale is a pure render-layer reaction
@@ -12272,6 +12364,57 @@ def selftest():
           f"{back112['game']['fouls']} fouls, fixture {back112['fixture']}, "
           f"{len(deserialise_layout(back112['layout']))} balls; a save missing "
           f"one field -> {deserialise_frame(missing112)}")
+
+    # 113. r55: the league tests temperament, and a league foul gets written.
+    #
+    # TWO THINGS THE FIRST SEASON EXPOSED, both fixed here.
+    #
+    # The ladder spread `aim_jitter` as well as strategy, and the first season
+    # showed exactly what r18 warned it would: the two straightest cues
+    # finished first and second, and the table could not say whether DOC won for
+    # being patient or for aiming better. Every player now shares
+    # STUDY_JITTER -- r18's own constant, introduced to remove this confound
+    # from the two-player study -- so strategy is the only difference between
+    # eight players. `default_ais()` stays untouched, because the study log's
+    # byte-reproducibility is how r17 proved three optimisations safe.
+    #
+    # And KNOWN_ISSUES #5: the human log write sits ABOVE the game block, so
+    # the foul was undecided and `last_event` still described the PREVIOUS shot
+    # when the row went out. It was filed as harmless because there were no
+    # game-mode rows -- the league produced fifty, all logging a null foul. The
+    # row is now HELD and flushed once the rules have spoken.
+    jits113 = {n: j for n, j, *_ in LEAGUE_LADDER}
+    strat113 = {(t, g, c) for _n, _j, t, g, c in LEAGUE_LADDER}
+    defs113 = {a.name: (a.aim_jitter, a.threshold, a.greed, a.caution)
+               for a in default_ais()}
+    lad113 = {n: (league_ai(n).aim_jitter, league_ai(n).threshold,
+                  league_ai(n).greed, league_ai(n).caution)
+              for n in ("SHARK", "STEADY")}
+    src113 = "\n".join(ln for ln in inspect.getsource(run_gui).split("\n")
+                       if not ln.lstrip().startswith("#"))
+    check("r55 the league tests temperament — every player on the ladder aims "
+          "with the same jitter, r18's own constant, so a result can only come "
+          "from how they play and not from how straight they hit it; the two "
+          "study players keep the exact parameters default_ais() gives them, "
+          "which is what keeps the study log reproducible; and a human shot in "
+          "a game mode now waits for the rules before it is written, so the "
+          "foul it records is the foul that happened",
+          len(set(jits113.values())) == 1
+          and set(jits113.values()) == {STUDY_JITTER}
+          and len(jits113) == 8
+          # strategies stay DISTINCT -- matching the skill must not flatten
+          # the personalities into eight copies of one player
+          and len(strat113) == 8
+          and lad113["SHARK"] == defs113["SHARK"]
+          and lad113["STEADY"] == defs113["STEADY"]
+          # the row is deferred and flushed, not written above the rules
+          and "pending_row = rec" in src113
+          and "flush_human_row(game.fouls > _fouls_before, game.last_event)"
+          in src113
+          and "_fouls_before = game.fouls" in src113,
+          f"jitters {sorted(set(jits113.values()))} across {len(jits113)} "
+          f"players, {len(strat113)} distinct strategies; SHARK ladder "
+          f"{lad113['SHARK']} vs default {defs113['SHARK']}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

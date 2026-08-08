@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r54 — playable, validated, no known blocking bugs.
+**Status:** r55 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -21,7 +21,7 @@ source of truth.
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 112 assertions |
+| `--selftest` | ALL PASS — 113 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -440,6 +440,24 @@ validator checked for a list and refused every real save; the round-trip
 assertion caught it because it round-trips real output, not a hand-built
 fixture.
 
+## What r55 changed (as built)
+
+**Play starts the fixture.** `menu_play_fixture()` sets YOU vs AI by NAME, seats
+the fixture's opponent and racks up; the button reads `Play MAKER v SPIDER`.
+**Practice** is a separate line doing what Play did (startup mode is SANDBOX, so
+Play used to hand over a practice table with no game at all).
+
+**The ladder matches on jitter.** Every `LEAGUE_LADDER` entry uses
+`STUDY_JITTER`, so the league measures temperament and nothing else. The eight
+strategies stay DISTINCT (assertion 113 checks that too -- matching skill must
+not flatten eight players into one). `default_ais()` untouched.
+
+**KNOWN_ISSUES #5 CLOSED.** The human row is now HELD (`pending_row`) and
+flushed by `flush_human_row(game.fouls > _fouls_before, game.last_event)` after
+`on_rest()`. Before this the write sat above the game block: null foul, stale
+event. Filed as harmless at r44 because there were no game-mode rows -- the
+league produced fifty.
+
 **The chain also runs in CI** on every push to `main`, at
 `.github/workflows/validate.yml`, across a 3.12/3.13 matrix. Since r27 it
 enforces the `--snap` md5 as well: the hash lives in one place, as a
@@ -583,7 +601,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 112 assertions, all
+  out) rather than the pygame wrapper around it. Currently 113 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.
@@ -1496,10 +1514,10 @@ into a fresh session along with this file, `hustler.py` and `cushion_path.py`:
 >
 > > `hustler.py` md5 `8d002427a4f9d8b65c2d66cbf60606aa`, 9218 lines
 > > `cushion_path.py` md5 `8568f6658a90ce33e05e04af73eb03f4`, 514 lines
-> > `py_compile` → `--selftest` ALL PASS, **112 assertions** → `--batch 30`
+> > `py_compile` → `--selftest` ALL PASS, **113 assertions** → `--batch 30`
 > > with 0 containment escapes → `--smoke` 90 frames → `--snap` md5
 > > `62c87ddb6d1f0ee36f36a71a5000cd5f` byte-identical → `cushion_path.py`
-> > standalone, 36 primitives. `setup.py` says 0.54.0.
+> > standalone, 36 primitives. `setup.py` says 0.55.0.
 >
 > Quote the md5s and the assertion COUNT, not just "ALL PASS" — a stale file
 > passes the whole chain, and one nearly got built on for exactly that reason.
