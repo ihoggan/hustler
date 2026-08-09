@@ -1,6 +1,6 @@
 # Known Issues
 
-The honest state of the open threads as of r59. None of these stop the game
+The honest state of the open threads as of r60. None of these stop the game
 being playable. Each is written up with its diagnosis so the next person to
 touch it (quite possibly future me) starts from the answer, not the symptom.
 
@@ -211,7 +211,7 @@ game-mode row, because there aren't any.
 
 ---
 
-## 6. `league_ai()` returns `None` for a name that is not on the ladder
+## 6. `league_ai()` returns `None` for a name not on the ladder — FIXED at r60
 
 **Symptom:** none in normal play. Found by a test harness, not by playing.
 
@@ -221,7 +221,18 @@ game-mode row, because there aren't any.
 `AttributeError: 'NoneType' object has no attribute 'choose'` rather than saying
 which name it did not recognise.
 
-**Why it is not reachable today:** the human's name is never on the ladder, and
+**IT WAS REACHABLE, AND THIS DIAGNOSIS WAS WRONG (corrected r60).** The
+`--league` CLI took the human's name from `HUSTLER_PLAYER`, defaulting to the
+literal "PLAYER" — so the pending list excluded nobody, and `--league resolve`
+tried to play the Maker's own seven fixtures and crashed. Fixed at r60 by
+screening on the LADDER rather than on who the human is, refusing unrostered
+names by name in `play_ai_game`, and defaulting the human to the profile store's
+`kind == "human"` entry. Assertion 118 pins all three. The original reasoning is
+kept below because the way it was wrong is instructive: it was true of the menu
+and false of the CLI, and "harmless because nothing exercises it" lasted three
+releases.
+
+**The original (incorrect) reasoning:** the human's name is never on the ladder, and
 both `league_pending_ai()` and `playoff_pending_ai()` exclude every fixture the
 human is in — so the only names that reach `play_ai_game` come from the ladder
 by construction. The crash needs a league whose players include a third name

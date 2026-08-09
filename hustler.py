@@ -2793,20 +2793,53 @@ def league_next_fixture(league, player):
     return None
 
 
-def league_pending_ai(league, human):
-    """r52: fixtures with no human in them that have not been played yet.
+def league_playable_by_ai(name):
+    """r60: can this name actually be played by the machine? Pure.
+
+    `league_ai()` returns None for anyone not on the ladder, and
+    `play_ai_game` hands whatever it gets straight to `ai.choose` -- so a
+    fixture containing an unrostered name did not refuse, it raised
+    `AttributeError: 'NoneType' object has no attribute 'choose'` from four
+    frames down.
+    """
+    return any(nick == name for nick, *_ in LEAGUE_LADDER)
+
+
+def league_pending_ai(league, human=None):
+    """r52: unplayed fixtures that the machine can actually resolve.
 
     These are the ones that auto-resolve. Measured at ~3.7s a frame on one
     core, so a single round-robin of eight is 21 AI fixtures and a little over
     a minute before any multi-core help.
+
+    r60: THE TEST IS NO LONGER "IS THE HUMAN IN IT", IT IS "CAN BOTH SIDES BE
+    PLAYED BY THE MACHINE". Those coincide right up until something is wrong
+    about who the human is -- and something was. The `--league` CLI took the
+    human's name from `HUSTLER_PLAYER`, defaulting to the literal "PLAYER",
+    which is nobody. So all seven of the Maker's own fixtures looked resolvable
+    and `--league resolve` crashed trying to play them.
+
+    KNOWN_ISSUES #6 filed this at r56 and called it unreachable, reasoning that
+    this function excludes the human. The reasoning was right about the menu,
+    which passes a real profile name, and wrong about the CLI, which passes a
+    guess. Asking the ROSTER cannot be wrong in that way: it does not need to
+    know who the human is, and it closes the hand-edited-nickname route the
+    original issue was actually about.
+
+    `human` is kept for callers that still pass it and is now belt-and-braces
+    rather than the whole guard.
     """
     played = {league_result_key(r["home"], r["away"])
               for r in league.get("results", [])}
     out = []
     for rnd in league.get("rounds", []):
         for home, away in rnd:
-            if human not in (home, away) \
-                    and league_result_key(home, away) not in played:
+            if human in (home, away):
+                continue
+            if not (league_playable_by_ai(home)
+                    and league_playable_by_ai(away)):
+                continue
+            if league_result_key(home, away) not in played:
                 out.append((home, away))
     return out
 
@@ -3066,9 +3099,12 @@ def playoff_pending_ai(league, human):
     a season with no champion is a hole in a record that is meant to be
     permanent.
     """
+    # r60: and both sides must be on the ladder -- see league_pending_ai.
     return [t for t in playoff_ties(league)
             if t["winner"] is None and t["home"] is not None
-            and t["away"] is not None and human not in (t["home"], t["away"])]
+            and t["away"] is not None and human not in (t["home"], t["away"])
+            and league_playable_by_ai(t["home"])
+            and league_playable_by_ai(t["away"])]
 
 
 def playoff_champion(league):
@@ -3362,6 +3398,30 @@ def status_goes_in_band(band_h, font_h, lead, pad, need=2):
 
 
 PROFILE_STORE_NAME = "hustler_profiles.json"
+
+
+def default_human_name(profiles, fallback="PLAYER"):
+    """r60: whose career is this? Pure.
+
+    Both the GUI and the `--league` CLI used to open with
+    `os.environ.get("HUSTLER_PLAYER", "PLAYER")`, and PLAYER is nobody. In the
+    CLI that meant every one of the Maker's own seven fixtures looked like an
+    AI fixture, and `--league resolve` crashed trying to play them. In the GUI
+    it means a career that reverts to a stranger on every launch unless the
+    environment variable happens to be set.
+
+    The profile store already knows: r49 marks the seat the human sat in with
+    `kind == "human"`, and it has said MAKER since. Ask the data instead of
+    guessing.
+
+    More than one human profile has no right answer, so it takes the
+    alphabetically first -- DETERMINISTIC on purpose, because a name that
+    changed between launches would be worse than one that is merely arbitrary,
+    and `HUSTLER_PLAYER` still overrides either way.
+    """
+    humans = sorted(name for name, p in (profiles or {}).items()
+                    if isinstance(p, dict) and p.get("kind") == "human")
+    return humans[0] if humans else fallback
 
 
 def profile_store_path(script_path, env_override=None):
@@ -4766,6 +4826,17 @@ def play_ai_game(seed=0, max_shots=300, verbose=False, log_shots=False,
         sim, game = new_game()
         ais = default_ais(rng)
     else:
+        # r60: refuse an unrostered name HERE TOO, naming it. The pending
+        # lists already screen for this, but a guard that only lives in the
+        # caller is one refactor away from being gone -- and the failure it
+        # replaces was `AttributeError: 'NoneType' object has no attribute
+        # 'choose'` raised four frames deeper, which says nothing about which
+        # name was wrong. Same posture as r53's seat check: say who.
+        missing = [n for n in names if not league_playable_by_ai(n)]
+        if missing:
+            raise ValueError(
+                "not on the ladder, cannot be played by the machine: %s"
+                % ", ".join(str(n) for n in missing))
         sim, game = new_game(controllers=("ai", "ai"), names=tuple(names))
         ais = [league_ai(n, rng) for n in names]
     # Player 0 breaks
@@ -6996,7 +7067,19 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     pending_row = None      # r55: a logged shot waiting on the rules
     logged_frame = None     # r33.1: frame a row was last written, for the LED
     logged_made = None      # r34.1: did that call come off? None = uncalled
-    profile_name = os.environ.get("HUSTLER_PLAYER", "PLAYER")
+    # r60: the environment still wins, but the fallback ASKS THE STORE rather
+    # than inventing "PLAYER" -- see default_human_name.
+    profile_name = os.environ.get("HUSTLER_PLAYER") or "PLAYER"
+    if not os.environ.get("HUSTLER_PLAYER") and not smoke:
+        try:
+            _ppth = profile_store_path(__file__,
+                                       os.environ.get("HUSTLER_PROFILES"))
+            if os.path.exists(_ppth):
+                with open(_ppth, "r", encoding="utf-8") as _pf:
+                    profile_name = default_human_name(
+                        profiles_from_json(json.load(_pf)))
+        except (OSError, ValueError):
+            pass
 
     def flush_human_row(fouled, event):
         """r55: write the deferred row now the rules have decided it."""
@@ -13882,6 +13965,77 @@ def selftest():
           f"A {st117['A']:.3f} vs B {st117['B']:.3f}; "
           f"unbeaten {with117:.2f} with prior, {without117:.3g} without")
 
+    # 118. r60: the machine only resolves fixtures it can actually play.
+    #
+    # KNOWN_ISSUES #6, FILED AT r56 AND CALLED UNREACHABLE. The reasoning was
+    # that `league_pending_ai` excludes the human, so an unrostered name could
+    # never reach `play_ai_game`. That was true of the menu, which passes a
+    # real profile name, and false of the CLI, which passed
+    # `os.environ.get("HUSTLER_PLAYER", "PLAYER")` -- and PLAYER is nobody. So
+    # all seven of the Maker's own fixtures looked resolvable and
+    # `--league resolve` died four frames down on
+    # `'NoneType' object has no attribute 'choose'`.
+    #
+    # The fix is to stop asking WHO THE HUMAN IS, a question the CLI could get
+    # wrong, and ask WHO THE MACHINE CAN PLAY, which it cannot. That is why the
+    # first clause below passes a human name that is deliberately WRONG: with
+    # the old guard it returned every one of MAKER's fixtures.
+    #
+    # `default_human_name` closes the other half -- the store has said
+    # `kind == "human"` on the right profile since r49 and nobody asked it.
+    lad118 = [n for n, *_ in LEAGUE_LADDER][:7]
+    # MAKER goes FOURTH, not first, and that is the whole difference between
+    # this assertion working and looking like it works. `league_fixtures` pins
+    # the first player, so listing MAKER first makes him the HOME side in all
+    # seven of his fixtures -- and a mutant that screened only `home` passed
+    # cleanly. Fourth puts him home 3 and away 4. Third time this project has
+    # been caught by test data that happened to hide the bug (r56 seeding,
+    # r59 intervals).
+    lg118 = new_league(lad118[:3] + ["MAKER"] + lad118[3:], name="T")
+    wrong118 = league_pending_ai(lg118, "PLAYER")     # a human who is nobody
+    right118 = league_pending_ai(lg118, "MAKER")
+    none118 = league_pending_ai(lg118)                 # no human named at all
+    mine118 = [f for f in lg118["rounds"] for f in f if "MAKER" in f]
+    profs118 = {"MAKER": new_profile("MAKER", kind="human"),
+                "SHARK": new_profile("SHARK", kind="ai")}
+    two118 = dict(profs118)
+    two118["ALICE"] = new_profile("ALICE", kind="human")
+    try:
+        play_ai_game(seed=1, names=("MAKER", lad118[0]))
+        refused118 = ""
+    except ValueError as exc118:
+        refused118 = str(exc118)
+    check("r60 the machine only resolves fixtures it can actually play — the "
+          "pending list now asks the LADDER rather than asking who the human "
+          "is, because the CLI got that wrong (it defaulted to 'PLAYER', who "
+          "is nobody) and tried to play the Maker's own seven fixtures as AI "
+          "ones; play_ai_game refuses an unrostered name and says which; and "
+          "the human's name comes from the profile store, which has known it "
+          "since r49",
+          # the whole bug: a wrong human name no longer leaks his fixtures
+          len(mine118) == 7
+          and not any("MAKER" in f for f in wrong118)
+          and wrong118 == right118 == none118
+          # ... and the AI fixtures are all still there
+          and len(none118) == len(lg118["rounds"]) * len(lg118["rounds"][0]) - 7
+          # the roster question itself
+          and league_playable_by_ai(lad118[0])
+          and not league_playable_by_ai("MAKER")
+          # refused BY NAME, not by AttributeError four frames down
+          and "MAKER" in refused118 and "ladder" in refused118
+          # the human comes from the store; env still wins upstream of this
+          and default_human_name(profs118) == "MAKER"
+          and default_human_name({}) == "PLAYER"
+          and default_human_name({}, fallback="X") == "X"
+          and default_human_name({"S": new_profile("S", kind="ai")}) == "PLAYER"
+          # two humans: deterministic, not arbitrary between launches
+          and default_human_name(two118) == "ALICE"
+          and default_human_name(two118) == default_human_name(dict(two118)),
+          f"{len(mine118)} of MAKER's fixtures exist; pending with a wrong "
+          f"human {len(wrong118)}, with the right one {len(right118)}, with "
+          f"none {len(none118)}; refusal {refused118!r}; "
+          f"human resolved to {default_human_name(profs118)}")
+
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
 
@@ -13948,7 +14102,21 @@ def main():
 
     if args.league is not None:
         lpath = league_store_path(__file__, os.environ.get("HUSTLER_LEAGUE"))
-        me = os.environ.get("HUSTLER_PLAYER", "PLAYER")
+        me = os.environ.get("HUSTLER_PLAYER") or ""
+        if not me:
+            # r60: ask the profile store rather than assuming "PLAYER". This
+            # is the line that made --league resolve try to play the Maker's
+            # own fixtures as AI fixtures and crash.
+            try:
+                _pp = profile_store_path(__file__,
+                                         os.environ.get("HUSTLER_PROFILES"))
+                _ps = {}
+                if os.path.exists(_pp):
+                    with open(_pp, "r", encoding="utf-8") as _f:
+                        _ps = profiles_from_json(json.load(_f))
+                me = default_human_name(_ps)
+            except (OSError, ValueError):
+                me = "PLAYER"
         lg = None
         if os.path.exists(lpath):
             try:

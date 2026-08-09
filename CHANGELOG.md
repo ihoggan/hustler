@@ -5,7 +5,73 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r59 — rankings: who you beat, not just how many (current)
+## r60 — the machine only resolves fixtures it can actually play (current)
+
+Found the moment r59 shipped, in the Maker's own terminal output. `--league`
+ended with:
+
+```
+your next fixture: season complete
+AI fixtures still to resolve: 7
+```
+
+Both lines are wrong. Seven fixtures were left and every one of them was
+**his**. Running `--league resolve` on that crashed:
+
+```
+AttributeError: 'NoneType' object has no attribute 'choose'
+```
+
+### Why
+
+The CLI took the human's name from `os.environ.get("HUSTLER_PLAYER", "PLAYER")`
+— and PLAYER is nobody. `league_pending_ai` excluded fixtures containing "the
+human", so with the wrong name it excluded nothing, handed MAKER to
+`play_ai_game`, and `league_ai("MAKER")` returned None four frames down.
+
+**This was filed as KNOWN_ISSUES #6 at r56 and called unreachable**, on the
+reasoning that the pending list already excludes the human. That was true of the
+menu, which passes a real profile name, and false of the CLI, which passed a
+guess. The note said at the time that "harmless because nothing exercises it"
+has a shelf life. It lasted three releases.
+
+### The fix, in three places
+
+**Stop asking who the human is; ask who the machine can play.** The pending
+lists now screen on `league_playable_by_ai()` — is this name on the ladder —
+which is a question the CLI cannot get wrong, because it does not depend on
+knowing anything about the caller. It also closes the hand-edited-nickname route
+the original issue was actually about.
+
+**`play_ai_game` refuses an unrostered name and says which one**, rather than
+raising an AttributeError from deep inside the shot loop. Same posture as r53's
+seat check: say who.
+
+**`default_human_name()` asks the profile store.** It has marked the human seat
+with `kind == "human"` since r49 and nothing ever read it. `HUSTLER_PLAYER`
+still wins; the fallback is now the data instead of a guess. This also fixes a
+quieter version of the same bug in the GUI, where a career reverted to a
+stranger on every launch unless the variable happened to be set.
+
+No league file was harmed: the crash happened before the write, verified
+byte-for-byte against the original.
+
+### Notes
+
+**A mutant survived, and the reason is worth writing down.** Screening only the
+`home` side of a fixture passed cleanly — because `league_fixtures` pins the
+first player, so listing MAKER first made him the home side in all seven of his
+fixtures and an away-side bug could not appear. Moving him to fourth gives home
+3, away 4, and the mutant dies. That is the **third** time test data has hidden
+a bug here (r56 alphabetical seeding, r59 interval bounds), and all three were
+the same mistake: a fixture chosen for convenience rather than to make the
+failure visible.
+
+Self-test **118**. `--snap` byte-identical at `62c87ddb…`.
+
+---
+
+## r59 — rankings: who you beat, not just how many
 
 Fork D, signed off at r57 and built now. The league has produced results since
 r52 and nothing has ever said who is actually **better** — only who has the most

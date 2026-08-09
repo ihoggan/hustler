@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r59 — playable, validated, no known blocking bugs.
+**Status:** r60 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~13,540 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,18 +16,40 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r59
+## Validation snapshot at r60
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 117 assertions |
+| `--selftest` | ALL PASS — 118 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY (nix5), all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 | GitHub Actions `Validate` | passing (Python 3.12 and 3.13) |
+
+## What r60 changed (as built)
+
+**`--league resolve` crashed on the Maker's own fixtures.** The CLI defaulted
+the human's name to the literal `"PLAYER"`, so `league_pending_ai` excluded
+nobody and handed an unrostered name to `play_ai_game`.
+
+**Three changes.** `league_pending_ai` and `playoff_pending_ai` now screen on
+`league_playable_by_ai()` — ASK THE LADDER, NOT WHO THE HUMAN IS, because the
+second question is one a caller can get wrong. `play_ai_game` refuses an
+unrostered name and names it. `default_human_name()` reads the profile store's
+`kind == "human"` marker, which r49 has written since and nothing ever read;
+`HUSTLER_PLAYER` still overrides.
+
+**This was KNOWN_ISSUES #6, filed at r56 as unreachable.** The reasoning held
+for the menu and failed for the CLI. Worth remembering when writing off a latent
+fault: check every caller, not the one you were looking at.
+
+**Test-data trap, third instance.** A mutant screening only the `home` side
+survived, because `league_fixtures` pins the first player and the fixture listed
+MAKER first — making him home in all seven. Moved to fourth (home 3, away 4) and
+it dies. Same class as r56's alphabetical seeding and r59's interval bounds.
 
 ## What r59 changed (as built)
 
