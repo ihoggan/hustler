@@ -11,7 +11,7 @@ env:
   # workflow green -- which is exactly how an R7-era file once survived every
   # check. Bump this deliberately when you add an assertion; the upkeep IS
   # the guard.
-  SELFTEST_COUNT: 113
+  SELFTEST_COUNT: 114
   # Likewise: cushion_path.py printing *something* is not the same as it
   # printing the whole table.
   CUSHION_PRIMITIVES: 36

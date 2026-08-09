@@ -5,7 +5,103 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r55 — a league you can play, and fouls that get written (current)
+## r56 — play-offs, trophies, and three things that were quietly wrong (current)
+
+The last item of the league brief, and the thing `award_trophy()` has been
+waiting for since r48 — it was written then and nothing has ever called it.
+
+### The bracket
+
+Eight players, so **everyone qualifies**. That is the Maker's choice and it
+changes what the round-robin is for: the season stops being a qualifier and
+becomes purely a seeding exercise, which is the only reason a table you finish
+eighth in is still worth playing out.
+
+The final table seeds it, and there is **one pairing rule used throughout**:
+fold the field, first against last. In the opening round that is 1v8, 2v7, 3v6,
+4v5; applied again to the winners it puts the 1/8 winner against the 4/5 winner,
+which is what keeps the top two seeds apart until the final. Pairing the winners
+in the order they come out is the obvious way to write it, and it is wrong —
+seeds 1 and 2 meet in a semi. Both produce a plausible-looking bracket, which is
+why the self-test checks it rather than trusting the eye.
+
+Ties are **derived on read** from the seeds plus the recorded results, the same
+way standings are derived from fixtures. A stored bracket is an aggregate, and
+r16 is why this project does not trust stored aggregates.
+
+### Two decisions, both the Maker's
+
+**Losing does not stop the tournament.** Knocked out, it carries on without you
+— a trophy you cannot lose is not worth winning, and a season with no champion
+is a hole in a record that is meant to be permanent. The remaining ties resolve
+when you press the button, not in a stall you did not ask for.
+
+**The bracket is strict to play and provisional to view.** Playing it needs all
+28 fixtures in, because a bracket seeded from a part-played table is seeded from
+a lie: a player sitting eighth on nothing played is not eighth, they are
+unmeasured. But waiting seven frames to see the feature at all is a long time to
+show nothing, so the screen displays the bracket **today's table would make**,
+dimmed and labelled as provisional, and your seed climbs as you play.
+
+### The champion's trophy
+
+`playoff_trophies()` is the caller `award_trophy()` never had. It is idempotent
+even though award_trophy allows duplicates on purpose — winning the same
+competition twice is two trophies, but reading the same finished bracket twice
+is not, and this runs every time a frame ends.
+
+The league is also now settled **before** the profiles are written rather than
+after. That order did not matter while a result only changed a table; a play-off
+result can put a trophy on a profile, and a profile written before the tie is
+recorded is a profile written one frame too early.
+
+### Three things that were quietly wrong
+
+**You have never seen your own row in your own league table.** The standings box
+was 214 units at 24 a row, which fits a header and *seven* rows. The row that
+fell off the bottom was the eighth and last seed — which, all season, has been
+the Maker's. The highlight colour marking your line has never rendered once.
+
+**The Resume button had the footer printed over it.** Resume ran 636→670 while
+the two footer lines sat at 634 and 654, and the footers draw last: 36px of
+overlap at 1.0 scale, 54px at 1.5.
+
+Both are the same fault — fixed offsets that must be re-totalled by hand every
+time anything moves — and it is the third time this project has hit it (r41
+button rects, r42 strip leading). The menu is now laid out on a **cursor**, and
+the panel height is derived from the stack instead of the stack being crammed
+into a hardcoded 560. A cursor cannot get the total wrong. The standings box
+asks the league how many players it has, so a bigger division grows the box
+rather than silently truncating it.
+
+**A season was never reproducible, and the docstring said it was.**
+`league_resolve_ai` derived its seed from `abs(hash(key))`, and CPython salts
+string hashing per process: the same fixture drew 106203, 62979 and 49318 on
+three consecutive runs. Order-independence within one run was real; the
+reproducibility promised in the docstring was not, and nothing ever failed
+because no test asked the same question twice in two processes. `stable_seed()`
+uses CRC32 — stdlib, fixed by standard, identical on every platform.
+
+### Honest notes
+
+Laying out the bracket screen, the button row was written with fixed offsets and
+at 1.5 scale the Resolve button ended at x=1131 in a 1024-wide window — the
+exact fault this release exists to fix, reproduced within the hour of fixing it.
+It now runs on a cursor like everything else, and was re-measured from 1024x768
+to 3840x2160.
+
+Assertion 114 was mutation-tested nine ways and **two survived the first pass**.
+One was a weak mutant. The other was a real hole: seeding the bracket
+*alphabetically* passed, because the seed checks compared `playoff_seeds` to
+itself, and the test data's runaway leader happened to also be first in the
+alphabet. Fixed by asserting that points never rise down the seeding.
+
+Self-test **114**. `--snap` byte-identical at `62c87ddb…`; the bracket is gated
+on `smoke` exactly as the menu is.
+
+---
+
+## r55 — a league you can play, and fouls that get written
 
 Three fixes, all of them things the first season exposed.
 

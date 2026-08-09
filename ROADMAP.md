@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current status: r55 — playable, validated
+## Current status: r56 — playable, validated
 
 **Validation snapshot (r49, measured on nix5 and reproduced in a Linux
 container):**
@@ -8,7 +8,7 @@ container):**
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 113 assertions |
+| `--selftest` | ALL PASS — 114 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -35,7 +35,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~12,610 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~13,340 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -94,15 +94,38 @@ against — it is the most likely route to a sixth bug.
 
 ### Larger features under discussion
 
-**League mode — next, and unscoped by choice.** Single player against a set of
-AI opponents across a fixture list, results feeding a standings table
-(played/won/lost/points) and a final ranking. This suits what the project is
-actually for: the human plays every fixture rather than watching AI play. The
-Grannie feeds in — a whitewash, where the winner clears their colours and the
-black while the loser pots nothing. Detection is a small check at frame end;
-the visual payoff the Maker wants (a granny on the win screen with big text) is
-the part that touches the no-asset-files rule and needs a decision, not an
-assumption. A code-drawn cartoon keeps the constraint; a photograph breaks it.
+> **League mode is BUILT, r46 through r56.** The Grannie (r46), profiles (r48),
+> the seat fix and nicknames (r49), the career shell (r51), the league itself
+> (r52), the season in the shell (r53), save and resume mid-frame (r54), a
+> ladder matched on jitter so the table measures temperament (r55), and
+> play-offs and trophies (r56). Every item of the original brief is in.
+>
+> Two design decisions worth carrying forward, both the Maker's. **The ladder
+> matches on `aim_jitter`**, so a league result can only come from how a player
+> plays and not from how straight they hit it — the first season's table could
+> not tell those apart. And **eight players means everyone qualifies**, which
+> turns the round-robin into a pure seeding exercise: it is the reason a season
+> you finish eighth in is still worth playing out.
+
+**Rankings — next, and the fork is still owed.** The league now produces
+results, which is what this was waiting on. The choice is between a
+**Wilson-bounded win rate** (r43's `rate_ci` already exists, it is transparent,
+and it handles unequal games played) and **Elo** (which handles opponent
+strength, so beating the strongest player counts for more). Likely best answer:
+rank by Elo and show win% with Wilson bounds beside it, but that is a decision
+to put to the Maker rather than assume. Matched jitter is what makes a ranking
+here worth having — it measures temperament, not cue accuracy.
+
+**A profiles view in the menu.** Every player has a stored profile with a
+record, trophies and Grannie counts, and the only way to read one is
+`--profiles` at a command line. The career shell was built so a career never
+needs a terminal; this is the last part of it that still does.
+
+**Vary the ladder's axes independently.** The eight temperaments currently run
+in close to a straight line from reckless to passive, and the first matched
+season correlated threshold against wins at −0.91 — which is a real finding but
+also means the league may be a foregone conclusion. A low-threshold player who
+is also foul-shy would make it less predictable. Raised, not decided.
 
 
 > **Cue-ball strike point and tip size (r30) is done.** The SpinPad had the

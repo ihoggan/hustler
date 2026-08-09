@@ -1,6 +1,6 @@
 # Known Issues
 
-The honest state of the open threads as of r55. None of these stop the game
+The honest state of the open threads as of r56. None of these stop the game
 being playable. Each is written up with its diagnosis so the next person to
 touch it (quite possibly future me) starts from the answer, not the symptom.
 
@@ -211,10 +211,62 @@ game-mode row, because there aren't any.
 
 ---
 
+## 6. `league_ai()` returns `None` for a name that is not on the ladder
+
+**Symptom:** none in normal play. Found by a test harness, not by playing.
+
+**Diagnosis:** `league_ai(nickname)` returns `None` for any name not in
+`LEAGUE_LADDER`, and `play_ai_game(names=...)` hands that straight to
+`ai.choose(...)`, so a fixture involving an off-ladder name dies with
+`AttributeError: 'NoneType' object has no attribute 'choose'` rather than saying
+which name it did not recognise.
+
+**Why it is not reachable today:** the human's name is never on the ladder, and
+both `league_pending_ai()` and `playoff_pending_ai()` exclude every fixture the
+human is in — so the only names that reach `play_ai_game` come from the ladder
+by construction. The crash needs a league whose players include a third name
+that is neither the human nor a ladder entry, which nothing can currently
+create.
+
+**Why it is written down anyway:** r55's lesson, in as many words — *"harmless
+because nothing exercises it" is a statement with a shelf life*. KNOWN_ISSUES #5
+was filed at r44 on exactly that reasoning, and the league then produced fifty
+rows in the mode it broke. The league file is tracked precisely so the Maker can
+hand-edit it, and the reader tolerates hand edits by design; a typo'd nickname is
+the obvious way in.
+
+**The fix when it is wanted:** refuse the fixture with the offending name in the
+message rather than resolving it, in the same posture as r53's seat check, which
+says *"X is not on the ladder"* instead of quietly seating somebody else.
+
+---
+
 ## Recently fixed
 
 Resolved in r23–r27 — kept here briefly because the diagnoses are worth having
 if anything similar shows up again. Full descriptions are in the changelog.
+
+- **The last row of the league table was never drawn (r56).** The standings box
+  in the career menu was 214 scaled units at 24 a row, which fits a header and
+  seven rows — of eight. The row that fell off was the bottom seed, which for
+  the whole of season 1 was the Maker's own, so the highlight colour marking
+  their line had never once rendered. Fixed by deriving the box height from the
+  number of players and the panel height from the stack of widgets, rather than
+  hand-totalling offsets inside a box fixed at 560 units.
+
+- **The Resume button had the footer text printed over it (r56).** Resume ran
+  636→670 while the two footer lines were positioned from the panel bottom at
+  634 and 654, and the footers draw last — 36px of overlap at 1.0 scale, 54px at
+  1.5. Same root cause as the row above, and the same fix: the footers get rects
+  from the same cursor as everything else.
+
+- **A season was never reproducible (r56).** `league_resolve_ai()` seeded each
+  fixture from `abs(hash(key))` and documented the result as reproducible.
+  CPython salts string hashing per process, so the same fixture drew 106203,
+  62979 and 49318 on three consecutive runs. Order-independence within a single
+  run was real, which is why it never looked wrong. Replaced with
+  `stable_seed()` over CRC32, and the self-test pins a literal value rather than
+  checking the function against itself.
 
 - **A shot played without a call carried no pot geometry (r36).** `shot_pre`
   resolved the object ball from the *nominated* ball, so an uncalled shot had no

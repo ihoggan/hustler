@@ -117,6 +117,7 @@ import random
 import sys
 import time
 import types
+import zlib
 
 # ----------------------------------------------------------------------------
 # Configuration — real units (decision 4B: dict + hotkeys)
@@ -2429,7 +2430,7 @@ def grannie(potted_colours, winner_colour, loser_colour, clean_black,
 
 
 LEAGUE_STORE_NAME = "hustler_league.json"
-LEAGUE_SCHEMA = 1
+LEAGUE_SCHEMA = 2
 
 # r52: the seven AI a league is played against. SHARK and STEADY keep the
 # EXACT parameters `default_ais()` gives them -- that function is deliberately
@@ -2659,7 +2660,44 @@ def league_from_json(blob):
                                    "away": str(r["away"]),
                                    "winner": str(r.get("winner", "")),
                                    "grannie": bool(r.get("grannie"))})
+    # r56: the bracket. A season written by r52 has no `playoffs` key at all,
+    # and reads back as one with no ties played -- which is exactly right,
+    # because that is what it is. Schema went to 2 for the field; the reader
+    # does not need to branch on it.
+    po = blob.get("playoffs")
+    if isinstance(po, dict):
+        got = []
+        for r in po.get("results") or []:
+            if isinstance(r, dict) and r.get("round") and r.get("winner"):
+                try:
+                    slot = int(r.get("slot", -1))
+                except (TypeError, ValueError):
+                    continue
+                if slot < 0:
+                    continue
+                got.append({"round": str(r["round"]), "slot": slot,
+                            "home": str(r.get("home", "")),
+                            "away": str(r.get("away", "")),
+                            "winner": str(r["winner"]),
+                            "grannie": bool(r.get("grannie"))})
+        out["playoffs"] = {"results": got}
     return out
+
+
+def stable_seed(key, base=0, span=100000):
+    """r56: a seed derived from a string, the same in every process. Pure.
+
+    `hash()` cannot do this job. CPython salts string hashing per process, so
+    `abs(hash(key))` gives a different answer every run -- which is how
+    `league_resolve_ai` spent its whole life documenting a reproducibility it
+    did not have. CRC32 is stdlib, fixed by standard, and identical on every
+    platform and version, which is the entire requirement.
+
+    Not a security hash and not trying to be: this picks a starting point for
+    a random number generator, and all it has to do is pick the same one
+    twice.
+    """
+    return base + (zlib.crc32(str(key).encode("utf-8")) % span)
 
 
 def league_resolve_ai(league, human, limit=None, seed_base=9000):
@@ -2674,6 +2712,14 @@ def league_resolve_ai(league, human, limit=None, seed_base=9000):
 
     The seed is derived from the FIXTURE, not from a counter, so replaying a
     season reproduces it and resolving in a different order changes nothing.
+
+    r56: it did not, for two years of this function's life. The seed came from
+    `hash(key)`, and CPython salts string hashing per process unless
+    PYTHONHASHSEED is set -- so the same fixture drew 106203, 62979 and 49318
+    on three consecutive runs. Order-independence within one run was real; the
+    reproducibility this docstring promised was not, and nothing failed,
+    because no test ever asked the same question twice in two processes. It
+    now goes through `stable_seed`.
     """
     out = dict(league)
     pending = league_pending_ai(out, human)
@@ -2681,12 +2727,218 @@ def league_resolve_ai(league, human, limit=None, seed_base=9000):
         pending = pending[:limit]
     for home, away in pending:
         key = league_result_key(home, away)
-        seed = seed_base + (abs(hash(key)) % 100000)
+        seed = stable_seed("|".join(key), seed_base)
         rec = play_ai_game(seed=seed, names=(home, away))
         if not rec.get("over"):
             continue          # no result inside max_shots; leave it unplayed
         out = league_record(out, home, away, rec.get("winner_name", home),
                             grannie=bool(rec.get("grannie")))
+    return out
+
+
+# r56: the play-offs. Eight players, so EVERYONE qualifies -- the Maker's
+# choice, and it changes what the league is for: the round-robin stops being a
+# qualifier and becomes purely a seeding exercise, which is the only reason a
+# table where you finish eighth is still worth playing out.
+#
+# Round names are keyed by field size rather than hardcoded, because the league
+# is expandable and a bracket that only knows the word "QF" would have to be
+# rewritten the first time it grew.
+PLAYOFF_ROUND_NAMES = {8: ("QF", "SF", "F"), 4: ("SF", "F"), 2: ("F",)}
+
+
+def league_complete(league):
+    """r56: has every fixture in the season been played? Pure.
+
+    The gate on the play-offs. A bracket seeded from a partial table is seeded
+    from a lie -- with seven fixtures still out, a player sitting eighth on
+    nothing played is not eighth, they are unmeasured, and the bracket would
+    hand them the top seed's frame on the strength of games nobody has had.
+    """
+    played = {league_result_key(r["home"], r["away"])
+              for r in league.get("results", [])}
+    for rnd in league.get("rounds", []):
+        for home, away in rnd:
+            if league_result_key(home, away) not in played:
+                return False
+    return bool(league.get("rounds"))
+
+
+def playoff_seeds(league):
+    """r56: the seeding order -- the league table, top first. Pure.
+
+    Returned WHETHER OR NOT the season is finished, on purpose. The Maker
+    signed off on a provisional bracket being visible from the start: seven
+    frames is weeks of play, and a feature that shows nothing at all until the
+    last one is a feature they cannot see themselves getting closer to. What
+    is gated is PLAYING it -- see `league_complete`.
+    """
+    return [row["player"] for row in league_standings(league)]
+
+
+def playoff_ties(league):
+    """r56: every tie in the bracket, decided or not. Pure.
+
+    Derived on read from the seeds plus the recorded results, exactly as the
+    standings are derived from the fixtures -- r52's reason applies unchanged:
+    a stored bracket is an aggregate, and an aggregate can only answer the
+    questions it was built for.
+
+    ONE PAIRING RULE THROUGHOUT: fold the field, first against last. In the
+    opening round that is 1v8, 2v7, 3v6, 4v5; applied again to the winners it
+    puts the 1/8 winner against the 4/5 winner, which is what keeps the top two
+    seeds apart until the final. Pairing the winners in order instead would
+    have put seeds 1 and 2 in the same semi -- the bug this rule exists to
+    avoid, and easy to write by accident.
+
+    `home` or `away` is None where the tie is waiting on an earlier result, so
+    an undecided bracket renders as the real thing with holes in it rather than
+    disappearing until it is complete.
+    """
+    seeds = playoff_seeds(league)
+    names = PLAYOFF_ROUND_NAMES.get(len(seeds))
+    if not names:
+        return []
+    recs = {}
+    for r in (league.get("playoffs") or {}).get("results", []):
+        recs[(r.get("round"), r.get("slot"))] = r
+    field = list(seeds)
+    cur = [(field[i], field[len(field) - 1 - i]) for i in range(len(field) // 2)]
+    ties = []
+    for rname in names:
+        winners = []
+        for slot, (a, b) in enumerate(cur):
+            rec = recs.get((rname, slot))
+            win = rec.get("winner") if rec else None
+            if win not in (a, b) or win is None:
+                win = None
+            ties.append({"round": rname, "slot": slot, "home": a, "away": b,
+                         "winner": win,
+                         "grannie": bool(rec.get("grannie")) if rec else False})
+            winners.append(win)
+        cur = [(winners[i], winners[len(winners) - 1 - i])
+               for i in range(len(winners) // 2)]
+    return ties
+
+
+def playoff_tie(league, rnd, slot):
+    """r56: one tie by round and slot, or None. Pure."""
+    for t in playoff_ties(league):
+        if t["round"] == rnd and t["slot"] == slot:
+            return t
+    return None
+
+
+def playoff_record(league, rnd, slot, winner, grannie=False):
+    """r56: record one tie. Pure, returns a new league.
+
+    Refuses three things, all silently, all returning the league untouched: a
+    tie that does not exist, a tie still waiting on an earlier round, and a
+    winner who is not one of the two players in it. The last one is the guard
+    that matters -- the caller identifies a tie by round and slot but the
+    winner by name, and those two facts come from different places.
+
+    A tie already decided is not overwritten, same as `league_record`: the
+    Maker can wander back into a frame against someone they have already
+    knocked out, and the bracket should say what happened, not what happened
+    last.
+    """
+    t = playoff_tie(league, rnd, slot)
+    if t is None or t["home"] is None or t["away"] is None:
+        return league
+    if t["winner"] is not None or winner not in (t["home"], t["away"]):
+        return league
+    out = dict(league)
+    po = dict(league.get("playoffs") or {})
+    po["results"] = list(po.get("results", [])) + [
+        {"round": rnd, "slot": slot, "home": t["home"], "away": t["away"],
+         "winner": winner, "grannie": bool(grannie)}]
+    out["playoffs"] = po
+    return out
+
+
+def playoff_next_tie(league, player):
+    """r56: the player's next playable tie, or None. Pure."""
+    for t in playoff_ties(league):
+        if t["winner"] is None and player in (t["home"], t["away"]):
+            return t
+    return None
+
+
+def playoff_pending_ai(league, human):
+    """r56: decided-able ties the human is not in. Pure.
+
+    These are what the Resolve button plays out. THE HUMAN BEING KNOCKED OUT
+    DOES NOT EMPTY THIS LIST -- the Maker signed off on the tournament carrying
+    on without them, because a trophy you cannot lose is not worth winning and
+    a season with no champion is a hole in a record that is meant to be
+    permanent.
+    """
+    return [t for t in playoff_ties(league)
+            if t["winner"] is None and t["home"] is not None
+            and t["away"] is not None and human not in (t["home"], t["away"])]
+
+
+def playoff_champion(league):
+    """r56: the name on the trophy, or None. Pure."""
+    ties = playoff_ties(league)
+    return ties[-1]["winner"] if ties else None
+
+
+def playoff_resolve_ai(league, human, limit=None, seed_base=7000):
+    """r56: play out the ties the human is not in. Returns a new league.
+
+    Not pure -- real frames, same as `league_resolve_ai`, and for the same
+    reason: an AI's run to the trophy has to be earned on the table the human
+    plays on or the bracket is a spreadsheet.
+
+    ONE ROUND CANNOT BE SKIPPED AHEAD OF ANOTHER, because a semi-final has no
+    players in it until both quarters are decided -- so this re-derives the
+    pending list after every frame rather than walking a list captured up
+    front, and a semi that becomes playable mid-batch is picked up in the same
+    batch.
+    """
+    out = dict(league)
+    done = 0
+    while limit is None or done < limit:
+        pending = playoff_pending_ai(out, human)
+        if not pending:
+            break
+        t = pending[0]
+        seed = stable_seed("PO|%s|%d|%s|%s"
+                           % (t["round"], t["slot"], t["home"], t["away"]),
+                           seed_base)
+        rec = play_ai_game(seed=seed, names=(t["home"], t["away"]))
+        if not rec.get("over"):
+            break          # no result inside max_shots; leave the tie standing
+        out = playoff_record(out, t["round"], t["slot"],
+                             rec.get("winner_name", t["home"]),
+                             grannie=bool(rec.get("grannie")))
+        done += 1
+    return out
+
+
+def playoff_trophies(profiles, league, when):
+    """r56: put the champion's trophy on their profile. Pure.
+
+    `award_trophy` has existed since r48 and NOTHING HAS EVER CALLED IT. This
+    is the caller, and it is deliberately idempotent even though award_trophy
+    allows duplicates on purpose -- winning the same competition twice is two
+    trophies, but reading the same finished bracket twice is not, and this runs
+    every time a frame ends.
+
+    Pure, so the awarding is testable without a filesystem: it takes profiles
+    and returns profiles.
+    """
+    champ = playoff_champion(league)
+    if not champ or champ not in profiles:
+        return profiles
+    title = "%s Champion" % league.get("name", "Season")
+    if any(t.get("title") == title
+           for t in profiles[champ].get("trophies", [])):
+        return profiles
+    out = dict(profiles)
+    out[champ] = award_trophy(profiles[champ], title, when)
     return out
 
 
@@ -4616,6 +4868,28 @@ def chamber_slots(n, width, d_max, gap):
     return d, [x + i * (d + gap) for i in range(n)]
 
 
+def fit_label(text, max_width, measure=len):
+    """r56: shorten one label until it fits, with an ellipsis. Pure.
+
+    `measure` is injectable for the same reason `wrap_fields` takes one -- the
+    logic is testable with len() and no pygame at all, while the renderer
+    passes font.size(s)[0] and gets real pixels. This project's recurring HUD
+    fault is text that spills OUT of a widget, which an overlap check between
+    rects cannot see (r41, r42, and the tab strip measurement that kept the
+    league off the panel).
+
+    Returns text unchanged when it already fits, and never returns something
+    wider than max_width unless max_width cannot hold even an ellipsis.
+    """
+    if measure(text) <= max_width:
+        return text
+    ell = "…"
+    cut = text
+    while cut and measure(cut + ell) > max_width:
+        cut = cut[:-1]
+    return (cut + ell) if cut else ell
+
+
 def wrap_fields(fields, max_width, measure=len, sep="  "):
     """r11 (persistent panel status strip): greedily pack short field strings
     into as few lines as possible, none wider than max_width.
@@ -6539,6 +6813,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     menu_nick = ""
     menu_msg = ""
     menu_league = None         # r53: the season, reloaded when it changes
+    # r56: the bracket screen. Gated on `smoke` exactly as `menu_on` is, and
+    # for the same reason -- --snap runs run_gui(smoke=True) and saves the
+    # presented frame, so a screen that could appear there would rewrite a
+    # baseline unmoved since r41. It can only ever be turned on by a mouse
+    # click, and the mouse branch is itself `not smoke`.
+    bracket_on = False
     running = True
     last_shown = screen
     def start_game(m):
@@ -6754,36 +7034,66 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
 
     def menu_rects():
         """r51: the menu's clickable boxes. One source for drawing and hitting,
-        so a button cannot be drawn somewhere it cannot be pressed."""
+        so a button cannot be drawn somewhere it cannot be pressed.
+
+        r56: STACKED, and the panel height is derived from the stack rather
+        than the other way round. It used to be a list of hardcoded offsets
+        inside a box fixed at 560 units, and two things had gone wrong in it
+        that nobody could see from reading it: the Resume button ran from 636
+        to 670 while the two footer lines sat at 634 and 654, so the footers --
+        drawn last -- printed straight over the button, by 36px at 1.0 scale
+        and 54px at 1.5; and the standings box was 214 units at 24 a row, which
+        fits a header and SEVEN rows. The row that fell off the bottom was the
+        eighth and last seed, which for the whole of this season has been the
+        Maker's own. They have never seen their own line in their own league
+        table, highlight colour and all.
+
+        Both are the same fault -- fixed offsets that have to be re-totalled by
+        hand every time anything moves -- and it is the third time this project
+        has hit it (r41 button rects, r42 strip leading). A cursor cannot get
+        the total wrong.
+        """
+        fh = int(34 * UI_S)
+        gap = int(10 * UI_S)
+        rowh = int(24 * UI_S)
+        # Header plus one row PER PLAYER, asked of the league rather than
+        # assumed, so a bigger division grows the box instead of silently
+        # truncating it the way the fixed 214 did.
+        n_rows = 1 + max(2, len(menu_league.get("players", []))
+                         if menu_league else 8)
+        foot_h = panel_font.get_height()
+        # The stack, in order, as (key, height). `None` marks a pair sharing a
+        # row. Totalled once, at the end.
+        stack = [("name", fh), ("nick", fh), ("save", fh), ("practice", fh),
+                 ("table", rowh * n_rows), ("season", fh), ("resume", fh)]
+        top = int(66 * UI_S)
+        need = top + sum(h + gap for _, h in stack) + 2 * (foot_h + int(4 * UI_S))
+        need += int(14 * UI_S)
         w = min(int(620 * UI_S), win_w - int(80 * UI_S))
-        h = min(int(560 * UI_S), win_h - int(60 * UI_S))
+        h = min(need, win_h - int(30 * UI_S))
         x = (win_w - w) // 2
         y = (win_h - h) // 2
         rw = w - int(40 * UI_S)
         rx = x + int(20 * UI_S)
-        fh = int(34 * UI_S)
         half = rw // 2 - int(6 * UI_S)
-        # r53: the standings sit below the identity fields, and the season
-        # buttons below those. Sizes are in scaled units and the panel is
-        # clamped to the window, so a small window shrinks the box rather than
-        # drawing it off the screen -- the fit-or-omit posture used everywhere
-        # else in this HUD.
-        return {
-            "panel": pygame.Rect(x, y, w, h),
-            "name": pygame.Rect(rx, y + int(66 * UI_S), rw, fh),
-            "nick": pygame.Rect(rx, y + int(110 * UI_S), rw, fh),
-            "save": pygame.Rect(rx, y + int(154 * UI_S), half, fh),
-            "play": pygame.Rect(rx + rw // 2 + int(6 * UI_S),
-                                 y + int(154 * UI_S), half, fh),
-            "table": pygame.Rect(rx, y + int(246 * UI_S), rw,
-                                  int(214 * UI_S)),
-            "season": pygame.Rect(rx, y + int(474 * UI_S), half, fh),
-            "resolve": pygame.Rect(rx + rw // 2 + int(6 * UI_S),
-                                    y + int(474 * UI_S), half, fh),
-            "resume": pygame.Rect(rx, y + int(516 * UI_S), rw, fh),
-            "practice": pygame.Rect(rx + rw // 2 + int(6 * UI_S),
-                                     y + int(198 * UI_S), half, fh),
-        }
+        rx2 = rx + rw // 2 + int(6 * UI_S)
+        out = {"panel": pygame.Rect(x, y, w, h)}
+        cy = y + top
+        for key, hh in stack:
+            if key in ("save", "practice", "season"):
+                # Left half / right half. `play` sits beside Save name,
+                # `playoffs` beside Practice, `resolve` beside New season.
+                mate = {"save": "play", "practice": "playoffs",
+                        "season": "resolve"}[key]
+                out[key] = pygame.Rect(rx, cy, half, hh)
+                out[mate] = pygame.Rect(rx2, cy, half, hh)
+            else:
+                out[key] = pygame.Rect(rx, cy, rw, hh)
+            cy += hh + gap
+        out["foot1"] = pygame.Rect(rx, cy, rw, foot_h)
+        cy += foot_h + int(4 * UI_S)
+        out["foot2"] = pygame.Rect(rx, cy, rw, foot_h)
+        return out
 
     def menu_load_league():
         """r53: read the season, or None. Never raises into the frame loop."""
@@ -6805,6 +7115,141 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             return True
         except OSError:
             return False
+
+    def bracket_rects():
+        """r56: the play-off screen's boxes. Same one-source rule as the menu.
+
+        A screen of its own rather than a sixth thing crammed into the career
+        panel: the measured slack under the Resume button was TEN PIXELS at 1.0
+        scale, and a bracket is three columns of seven ties. This is the same
+        finding that kept the league off the panel tabs at r52 -- the space
+        does not exist, and pretending otherwise produces the overflow this
+        release is fixing.
+        """
+        fh = int(34 * UI_S)
+        m = int(30 * UI_S)
+        col_w = (win_w - 2 * m) // 3
+        # The button row runs on a cursor and shares whatever width is left,
+        # rather than sitting at hardcoded offsets. Written the fixed way
+        # first, and at 1.5 scale the Resolve button ended at x=1131 in a
+        # 1024-wide window -- the same fault as the menu overlap this release
+        # exists to fix, reproduced within the hour of fixing it. Fixed pixels
+        # inside a scaled layout do not survive contact with a bigger screen.
+        row_y = win_h - m - fh
+        avail = win_w - 2 * m
+        gapb = int(12 * UI_S)
+        widths = [max(1, int(avail * f) - gapb) for f in (0.22, 0.44, 0.34)]
+        out = {"cols": []}
+        bx = m
+        for key, bw in zip(("back", "play", "resolve"), widths):
+            out[key] = pygame.Rect(bx, row_y, bw, fh)
+            bx += bw + gapb
+        top = int(110 * UI_S)
+        for c in range(3):
+            out["cols"].append(pygame.Rect(m + c * col_w, top,
+                                            col_w - int(16 * UI_S),
+                                            win_h - top - m - fh - int(16 * UI_S)))
+        return out
+
+    def draw_bracket():
+        """r56: the play-offs, drawn full-window.
+
+        PROVISIONAL UNTIL THE SEASON IS DONE, and it says so in as many words.
+        The Maker signed off on seeing the bracket from the start rather than
+        after seven more frames, and the honest way to do that is to show the
+        one the CURRENT table would produce and label it -- so a seed climbing
+        from eighth to fifth is something they can watch happen, and nobody
+        mistakes it for a draw that has been made.
+
+        Never reached under `smoke`: see the gate at the call site and at
+        `bracket_on`'s definition.
+        """
+        r = bracket_rects()
+        display.fill((14, 16, 20))
+        big = pygame.font.SysFont("consolas,menlo,monospace",
+                                   int(26 * UI_S), bold=True)
+        lg = menu_league
+        open_ = lg is not None and league_complete(lg)
+        display.blit(big.render("PLAY-OFFS", True, (232, 226, 200)),
+                      (int(30 * UI_S), int(28 * UI_S)))
+        if lg is None:
+            display.blit(panel_font.render(
+                "no season yet", True, (150, 154, 162)),
+                (int(30 * UI_S), int(70 * UI_S)))
+            sub = ""
+        elif open_:
+            champ = playoff_champion(lg)
+            sub = ("champion: %s" % champ) if champ else \
+                  "%s — seeded by the final table" % lg.get("name", "")
+        else:
+            left = sum(1 for rnd in lg.get("rounds", []) for f in rnd
+                       if league_result_key(*f) not in
+                       {league_result_key(x["home"], x["away"])
+                        for x in lg.get("results", [])})
+            sub = ("PROVISIONAL — %d fixture(s) still to play. "
+                   "This is the bracket today's table would make." % left)
+        display.blit(panel_font.render(sub, True,
+                                        (150, 205, 160) if open_
+                                        else (214, 176, 96)),
+                      (int(30 * UI_S), int(74 * UI_S)))
+        if lg is not None:
+            ties = playoff_ties(lg)
+            names = PLAYOFF_ROUND_NAMES.get(len(playoff_seeds(lg)), ())
+            seed_of = {p: i + 1 for i, p in enumerate(playoff_seeds(lg))}
+            rowh = int(26 * UI_S)
+            for ci, rname in enumerate(names[:3]):
+                box = r["cols"][ci]
+                display.blit(panel_font.render(
+                    {"QF": "Quarter-finals", "SF": "Semi-finals",
+                     "F": "Final"}.get(rname, rname), True, (150, 154, 162)),
+                    (box.x, box.y - int(22 * UI_S)))
+                yy = box.y
+                for t in [x for x in ties if x["round"] == rname]:
+                    for who in (t["home"], t["away"]):
+                        if yy + rowh > box.bottom:
+                            break
+                        if who is None:
+                            lab, col = "—", (90, 94, 102)
+                        else:
+                            lab = "%d %s" % (seed_of.get(who, 0), who)
+                            if t["winner"] == who:
+                                col = (150, 205, 160)
+                            elif t["winner"] is not None:
+                                col = (110, 100, 100)
+                            elif who == profile_name:
+                                col = (232, 226, 160)
+                            else:
+                                col = COL["hud"]
+                            if t["grannie"] and t["winner"] == who:
+                                lab += "  G"
+                        if not open_:
+                            col = tuple(int(c * 0.55) for c in col)
+                        display.blit(panel_font.render(
+                            fit_label(lab, box.w,
+                                      lambda s: panel_font.size(s)[0]),
+                            True, col), (box.x, yy))
+                        yy += rowh
+                    yy += int(10 * UI_S)
+        _bt = (playoff_next_tie(menu_league, profile_name)
+               if (menu_league is not None and open_) else None)
+        _bp = (len(playoff_pending_ai(menu_league, profile_name))
+               if (menu_league is not None and open_) else 0)
+        for key, label, live in (
+                ("back", "Back (Esc)", True),
+                ("play", ("Play %s v %s" % (_bt["home"], _bt["away"]))
+                 if _bt else "no tie of yours to play", bool(_bt)),
+                ("resolve", "Resolve ties (%d)" % _bp, _bp > 0)):
+            box = r[key]
+            pygame.draw.rect(display, (58, 92, 64) if live else (48, 50, 56),
+                              box, border_radius=4)
+            t = panel_font.render(
+                fit_label(label, box.w - int(10 * UI_S),
+                          lambda s: panel_font.size(s)[0]),
+                True, (235, 240, 235) if live else (120, 124, 132))
+            display.blit(t, t.get_rect(center=box.center))
+        display.blit(panel_font.render(menu_msg, True, (150, 205, 160)),
+                      (int(30 * UI_S), win_h - int(30 * UI_S) - int(34 * UI_S)
+                       - int(24 * UI_S)))
 
     def draw_menu():
         """r51: the career shell, drawn OVER the table rather than instead of
@@ -6848,13 +7293,30 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         _fx = None
         if menu_league is not None:
             _fx = league_next_fixture(menu_league, profile_name)
+        # r56: with the season over, Play means the next PLAY-OFF tie. The
+        # league fixture list is exhausted at that point, so the old label
+        # would read "Play (Esc)" and drop you on a practice table -- the
+        # exact dead end r55 was written to remove, one round later.
+        _pt = None
+        if menu_league is not None and league_complete(menu_league):
+            _pt = playoff_next_tie(menu_league, profile_name)
+        if _pt:
+            _play_label = "Play %s: %s v %s" % (_pt["round"], _pt["home"],
+                                                _pt["away"])
+        elif _fx:
+            _play_label = "Play %s v %s" % _fx
+        else:
+            _play_label = "Play (Esc)"
         for key, label in (("save", "Save name"),
-                           ("play", ("Play %s v %s" % _fx) if _fx
-                            else "Play (Esc)"),
-                           ("practice", "Practice (Esc)")):
+                           ("play", _play_label),
+                           ("practice", "Practice (Esc)"),
+                           ("playoffs", "Play-offs")):
             box = r[key]
             pygame.draw.rect(display, (58, 92, 64), box, border_radius=4)
-            t = panel_font.render(label, True, (235, 240, 235))
+            t = panel_font.render(
+                fit_label(label, box.w - int(10 * UI_S),
+                          lambda s: panel_font.size(s)[0]),
+                True, (235, 240, 235))
             display.blit(t, t.get_rect(center=box.center))
         # r53: the season, in the shell it was built for. Until now the league
         # existed only at the command line: a fixture was set as your opponent
@@ -6911,17 +7373,22 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         t = panel_font.render(lab, True,
                                (226, 232, 245) if saved else (120, 124, 132))
         display.blit(t, t.get_rect(center=rb.center))
+        # r56: the footers get RECTS from the same stack as everything else.
+        # Measured from the panel bottom, they overlapped the Resume button by
+        # 36px at 1.0 scale and 54px at 1.5, and printed over it.
         foot = menu_msg or f"playing as {profile_name}"
         display.blit(panel_font.render(foot, True, (150, 205, 160)),
-                      (r["panel"].x + int(20 * UI_S),
-                       r["panel"].bottom - int(46 * UI_S)))
+                      r["foot1"].topleft)
         display.blit(panel_font.render(
             "Esc plays / returns here   Q quits", True, (140, 144, 152)),
-            (r["panel"].x + int(20 * UI_S), r["panel"].bottom - int(26 * UI_S)))
+            r["foot2"].topleft)
 
     def menu_click(pos):
-        nonlocal menu_focus, menu_on
+        nonlocal menu_focus, menu_on, bracket_on, menu_msg
         r = menu_rects()
+        if r["playoffs"].collidepoint(pos):
+            menu_focus, bracket_on, menu_msg = None, True, ""
+            return
         if r["name"].collidepoint(pos):
             menu_focus = "name"
         elif r["nick"].collidepoint(pos):
@@ -6938,6 +7405,107 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             menu_new_season()
         elif r["resolve"].collidepoint(pos) and menu_league is not None:
             menu_resolve_ai()
+
+    def bracket_click(pos):
+        """r56: the play-off screen's three buttons."""
+        nonlocal bracket_on, menu_msg
+        r = bracket_rects()
+        if r["back"].collidepoint(pos):
+            bracket_on, menu_msg = False, ""
+        elif r["play"].collidepoint(pos):
+            menu_play_tie()
+        elif r["resolve"].collidepoint(pos):
+            menu_resolve_ties()
+
+    def menu_play_tie():
+        """r56: put the human's play-off tie on the table.
+
+        The same shape as `menu_play_fixture` and deliberately so -- r55's
+        lesson was that a Play button which does not actually start the thing
+        it names is a dead end the Maker has to be told about. Refuses while
+        the season is unfinished, because the seeding is not real yet.
+        """
+        nonlocal menu_on, bracket_on, menu_focus, mode, human_opponent, menu_msg
+        nonlocal ai_plan, ai_wait, pending, next_is_break
+        if menu_league is None or not league_complete(menu_league):
+            menu_msg = "finish the season first — the seeding is not settled"
+            return
+        t = playoff_next_tie(menu_league, profile_name)
+        if not t:
+            menu_msg = "no tie of yours to play"
+            return
+        opp = t["away"] if t["home"] == profile_name else t["home"]
+        if opp not in OPPONENT_ROSTER:
+            menu_msg = f"{opp} is not on the ladder"
+            return
+        menu_focus = None
+        human_opponent = opp
+        mode = MODES.index("YOU vs AI")
+        ai_plan, ai_wait, pending = None, 0, False
+        trail_history.clear()
+        pot_anims.clear()
+        next_is_break = True
+        restart_frame()
+        menu_msg = ""
+        bracket_on, menu_on = False, False
+
+    def menu_resolve_ties():
+        """r56: play out the play-off ties the human is not in. BLOCKS.
+
+        Two at a time rather than r53's four: a tie is the same ~3.7s frame,
+        but there are only seven in the whole bracket and stopping between
+        pairs lets the screen redraw the round that has just filled in.
+        """
+        nonlocal menu_league, menu_msg
+        if menu_league is None or not league_complete(menu_league):
+            menu_msg = "finish the season first"
+            return
+        todo = playoff_pending_ai(menu_league, profile_name)
+        if not todo:
+            menu_msg = "no ties to resolve"
+            return
+        batch = min(len(todo), 2)
+        menu_msg = f"playing {batch} tie(s)…"
+        draw_bracket()
+        pygame.display.flip()
+        lg = playoff_resolve_ai(menu_league, profile_name, limit=batch)
+        if menu_save_league(lg):
+            menu_league = lg
+            champ = playoff_champion(lg)
+            left = len(playoff_pending_ai(lg, profile_name))
+            if champ:
+                award_champion(lg)
+                menu_msg = f"{champ} wins {lg.get('name', 'the season')}"
+            else:
+                menu_msg = (f"{batch} played, {left} to resolve"
+                            if left else "waiting on your tie")
+        else:
+            menu_msg = "could not write the league file"
+
+    def award_champion(lg):
+        """r56: the trophy lands on the profile. `award_trophy` has existed
+        since r48 with no caller; `playoff_trophies` is idempotent, so this is
+        safe to run every time a bracket is read."""
+        try:
+            pp = profile_store_path(__file__,
+                                    os.environ.get("HUSTLER_PROFILES"))
+            cur = {}
+            if os.path.exists(pp):
+                with open(pp, "r", encoding="utf-8") as fh:
+                    cur = profiles_from_json(json.load(fh))
+            champ = playoff_champion(lg)
+            if champ and champ not in cur:
+                cur = dict(cur)
+                cur[champ] = new_profile(champ)
+            new = playoff_trophies(cur, lg,
+                                   time.strftime("%Y-%m-%d"))
+            if new is not cur:
+                with open(pp, "w", encoding="utf-8") as fh:
+                    json.dump(profiles_to_json(new), fh, indent=1,
+                              sort_keys=True)
+                    fh.write("\n")
+        except OSError:
+            pass
 
     def resume_path():
         return resume_store_path(__file__, os.environ.get("HUSTLER_RESUME"))
@@ -7742,7 +8310,13 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 # quits outright, and Escape from the menu quits too, so there
                 # is always a one-key way out from wherever you are.
                 if ev.key == pygame.K_ESCAPE:
-                    if menu_on:
+                    if bracket_on:
+                        # r56: Escape steps back one screen rather than
+                        # quitting. The bracket is reached FROM the menu, so
+                        # quitting out of it would skip the screen the Maker
+                        # was on and lose the one-key way back that r51 set up.
+                        bracket_on, menu_msg = False, ""
+                    elif menu_on:
                         running = False
                     else:
                         menu_on = True
@@ -7823,6 +8397,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 build_panel_widgets()
             elif (ev.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
                               pygame.MOUSEMOTION) and not smoke):
+                if bracket_on:
+                    # r56: the play-off screen is opaque and full-window, so
+                    # it takes the mouse whole -- same rule as the menu below.
+                    if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                        bracket_click(ev.pos)
+                    continue
                 if menu_on:
                     # r51: the menu takes the mouse whole while it is up, for
                     # the same reason it takes the keyboard -- it is drawn OVER
@@ -8075,10 +8655,6 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                         for _i in (0, 1):
                             if game.controllers[_i] == "human":
                                 _cur[_seat(_i)]["kind"] = "human"
-                        with open(_pp, "w", encoding="utf-8") as _f:
-                            json.dump(profiles_to_json(_cur), _f, indent=1,
-                                       sort_keys=True)
-                            _f.write("\n")
                         # r52: if this frame WAS the human's next league
                         # fixture, it counts for the season. Matched on the
                         # OPPONENT rather than on a "league mode" flag, so
@@ -8086,21 +8662,66 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                         # count, and no second mode to forget you are in.
                         # `league_record` refuses to overwrite an already
                         # played fixture, so a rematch is just a friendly.
+                        #
+                        # r56: THE LEAGUE IS NOW SETTLED BEFORE THE PROFILES
+                        # ARE WRITTEN, not after. It used to be the other way
+                        # round, which was fine while the only thing a result
+                        # changed was the table -- but a play-off result can
+                        # put a trophy on a profile, and a profile written
+                        # before the tie is recorded is a profile written one
+                        # frame too early. The order is: record the result,
+                        # then award, then write once.
                         _lp = league_store_path(
                             __file__, os.environ.get("HUSTLER_LEAGUE"))
                         if os.path.exists(_lp):
                             with open(_lp, "r", encoding="utf-8") as _f:
                                 _lg = league_from_json(json.load(_f))
-                            _nx = (league_next_fixture(_lg, profile_name)
-                                   if _lg else None)
-                            if (_nx and _seat(game.winner) in _nx
-                                    and _seat(1 - game.winner) in _nx):
-                                _lg = league_record(
-                                    _lg, _nx[0], _nx[1], _seat(game.winner),
-                                    grannie=finale["grannie"])
+                            _touched = False
+                            if _lg and league_complete(_lg):
+                                # r56: the season is over, so this can only be
+                                # a play-off tie. Identified by round and slot
+                                # rather than by the pair of names, because the
+                                # same two players can meet twice in a bracket
+                                # only if one of them is knocked out and back
+                                # in -- which cannot happen, but naming the
+                                # slot means the record cannot land on the
+                                # wrong tie even if it could.
+                                _pt = playoff_next_tie(_lg, profile_name)
+                                if (_pt and _seat(game.winner)
+                                        in (_pt["home"], _pt["away"])
+                                        and _seat(1 - game.winner)
+                                        in (_pt["home"], _pt["away"])):
+                                    _lg = playoff_record(
+                                        _lg, _pt["round"], _pt["slot"],
+                                        _seat(game.winner),
+                                        grannie=finale["grannie"])
+                                    _touched = True
+                            else:
+                                _nx = (league_next_fixture(_lg, profile_name)
+                                       if _lg else None)
+                                if (_nx and _seat(game.winner) in _nx
+                                        and _seat(1 - game.winner) in _nx):
+                                    _lg = league_record(
+                                        _lg, _nx[0], _nx[1],
+                                        _seat(game.winner),
+                                        grannie=finale["grannie"])
+                                    _touched = True
+                            if _touched:
                                 with open(_lp, "w", encoding="utf-8") as _f:
                                     json.dump(_lg, _f, indent=1)
                                     _f.write("\n")
+                                menu_league = _lg
+                                _champ = playoff_champion(_lg)
+                                if _champ:
+                                    if _champ not in _cur:
+                                        _cur = dict(_cur)
+                                        _cur[_champ] = new_profile(_champ)
+                                    _cur = playoff_trophies(
+                                        _cur, _lg, time.strftime("%Y-%m-%d"))
+                        with open(_pp, "w", encoding="utf-8") as _f:
+                            json.dump(profiles_to_json(_cur), _f, indent=1,
+                                       sort_keys=True)
+                            _f.write("\n")
                     except OSError:
                         # A frame is not worth losing the game over. The record
                         # matters but it is not the point of playing, and the
@@ -8700,7 +9321,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                   (win_w - 1, STATUS_STRIP_H - 3), 1)
             for w in panel_widgets[TAB_LABELS[panel_tab]]:
                 w.draw(display, panel_font)
-        if menu_on and not smoke:
+        if bracket_on and not smoke:
+            draw_bracket()
+        elif menu_on and not smoke:
             draw_menu()
         pygame.display.flip()
         last_shown = shown
@@ -12415,6 +13038,113 @@ def selftest():
           f"jitters {sorted(set(jits113.values()))} across {len(jits113)} "
           f"players, {len(strat113)} distinct strategies; SHARK ladder "
           f"{lad113['SHARK']} vs default {defs113['SHARK']}")
+
+    # 114. r56: the bracket the final table makes, and the trophy at the end.
+    #
+    # THE PAIRING RULE IS THE WHOLE ASSERTION. Eight players, so everyone
+    # qualifies and the round-robin is purely a seeding exercise -- which means
+    # the only thing protecting the bracket from nonsense is that the folding
+    # is right. Fold the field first-against-last and seeds 1 and 2 can only
+    # meet in the final; pair the winners in the order they come out instead --
+    # the obvious way to write it, and wrong -- and they meet in a semi. Both
+    # produce a plausible-looking bracket, which is exactly why this is checked
+    # rather than eyeballed.
+    #
+    # Also pinned: a tie cannot be recorded for someone who is not in it (the
+    # caller names the tie by slot and the winner by name, and those two facts
+    # arrive from different places), a decided tie is not overwritten, the
+    # season gates the play-offs, and `award_trophy` -- which has had no caller
+    # since r48 -- now has one that is idempotent, because it runs every time a
+    # finished bracket is read.
+    #
+    # And `stable_seed`, because the thing it replaced was a docstring's word
+    # rather than a fact: `hash()` is salted per process, so `league_resolve_ai`
+    # promised a reproducible season for two years and drew a different seed
+    # every run. A literal is asserted, not merely self-consistency -- comparing
+    # the function to itself inside one process is the check that would have
+    # passed all along.
+    lg114 = new_league(["MAKER", "SHARK", "STEADY", "BULLET",
+                        "DOC", "MAGPIE", "CHALKY", "SPIDER"], name="T")
+    part114 = league_record(lg114, "MAKER", "SPIDER", "MAKER")
+    for rnd in lg114["rounds"]:
+        for a114, b114 in rnd:
+            # BULLET wins everything, MAKER beats everyone but BULLET, so the
+            # table has a known top two and a known bottom seed.
+            w114 = a114 if "BULLET" == a114 else (
+                b114 if "BULLET" == b114 else (
+                    a114 if "MAKER" == a114 else (
+                        b114 if "MAKER" == b114 else a114)))
+            lg114 = league_record(lg114, a114, b114, w114)
+    seeds114 = playoff_seeds(lg114)
+    # Points along the seeding must never go UP. Comparing the seeds to
+    # playoff_seeds' own output would have been circular -- the first cut did
+    # exactly that and a mutant seeding the bracket ALPHABETICALLY survived it,
+    # helped by test data whose runaway leader was also first in the alphabet.
+    pts114 = {r["player"]: r["points"] for r in league_standings(lg114)}
+    monotone114 = all(pts114[seeds114[i]] >= pts114[seeds114[i + 1]]
+                      for i in range(len(seeds114) - 1))
+    qf114 = [(t["home"], t["away"]) for t in playoff_ties(lg114)
+             if t["round"] == "QF"]
+    # play the quarters so the semis have players in them
+    semi114 = lg114
+    for s114 in range(4):
+        semi114 = playoff_record(semi114, "QF", s114, qf114[s114][0])
+    sf114 = [(t["home"], t["away"]) for t in playoff_ties(semi114)
+             if t["round"] == "SF"]
+    # top two seeds must be in DIFFERENT semis
+    top2_split114 = not any(seeds114[0] in p and seeds114[1] in p
+                            for p in sf114)
+    bad114 = playoff_record(semi114, "SF", 0, "NOBODY")
+    dup114 = playoff_record(semi114, "QF", 0, qf114[0][1])
+    # run it out to a champion and award
+    fin114 = semi114
+    for r114, n114 in (("SF", 2), ("F", 1)):
+        for s114 in range(n114):
+            t114 = playoff_tie(fin114, r114, s114)
+            fin114 = playoff_record(fin114, r114, s114, t114["home"])
+    champ114 = playoff_champion(fin114)
+    profs114 = {champ114: new_profile(champ114, kind="ai")}
+    won114 = playoff_trophies(profs114, fin114, "2026-08-09")
+    again114 = playoff_trophies(won114, fin114, "2026-08-09")
+    check("r56 the play-offs — the final table seeds a bracket that folds "
+          "first against last, so the top two seeds cannot meet before the "
+          "final; a tie refuses a winner who is not in it and refuses to be "
+          "played twice; the season gates the whole thing, because a bracket "
+          "seeded from a part-played table is seeded from a lie; and the "
+          "champion's trophy lands once however many times the finished "
+          "bracket is read",
+          # eight seeds, folded 1v8 2v7 3v6 4v5
+          len(seeds114) == 8
+          # seeded BY THE TABLE: the runaway leader is top, the player who beat
+          # everyone but them is second, and points never rise down the list
+          and seeds114[0] == "BULLET" and seeds114[1] == "MAKER"
+          and monotone114
+          and qf114 == [(seeds114[0], seeds114[7]),
+                        (seeds114[1], seeds114[6]),
+                        (seeds114[2], seeds114[5]),
+                        (seeds114[3], seeds114[4])]
+          # ... and the fold applied again keeps 1 and 2 apart
+          and len(sf114) == 2 and top2_split114
+          # the gate
+          and league_complete(lg114) and not league_complete(part114)
+          and playoff_ties(part114) != []
+          # a winner who is not in the tie, and a tie already played
+          and bad114 is semi114
+          and playoff_tie(dup114, "QF", 0)["winner"] == qf114[0][0]
+          # a champion, and one trophy no matter how often it is read
+          and champ114 == seeds114[0]
+          and len(won114[champ114]["trophies"]) == 1
+          and won114[champ114]["trophies"][0]["title"] == "T Champion"
+          and len(again114[champ114]["trophies"]) == 1
+          # the seed that hash() could not give: a LITERAL, so the check
+          # cannot be satisfied by a salted function agreeing with itself
+          and stable_seed("SHARK|CHALKY", 9000) == 99619
+          and stable_seed("SHARK|CHALKY") == 90619
+          and stable_seed("SHARK|CHALKY") != stable_seed("CHALKY|SHARK"),
+          f"seeds {seeds114[:3]}…{seeds114[-1]}; QF {qf114[0]}; "
+          f"SF {sf114}; champion {champ114}; "
+          f"trophies {len(won114[champ114]['trophies'])} then "
+          f"{len(again114[champ114]['trophies'])}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

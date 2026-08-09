@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r55 — playable, validated, no known blocking bugs.
+**Status:** r56 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~9,220 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~13,340 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,18 +16,77 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r49
+## Validation snapshot at r56
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 113 assertions |
+| `--selftest` | ALL PASS — 114 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY (nix5), all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 | GitHub Actions `Validate` | passing (Python 3.12 and 3.13) |
+
+## What r56 changed (as built)
+
+**Play-offs, and `award_trophy()` finally has a caller.** It was written at r48
+and nothing called it for eight releases. Eight players means everyone
+qualifies, so the round-robin is purely a seeding exercise.
+
+**The pairing rule is the load-bearing part.** Fold the field, first against
+last, and apply the same rule to the winners of each round. That gives 1v8,
+2v7, 3v6, 4v5 and then puts the 1/8 winner against the 4/5 winner, which is
+what keeps the top two seeds apart until the final. Pairing winners in the order
+they come out is the natural way to write it and it is wrong — seeds 1 and 2
+meet in a semi. Both look plausible on screen, so selftest 114 checks it.
+
+Ties are **derived on read** from the seeds plus the recorded results, exactly
+as standings are derived from fixtures. `playoffs` lives inside the league file
+and `LEAGUE_SCHEMA` went to 2; an r52 file with no such key reads back as a
+season with no ties played, which is what it is.
+
+**Two decisions, both the Maker's, both signed off before any code.** Losing
+does not stop the tournament — it carries on without you, resolved on demand by
+the same button pattern r53 built, because a trophy you cannot lose is not worth
+winning. And the bracket is **strict to play, provisional to view**: playing it
+needs all 28 fixtures in, but the screen shows the bracket today's table would
+make, dimmed and labelled, so a seed can be watched climbing rather than
+appearing at the end.
+
+**The bracket is a screen of its own, not a menu widget.** Measured slack under
+the Resume button was ten pixels. This is r52's finding about the panel tabs
+again: the space does not exist.
+
+**The league is settled BEFORE the profiles are written**, where it used to be
+after. That did not matter while a result only changed a table; a play-off
+result can put a trophy on a profile.
+
+### Three pre-existing faults fixed alongside
+
+1. **The last standings row never drew.** 214 scaled units at 24 a row fits a
+   header and seven rows, of eight. The row lost was the bottom seed — the
+   Maker's own, all season. `menu_rects` now runs on a **cursor** and the panel
+   height is derived from the stack rather than the stack crammed into a
+   hardcoded 560. Measured 8 of 8 rows at every real (height, UI_S) pairing
+   including the Maker's 2160x1350.
+2. **Resume had the footers printed over it** — 36px at 1.0 scale, 54px at 1.5.
+   Same cause, same fix. Third time this project has hit fixed offsets inside a
+   scaled layout (r41 button rects, r42 strip leading).
+3. **`league_resolve_ai` was never reproducible and said it was.**
+   `abs(hash(key))` is salted per process — the same fixture drew 106203, 62979
+   and 49318 on three runs. `stable_seed()` uses CRC32. Selftest 114 pins a
+   **literal**, because comparing a salted function to itself inside one process
+   is the check that would have passed all along.
+
+**Honest note:** the bracket's own button row was written with fixed offsets
+first, and at 1.5 scale Resolve ended at x=1131 in a 1024-wide window — the
+exact fault being fixed, reproduced within the hour. Re-measured 1024x768 to
+3840x2160. And assertion 114 had **two mutants survive** the first pass, one of
+them real: seeding the bracket alphabetically passed, because the seed checks
+compared `playoff_seeds` to itself and the test data's leader was also first
+alphabetically.
 
 ## What r42 changed (as built)
 
