@@ -5,7 +5,76 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r58 — solo you can actually get to, and the flag that ate a clearance (current)
+## r59 — rankings: who you beat, not just how many (current)
+
+Fork D, signed off at r57 and built now. The league has produced results since
+r52 and nothing has ever said who is actually **better** — only who has the most
+points, which is a different question.
+
+### Why this is not Elo
+
+Elo is the obvious reach and it is the wrong tool here. It is an **online
+approximation**: it exists for open pools where history cannot be recomputed, so
+it updates incrementally and carries a K-factor and a starting rating, both
+invented. Worse, it is **order-dependent** — the same 28 results fed in a
+different order give different ratings. Everything else in this game is derived
+on read from the stored results, and a ranking that changed depending on which
+fixture you happened to resolve first would be the one number in HUSTLER that
+could not be reproduced.
+
+**Bradley-Terry** solves the whole result set at once. Player i beats player j
+with probability `p_i / (p_i + p_j)`, fitted by the standard MM update — no
+derivatives, no step size, no numpy, no constants to invent. Same results, same
+answer, always. Normalised so **1.00 means average**, which makes seasons
+comparable.
+
+### The prior is a named trade, not a magic number
+
+Without it, an unbeaten player has infinite strength: the likelihood keeps
+rising as their rating climbs and never turns over. BULLET went 6 from 6 in the
+live season, so this is not hypothetical. `BT_PRIOR = 0.5` adds a half-win and a
+half-loss against an imaginary average opponent — worth about one game, so a
+seven-game season keeps its shape while every rating stays finite. Measured: an
+unbeaten player sits at **3.31** with the prior and **1e+24** without.
+
+### The table did not move, deliberately
+
+`playoff_seeds` reads `league_standings` directly, so re-sorting the table by
+strength would silently re-draw the play-offs. **Points decide the season;
+strength only describes it.** The menu standings gains a `str` column and keeps
+its points order; `--league` prints a separate ranking block underneath, sorted
+by strength, with the Wilson-bounded win rate beside each entry — because at
+seven games a win rate is a hint, not a measurement.
+
+On the live season: BULLET 12.99, then CHALKY/MAGPIE/SHARK at 1.95, MAKER at
+1.00 on nothing played, and DOC/SPIDER/STEADY at 0.22.
+
+### Notes
+
+`prior=0` used to raise `ValueError: math domain error` — a winless player hits
+exactly zero and `log(0)` took the whole menu down. The normalisation is now
+floored, so an unregularised fit degrades into very large and very small numbers
+instead of crashing. That is the honest picture of a likelihood that does not
+turn over.
+
+Assertion 117's fixture is built so the two orderings **disagree**: B wins three
+against players who have won nothing and tops the table; A wins two against
+players who have won three each and tops the ranking. That pins the feature to
+the property it exists for rather than to its own output.
+
+**Three mutants survived the first pass.** One was benign — MM converges to the
+same optimum from any starting vector, so perturbing the seed is not a bug.
+The other two were real and both were inequalities that could not see a wrong
+number: removing the prior's *games* from the denominator while leaving its
+*wins* in the numerator stayed bounded and correctly ordered, and replacing the
+Wilson bounds with a flat 0.0-1.0 satisfied `lo < rate <= hi` perfectly. Both
+are now pinned to literals.
+
+Self-test **117**. `--snap` byte-identical at `62c87ddb…`.
+
+---
+
+## r58 — solo you can actually get to, and the flag that ate a clearance
 
 The Maker's requirement, in their words: solo is fine **"as long as it is
 accessible for practice sessions and it records and displays the data"**. r57

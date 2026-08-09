@@ -2662,6 +2662,121 @@ def league_standings(league):
                   key=lambda x: (-x["points"], -x["won"], x["player"]))
 
 
+# r59: RANKINGS. The Maker signed this off as "Fork D" at r57 -- rank by
+# Bradley-Terry strength, show the Wilson-bounded win rate beside it.
+#
+# ELO WAS CONSIDERED AND REJECTED, and the reason is worth keeping because it
+# is easy to reach for Elo out of habit. Elo is an ONLINE approximation: it
+# exists for open pools where history cannot be recomputed, so it updates
+# incrementally and carries a K-factor and a starting rating, both invented.
+# Worse for this project, it is ORDER-DEPENDENT -- the same 28 results fed in a
+# different order give different ratings. Everything else here (standings, the
+# bracket, the profile bests) is DERIVED ON READ from the stored results, and a
+# ranking that changed depending on which fixture you happened to resolve first
+# would be the one number in the game that could not be reproduced.
+#
+# Bradley-Terry solves the whole result set at once. No K-factor, no starting
+# rating, no order dependence: the same results always give the same answer.
+BT_PRIOR = 0.5      # see bradley_terry() -- a NAMED trade, not a magic number
+BT_ITERS = 200
+BT_TOL = 1e-9
+
+
+def bradley_terry(results, players, prior=BT_PRIOR,
+                  iters=BT_ITERS, tol=BT_TOL):
+    """r59: maximum-likelihood player strengths from head-to-head results. Pure.
+
+    The model: player i beats player j with probability
+    `p_i / (p_i + p_j)`. Fitted by the standard MM (minorisation-maximisation)
+    update, which is monotonic and needs no derivatives, no step size and no
+    numpy:
+
+        p_i  <-  W_i / SUM_j ( n_ij / (p_i + p_j) )
+
+    Normalised to a geometric mean of 1 each pass, so the numbers are
+    comparable between seasons and a strength of 1.0 always means "average".
+
+    THE PRIOR IS THE ONE JUDGEMENT CALL AND IT IS DELIBERATELY NAMED. Without
+    it an unbeaten player has INFINITE strength -- the likelihood keeps rising
+    as their rating goes up and never turns over, so the fit does not converge
+    and the answer is "arbitrarily large", which is not a ranking. BULLET went
+    6 from 6 in the live season, so this is not a hypothetical.
+
+    `prior` adds a half-win and a half-loss against an imaginary average
+    opponent of strength 1. That bounds every rating, and it costs exactly what
+    you would want it to cost: a small player who has played almost nothing is
+    pulled towards average, and the pull fades as real games accumulate. At
+    0.5 it is worth about one game, so a 7-game season keeps its shape.
+
+    Returns {player: strength}. Players with no results still appear, at the
+    prior's own value, because a league table that silently drops a player who
+    has not played yet is how the Maker's own row went missing at r56.
+    """
+    names = [str(p) for p in players]
+    if not names:
+        return {}
+    idx = {p: i for i, p in enumerate(names)}
+    wins = [0.0] * len(names)
+    meet = [[0.0] * len(names) for _ in names]
+    for r in results or []:
+        h, a, w = r.get("home"), r.get("away"), r.get("winner")
+        if h not in idx or a not in idx or w not in (h, a):
+            continue
+        meet[idx[h]][idx[a]] += 1.0
+        meet[idx[a]][idx[h]] += 1.0
+        wins[idx[w]] += 1.0
+    p = [1.0] * len(names)
+    for _ in range(iters):
+        new = []
+        for i in range(len(names)):
+            den = sum(meet[i][j] / (p[i] + p[j])
+                      for j in range(len(names)) if j != i)
+            # the imaginary average opponent: `prior` wins and `prior` losses
+            # against a fixed strength of 1, i.e. 2*prior games
+            den += (2.0 * prior) / (p[i] + 1.0)
+            new.append((wins[i] + prior) / den if den > 0 else p[i])
+        # geometric-mean normalisation, so 1.0 always means average.
+        # FLOORED because `prior=0` is a legal argument and produces exact
+        # zeros for a winless player -- log(0) raised ValueError and took the
+        # whole menu down with it. The floor is not a modelling choice; it
+        # keeps an unregularised fit degrading into very large and very small
+        # numbers, which is the honest picture of a likelihood that does not
+        # turn over, rather than a crash.
+        new = [max(v, 1e-12) for v in new]
+        logsum = sum(math.log(v) for v in new) / len(new)
+        scale = math.exp(-logsum)
+        new = [v * scale for v in new]
+        shift = max(abs(new[i] - p[i]) for i in range(len(names)))
+        p = new
+        if shift < tol:
+            break
+    return {names[i]: p[i] for i in range(len(names))}
+
+
+def league_rankings(league, prior=BT_PRIOR):
+    """r59: the ranking table -- strength first, win rate beside it. Pure.
+
+    TWO NUMBERS, NOT ONE, and that is the whole point of Fork D. Strength says
+    who is better, weighing WHO you beat: seeing off the runaway leader counts
+    for more than seeing off the bottom seed, which a win rate cannot express.
+    The Wilson interval says how much the record can actually support -- at
+    seven games it is wide, and a strength printed on its own would hide that.
+
+    Sorted by strength, then by wins, then alphabetically, so the order is
+    stable for a tracked file exactly as `league_standings` is.
+    """
+    rows = {r["player"]: r for r in league_standings(league)}
+    strength = bradley_terry(league.get("results", []),
+                             league.get("players", []), prior=prior)
+    out = []
+    for name, row in rows.items():
+        rate, lo, hi = rate_ci(row["won"], row["played"])
+        out.append({"player": name, "strength": strength.get(name, 1.0),
+                    "played": row["played"], "won": row["won"],
+                    "rate": rate, "lo": lo, "hi": hi})
+    return sorted(out, key=lambda x: (-x["strength"], -x["won"], x["player"]))
+
+
 def league_next_fixture(league, player):
     """r52: the player's next unplayed fixture, or None when they are done.
 
@@ -7550,7 +7665,15 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 "no season yet — New season starts one", True,
                 (150, 154, 162)), (tb.x, tb.y))
         else:
-            hdr = "%-10s %3s %3s %3s %4s" % ("player", "P", "W", "L", "pts")
+            # r59: `str` is Bradley-Terry strength (1.00 = average). The
+            # table STAYS SORTED ON POINTS and that is deliberate -- points
+            # decide the season and `playoff_seeds` reads this very order to
+            # seed the bracket, so re-sorting here would silently re-draw the
+            # play-offs. Strength answers a different question (who is better,
+            # weighing who they beat) and sits beside the answer to the first.
+            hdr = "%-10s %3s %3s %3s %4s %6s" % ("player", "P", "W", "L",
+                                                 "pts", "str")
+            _bt = bradley_terry(lg.get("results", []), lg.get("players", []))
             display.blit(panel_font.render(hdr, True, (150, 154, 162)),
                           (tb.x, tb.y))
             yy = tb.y + rowh
@@ -7559,9 +7682,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     break
                 mine = row["player"] == profile_name
                 col = (232, 226, 160) if mine else COL["hud"]
-                line = "%-10s %3d %3d %3d %4d" % (
+                line = "%-10s %3d %3d %3d %4d %6.2f" % (
                     row["player"], row["played"], row["won"], row["lost"],
-                    row["points"])
+                    row["points"], _bt.get(row["player"], 1.0))
                 gr = row["grannies_given"] - row["grannies_taken"]
                 if gr:
                     line += "  G%+d" % gr
@@ -13667,6 +13790,98 @@ def selftest():
           f"has {new_solo_session()['run']['shots']} shots; three reset "
           f"routes present: {src116.count('solo_reset(')} call sites")
 
+    # 117. r59: the ranking is not the table, and it weighs WHO you beat.
+    #
+    # THE FIXTURE IS BUILT SO THE TWO ORDERINGS DISAGREE, because that is the
+    # only way to show the ranking is doing something a win count cannot.
+    # B wins three, all against players who have won nothing. A wins two, both
+    # against players who have won three each. B has more points and tops the
+    # TABLE; A has the better wins and tops the RANKING. Assert both, and the
+    # feature is pinned to the property it exists for rather than to its own
+    # output.
+    #
+    # THE TABLE ORDER MUST NOT MOVE. `playoff_seeds` reads `league_standings`
+    # directly, so sorting the standings by strength would silently re-seed the
+    # play-offs -- points decide the season, strength only describes it.
+    #
+    # ORDER INDEPENDENCE is asserted because it is the entire reason Elo was
+    # rejected: Elo is an online approximation and feeding the same results in
+    # a different order gives different ratings. Everything else in this game
+    # is derived on read, and a ranking that depended on which fixture you
+    # happened to resolve first would be the one irreproducible number in it.
+    #
+    # AND THE PRIOR, which is the one judgement call in the model. Without it
+    # an unbeaten player's likelihood never turns over and the fit runs away --
+    # measured at 1e+24 here against 3.31 with it. BULLET went 6 from 6 in the
+    # live season, so this is not hypothetical.
+    pl117 = ["A", "B", "S1", "S2", "W1", "W2", "W3"]
+    res117 = []
+    for s117 in ("S1", "S2"):
+        for w117 in ("W1", "W2", "W3"):
+            res117.append({"home": s117, "away": w117, "winner": s117})
+    for s117 in ("S1", "S2"):
+        res117.append({"home": "A", "away": s117, "winner": "A"})
+    for w117 in ("W1", "W2", "W3"):
+        res117.append({"home": "B", "away": w117, "winner": "B"})
+    lg117 = {"players": pl117, "results": res117, "rounds": []}
+    tbl117 = [r["player"] for r in league_standings(lg117)]
+    rnk117 = league_rankings(lg117)
+    st117 = bradley_terry(res117, pl117)
+    shuf117 = list(res117)
+    random.Random(117).shuffle(shuf117)
+    st117b = bradley_terry(shuf117, pl117)
+    # an unbeaten player, with the prior and without it
+    unb117 = [{"home": "U", "away": "X", "winner": "U"},
+              {"home": "U", "away": "Y", "winner": "U"}]
+    with117 = bradley_terry(unb117, ["U", "X", "Y"])["U"]
+    without117 = bradley_terry(unb117, ["U", "X", "Y"], prior=0.0)["U"]
+    geo117 = math.exp(sum(math.log(v) for v in st117.values()) / len(st117))
+    check("r59 the ranking weighs who you beat, and it is NOT the league "
+          "table — B wins three against players who have won nothing and tops "
+          "the table on points; A wins two against players who have won three "
+          "each and tops the ranking on strength. The table order is left "
+          "alone because playoff_seeds reads it. Strengths are the same "
+          "whatever order the results arrive in, which is why this is not "
+          "Elo; and the prior is what stops an unbeaten player running away",
+          # the two orderings genuinely disagree
+          tbl117[0] == "B" and rnk117[0]["player"] == "A"
+          and st117["A"] > st117["B"]
+          # ... and B is still ahead of the players it beat
+          and st117["B"] > st117["W1"]
+          # the table is still POINTS, so the bracket seeds as before
+          and [r["points"] for r in league_standings(lg117)] ==
+              sorted((r["points"] for r in league_standings(lg117)),
+                     reverse=True)
+          # order independence — the reason this is not Elo
+          and all(abs(st117[k] - st117b[k]) < 1e-9 for k in st117)
+          # 1.00 means average, so seasons are comparable
+          and abs(geo117 - 1.0) < 1e-9
+          # The prior bounds an unbeaten player; without it the fit runs away.
+          # PINNED TO A LITERAL, not merely to "finite": a mutant that removed
+          # the prior's GAMES from the denominator while leaving its WINS in
+          # the numerator stayed bounded and stayed correctly ordered, so an
+          # inequality could not see it. That model is inconsistent -- it
+          # credits half a win nobody played against nobody -- and only the
+          # actual number catches it.
+          and abs(with117 - 3.3138) < 5e-4 and without117 > 1e12
+          # nobody is dropped: a player with no games still appears, at average
+          and len(league_rankings({"players": ["P", "Q"], "results": [],
+                                   "rounds": []})) == 2
+          and abs(bradley_terry([], ["P", "Q"])["P"] - 1.0) < 1e-9
+          # And the win rate rides alongside with a REAL Wilson interval.
+          # Pinned to literals for the same reason: a mutant that replaced the
+          # bounds with a flat 0.0-1.0 satisfied `lo < rate <= hi` perfectly,
+          # because A's rate is 1.0 and 0.0 < 1.0 <= 1.0. The interval also has
+          # to NARROW as games accumulate, which one row alone cannot show.
+          and abs(rnk117[0]["rate"] - 1.0) < 1e-9
+          and abs(rnk117[0]["lo"] - 0.342372) < 1e-5     # 2 from 2
+          and abs(rnk117[1]["lo"] - 0.438494) < 1e-5     # 3 from 3, narrower
+          and rnk117[1]["lo"] > rnk117[0]["lo"],
+          f"table {tbl117[:4]}; ranking "
+          f"{[r['player'] for r in rnk117[:4]]}; "
+          f"A {st117['A']:.3f} vs B {st117['B']:.3f}; "
+          f"unbeaten {with117:.2f} with prior, {without117:.3g} without")
+
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
 
@@ -13768,6 +13983,20 @@ def main():
             print("  %-10s %3d %3d %3d %4d  %s"
                   % (row["player"], row["played"], row["won"], row["lost"],
                      row["points"], gr))
+        # r59: the ranking, which is NOT the table above. Points decide the
+        # season; strength says who is actually better, because it weighs who
+        # you beat rather than how many. Both are shown because neither answers
+        # the other's question -- and the Wilson interval is shown because at
+        # seven games a win rate is a hint, not a measurement.
+        print("\n  ranking (Bradley-Terry strength, 1.00 = average)")
+        print("  %-10s %8s  %s" % ("player", "strength", "win rate"))
+        for row in league_rankings(lg):
+            print("  %-10s %8.3f  %5.1f%% [%.0f-%.0f]  (%d played)"
+                  % (row["player"], row["strength"], row["rate"] * 100,
+                     row["lo"] * 100, row["hi"] * 100, row["played"]))
+        print("  strength weighs WHO you beat; the interval is what %d game(s)"
+              % max((r["played"] for r in league_rankings(lg)), default=0)
+              + " can actually support")
         nxt = league_next_fixture(lg, me)
         left = len(league_pending_ai(lg, me))
         print(f"\n  your next fixture: "

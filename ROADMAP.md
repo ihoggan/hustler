@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current status: r58 — playable, validated
+## Current status: r59 — playable, validated
 
 **Validation snapshot (r49, measured on nix5 and reproduced in a Linux
 container):**
@@ -8,7 +8,7 @@ container):**
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 116 assertions |
+| `--selftest` | ALL PASS — 117 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -35,7 +35,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~13,660 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~13,990 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -120,7 +120,11 @@ against — it is the most likely route to a sixth bug.
 > was being kept. **Worth remembering when a roadmap and a play pattern
 > disagree: the play pattern was right.**
 
-**Rankings — SIGNED OFF as Fork D, not yet built.** Rank by **Bradley-Terry
+> **Rankings are BUILT (r59)** — Bradley-Terry strength with Wilson-bounded win
+> rate beside it, exactly as Fork D was signed off. The reasoning below is kept
+> because the Elo question will come up again.
+
+**Rankings — BUILT at r59. Original brief follows.** Rank by **Bradley-Terry
 maximum-likelihood strength**, with the Wilson-bounded win rate shown beside it.
 Elo was considered and rejected with reasons: it is an *online* approximation
 for open pools where history cannot be recomputed, it carries an arbitrary

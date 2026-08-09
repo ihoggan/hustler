@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r58 — playable, validated, no known blocking bugs.
+**Status:** r59 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~13,540 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,18 +16,42 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r58
+## Validation snapshot at r59
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 116 assertions |
+| `--selftest` | ALL PASS — 117 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY (nix5), all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 | GitHub Actions `Validate` | passing (Python 3.12 and 3.13) |
+
+## What r59 changed (as built)
+
+**Rankings, Fork D.** `bradley_terry()` fits maximum-likelihood strengths from
+the head-to-head results by MM; `league_rankings()` sorts by strength and
+carries the Wilson-bounded win rate alongside. Both pure, both derived on read.
+
+**Why not Elo:** it is an online approximation for open pools, carries an
+invented K-factor and starting rating, and is **order-dependent**. Everything
+here is derived on read; an order-dependent ranking would be the one
+irreproducible number in the game.
+
+**`BT_PRIOR = 0.5` is load-bearing.** Without it an unbeaten player's fit runs
+away — 1e+24 against 3.31 measured. It adds a half-win and half-loss against an
+imaginary average opponent, worth about one game.
+
+**DO NOT SORT `league_standings` BY STRENGTH.** `playoff_seeds` reads that order
+directly, so it would silently re-seed the play-offs. Points decide the season;
+strength describes it. The menu table gained a `str` column and kept its order;
+the strength-ordered ranking lives in `--league`.
+
+**Trap:** `prior=0` produced exact zeros and `log(0)` crashed the menu. The
+normalisation is floored at 1e-12 so an unregularised fit degrades rather than
+raising.
 
 ## What r58 changed (as built)
 
