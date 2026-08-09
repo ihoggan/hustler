@@ -13,13 +13,29 @@
      "opponent": "SHARK",
      "shots": 0,
      "won": true
+    },
+    {
+     "mode": "tournament",
+     "opponent": "SPIDER",
+     "shots": 31,
+     "won": true
     }
    ],
    "kind": "human",
    "name": "MAKER",
    "nickname": "MAKER",
    "params": null,
-   "schema": 2,
+   "schema": 3,
+   "solo": [
+    {
+     "cleared": true,
+     "fouls": 0,
+     "reason": "cleared",
+     "seconds": 553.62,
+     "shots": 31,
+     "standard_rack": true
+    }
+   ],
    "trophies": []
   },
   "SHARK": {
@@ -77,7 +93,25 @@
    "name": "Ronnie Vance",
    "nickname": "SHARK",
    "params": null,
-   "schema": 2,
+   "schema": 3,
+   "solo": [],
+   "trophies": []
+  },
+  "SPIDER": {
+   "games": [
+    {
+     "mode": "tournament",
+     "opponent": "MAKER",
+     "shots": 31,
+     "won": false
+    }
+   ],
+   "kind": "ai",
+   "name": "Errol Nash",
+   "nickname": "SPIDER",
+   "params": null,
+   "schema": 3,
+   "solo": [],
    "trophies": []
   },
   "STEADY": {
@@ -123,9 +157,10 @@
    "name": "Alan Prosser",
    "nickname": "STEADY",
    "params": null,
-   "schema": 2,
+   "schema": 3,
+   "solo": [],
    "trophies": []
   }
  },
- "schema": 2
+ "schema": 3
 }
