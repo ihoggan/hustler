@@ -1,6 +1,6 @@
 # Known Issues
 
-The honest state of the open threads as of r56. None of these stop the game
+The honest state of the open threads as of r58. None of these stop the game
 being playable. Each is written up with its diagnosis so the next person to
 touch it (quite possibly future me) starts from the answer, not the symptom.
 
@@ -241,10 +241,40 @@ says *"X is not on the ladder"* instead of quietly seating somebody else.
 
 ---
 
+## 7. The live SOLO line overflows the narrow strip (not the band)
+
+**Symptom:** in the fallback status strip — not the band the readout normally
+uses — the running solo line is cut off on the right.
+
+**Diagnosis:** measured at r57. `SOLO 4:34.3   6 colours + black  (2 fouls)` is
+**344px at 1.0 scale against a 240px strip budget**, and 559px against 370px at
+1.5. It predates r57 and is not caused by it. Since r47 the readout lives in the
+band above the table, where the budget is 996–1734px and it fits comfortably, so
+this only bites when the band cannot be used.
+
+**What r57 did about it:** did not make it worse. The personal-best suffix is
+width-aware and is dropped rather than appended when the line will not take it —
+without that guard the same line would have gone to 448px at 1.0 scale.
+
+**The fix when it is wanted:** shorten the fields for the strip case only
+(`6 col + black`), or let `wrap_fields` split this line rather than emit one
+over-wide field. Both are cosmetic and neither is urgent while the band is the
+normal path.
+
+---
+
 ## Recently fixed
 
 Resolved in r23–r27 — kept here briefly because the diagnoses are worth having
 if anything similar shows up again. Full descriptions are in the changelog.
+
+- **A second solo clearance could be dropped in silence (r58, introduced r57).**
+  The run state was six separate locals and only `do_rack` reset all six;
+  `do_cycle_mode` and `do_reset_solo` reset three each. Reaching SOLO by any
+  route but pressing T carried `recorded` over, so the next clearance found the
+  once-only guard already set and was never written. Fixed structurally: one
+  constructor, one reset, three call sites, and the state can no longer be
+  half-reset. Assertion 116 pins all three routes.
 
 - **The last row of the league table was never drawn (r56).** The standings box
   in the career menu was 214 scaled units at 24 a row, which fits a header and

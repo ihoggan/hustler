@@ -5,7 +5,149 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r56 — play-offs, trophies, and three things that were quietly wrong (current)
+## r58 — solo you can actually get to, and the flag that ate a clearance (current)
+
+The Maker's requirement, in their words: solo is fine **"as long as it is
+accessible for practice sessions and it records and displays the data"**. r57
+did the recording. This is the accessibility — and a defect r57 introduced,
+found while checking it.
+
+### Solo was three keypresses deep with no route from the menu
+
+`Practice` sets no mode. It closes the menu and leaves you in whatever mode was
+already up, which at boot is SANDBOX. To reach SOLO you pressed **M three
+times**, cycling through two AI modes, each press tearing down and rebuilding a
+frame.
+
+So the mode that is **65% of every shot the Maker has logged** had no way in
+from the career shell at all. SOLO now has its own full-width menu row, and the
+button carries the target before the clock starts:
+`Solo — timed clearance  (PB 4:25.2)`. Practice keeps doing exactly what it did
+— a free table and a timed clearance are different things, and both get used
+(108 practice rows against 295 solo).
+
+### The flag that ate a clearance
+
+r57 kept six separate locals for the run state and reset them in **one**
+routine: `do_rack`, i.e. pressing T. `do_cycle_mode` reset three of the six.
+`do_reset_solo` reset the same three. So:
+
+- clear a rack — `recorded` becomes True;
+- reach SOLO again by cycling, or press reset instead of T;
+- clear another rack — the write is guarded on `if not solo_recorded`, which is
+  **still True**, and the run is dropped in silence.
+
+A run that said it counted and did not — precisely the fault r57 was written to
+remove, reintroduced by the release that removed it. The same staleness put a
+`★ NEW BEST` on runs that had not earned one, and could disqualify a legitimate
+rack from setting a best.
+
+The cure is structural rather than a fourth careful reset: `new_solo_session()`
+returns the complete state, `solo_reset()` is the only thing that applies it,
+and all three routes call it. A caller can no longer reset half of it. Same
+shape as r49, where two routines stood a frame up and drifted apart.
+
+One subtlety kept: `do_reset_solo` does not re-rack, so an arranged table is
+still arranged and `keep_table=True` preserves the rack-standard flag. Resetting
+it there would hand out a personal best for laying out an easy rack and pressing
+reset instead of T.
+
+### Notes
+
+**The assertion found a third broken path before it shipped.** Written to cover
+`do_rack` and `restart_frame`, it failed on a source clause that said no partial
+reset survived anywhere — because `do_reset_solo` still held one. That was not
+in the brief and would have gone out.
+
+**And a mutant survived the first pass**, again for the r56 reason: the
+`keep_table` check was on the *call site* text, so gutting the guard inside the
+closure left the call written and the behaviour gone. Moved into a pure
+`solo_session_after_reset()` and asserted on what it returns. Seven mutants,
+all caught, each verified as actually applied — a mutation that fails to apply
+reads exactly like a caught one.
+
+Self-test **116**. `--snap` byte-identical at `62c87ddb…`.
+
+---
+
+## r57 — a solo run leaves a trace
+
+The Maker was asked whether to follow the roadmap (rankings) or their play. They
+said **play over the roadmap**, and the shot log says they were right.
+
+**295 of their 454 logged shots are solo — 65%.** Practice is 108, tournament 51.
+And a solo clearance was recorded *nowhere*. The run ended, the strip printed
+`CLEARED 4:32.5 — 27 shots, 1 foul — T = rack`, and pressing T threw it away.
+`record_frame` is only reached from the game-mode block; solo never touched it.
+
+The shot log could not rebuild it either: solo rows carry no clock, no run
+boundary and no verdict, and only 22 of 295 have a session stamp at all. Runs
+were separable only by watching the ball count jump back to 16. Done that way:
+**twelve runs, nine of which reached the black.** All gone.
+
+Which is worth stating plainly. Eleven releases, r46 to r56, built a tracked
+record-keeping system — profiles, standings, Grannie counts, trophies, a
+play-off bracket — for a league the Maker has played **zero** fixtures of, while
+the mode that is two thirds of their play remembered nothing.
+
+### What is stored
+
+A completed run now writes to the player's profile: elapsed time (with the foul
+penalty already inside it, as the strip shows it), shots, fouls, the verdict,
+and whether it began from a standard rack. `PROFILE_SCHEMA` goes to 3.
+
+**This is the one place the project stores an aggregate rather than deriving
+it**, and the exception is deliberate rather than a lapse: a clearance time
+cannot be recovered from the shot log, because it was never written down.
+Derive-on-read cannot rebuild what does not exist. The *best* is still derived —
+recompute the ranking, keep the record.
+
+**Every attempt is stored, not just the clearances.** Nine of twelve runs
+reached the black; the three that did not are the interesting ones, and "how
+often do I actually finish" is a question only the failures can answer.
+
+**Only a cleared run from a standard rack can set a best.** Solo stays editable
+until the first strike, so a player can arrange an easy table and then start the
+clock. Those runs still record — they just cannot set a best, because a best you
+can beat by laying out a simple rack is not one.
+
+### What is shown
+
+`SOLO 2:14.3   6 colours + black  (PB 4:25.2)` while a run is on, and
+`CLEARED 4:12.0  ★ NEW BEST` when one lands.
+
+The best **rides on the two lines that already exist and never adds a third**.
+That cap is r37.1's and it is load-bearing: the strip clips silently, and r37
+lost a whole finished-state line exactly that way.
+
+Measured before it was written, and the measurement changed the design. The live
+SOLO line is already 344px against a 240px strip budget at 1.0 scale — a
+pre-existing overflow — and appending a best would have taken it to 448px. So
+the suffix is **dropped when there is no room** rather than shortened. In the
+band, where the readout has lived since r47, the budget is 996–1734px and
+everything fits at every scale. A NEW BEST is never dropped: it measures
+217–351px against strip budgets of 240–370px, so it fits regardless.
+
+`--profiles` grows a solo line: runs, clearances with a Wilson interval, best.
+
+### Notes
+
+Assertion 115 was mutation-tested seven ways, all caught. The one worth naming
+is the r48 fault: `serialise_profile` rebuilds a profile field by field rather
+than copying it, which is how `grannie` and `trophies` were silently dropped on
+the round trip once already. Deleting the new `solo` block from the serialiser
+fails 115 — a run that survives the frame and dies on the save would be worse
+than one never recorded, because the strip said it counted.
+
+`standard_rack` defaults to **true** on read: every run recorded before the
+field existed came from a normal rack, and defaulting it false would silently
+disqualify a real best.
+
+Self-test **115**. `--snap` byte-identical at `62c87ddb…`.
+
+---
+
+## r56 — play-offs, trophies, and three things that were quietly wrong
 
 The last item of the league brief, and the thing `award_trophy()` has been
 waiting for since r48 — it was written then and nothing has ever called it.

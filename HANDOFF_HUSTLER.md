@@ -1,8 +1,8 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r56 — playable, validated, no known blocking bugs.
+**Status:** r58 — playable, validated, no known blocking bugs.
 
-**Files:** `hustler.py` (~13,340 lines) **+ `cushion_path.py`** (~515 lines,
+**Files:** `hustler.py` (~13,540 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
 two files. Python 3.12, pygame 2.6.1 + pymunk 7.3.0. **No other dependencies**
 — no numpy, no asset files of any kind.
@@ -16,18 +16,85 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r56
+## Validation snapshot at r58
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 114 assertions |
+| `--selftest` | ALL PASS — 116 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY (nix5), all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 | GitHub Actions `Validate` | passing (Python 3.12 and 3.13) |
+
+## What r58 changed (as built)
+
+**SOLO has a menu row.** It had no route from the career shell — `Practice`
+sets no mode, it just closes the menu and leaves you in whichever mode was up
+(SANDBOX at boot), so reaching SOLO meant three presses of M through two AI
+modes. The button shows the target: `Solo — timed clearance  (PB 4:25.2)`.
+Resolved by `MODES.index("SOLO")`, never a literal — r30's rule.
+
+**THE r57 BUG THIS FIXES IS WORTH UNDERSTANDING.** Six loose locals held the
+run state and only `do_rack` reset all six. `do_cycle_mode` and `do_reset_solo`
+each reset three. So reaching SOLO by any route except pressing T carried
+`recorded` over from the previous run, and the next clearance hit
+`if not solo_recorded`, found it True, and was **dropped in silence**.
+
+Now: `new_solo_session()` is the complete state, `solo_reset()` is the only
+thing that applies it, and all three routes call it. `keep_table=True` for
+`do_reset_solo` alone, which does not re-rack — an arranged table stays
+ineligible for a best, and the decision lives in the pure
+`solo_session_after_reset()` so it can be tested rather than merely grepped.
+
+**Two process notes worth keeping.** Assertion 116 caught a THIRD broken reset
+path (`do_reset_solo`) that was not in the brief and would otherwise have
+shipped. And a mutant survived the first pass because the `keep_table` clause
+checked call-site *text* — gutting the guard inside the closure left the call
+written and the effect gone. Assert behaviour, not source, wherever the thing
+can be made pure. Every mutation is now verified as applied: one that fails to
+apply looks exactly like one that was caught.
+
+## What r57 changed (as built)
+
+**A solo clearance is recorded. It never was.** The Maker chose this over the
+roadmap's rankings — "play over the roadmap" — and the shot log backed them:
+**295 of 454 logged shots are solo, 65%**, and nothing kept a single result.
+`record_frame` is only reached from the game-mode block. Twelve inferred runs,
+nine reaching the black, all thrown away.
+
+**The store is on the profile**, `PROFILE_SCHEMA` 3: seconds (penalty included,
+as the strip shows it), shots, fouls, verdict, `standard_rack`.
+
+**This is the ONE deliberate stored aggregate in the project.** A clearance time
+cannot be derived from the shot log — solo rows carry no clock, no run boundary,
+no verdict, and 273 of 295 have no timestamp. Derive-on-read cannot rebuild what
+was never written. The *best* is still derived.
+
+**Eligibility is the Maker's rule, both halves:** cleared, and from a standard
+rack. Solo stays editable until the first strike, so `mark_table_edited()` is
+called from every mutation point — placement, removal, clear, layout load —
+rather than inferred from the final layout, because a placed ball and a
+respotted one look identical afterwards. Ineligible runs still record.
+
+**The readout adds no line.** The best rides on the existing two, and r37.1's
+cap is why. **Measured before written, and the measurement changed the design:**
+the live SOLO line is already 344px against a 240px strip budget at 1.0 — a
+pre-existing overflow, now KNOWN_ISSUES #7 — and appending a best took it to
+448px. So the suffix is width-aware and **drops rather than overflows**. In the
+band (the normal path since r47) the budget is 996-1734px and all of it fits. A
+NEW BEST never drops: 217-351px against 240-370px.
+
+**`solo_pb` is cached**, refreshed at startup, on rack, and after a write — not
+read from disk per frame.
+
+**Trap for the next person:** `serialise_profile` rebuilds a profile field by
+field rather than copying it. Anything you add to `new_profile` and not to the
+serialiser is silently dropped on the round trip — that is exactly how r48 lost
+`grannie` and `trophies`. Assertion 115 fails if the `solo` block is removed
+from it.
 
 ## What r56 changed (as built)
 

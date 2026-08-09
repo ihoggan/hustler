@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current status: r56 — playable, validated
+## Current status: r58 — playable, validated
 
 **Validation snapshot (r49, measured on nix5 and reproduced in a Linux
 container):**
@@ -8,7 +8,7 @@ container):**
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 114 assertions |
+| `--selftest` | ALL PASS — 116 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
@@ -35,7 +35,7 @@ share an architecture and a libc, so genuine cross-platform determinism is
 untested, and CI does not run `--aigame`. `--snap` staying byte-identical
 confirms nothing about rendering moved.
 
-`hustler.py` is ~13,340 lines; `cushion_path.py` ~515. The game is two files,
+`hustler.py` is ~13,660 lines; `cushion_path.py` ~515. The game is two files,
 no assets, no dependencies beyond pygame and pymunk; the two measurement
 scripts alongside it are tools, not part of the game.
 
@@ -107,7 +107,32 @@ against — it is the most likely route to a sixth bug.
 > turns the round-robin into a pure seeding exercise: it is the reason a season
 > you finish eighth in is still worth playing out.
 
-**Rankings — next, and the fork is still owed.** The league now produces
+> **Solo is DONE for now (r57 + r58).** r57 records the run; r58 gives it a
+> menu row and fixes the reset bug r57 shipped. The Maker's requirement was
+> "accessible for practice sessions and it records and displays the data",
+> and that is met. **Ask before assuming the next solo increment** — they said
+> solo is fine.
+>
+> **The solo record (r57).** A clearance writes time, shots, fouls,
+> verdict and rack-standard to the profile, and a personal best shows on the
+> readout. Chosen over rankings by the Maker — "play over the roadmap" — after
+> the shot log showed solo is 65% of everything they have played and none of it
+> was being kept. **Worth remembering when a roadmap and a play pattern
+> disagree: the play pattern was right.**
+
+**Rankings — SIGNED OFF as Fork D, not yet built.** Rank by **Bradley-Terry
+maximum-likelihood strength**, with the Wilson-bounded win rate shown beside it.
+Elo was considered and rejected with reasons: it is an *online* approximation
+for open pools where history cannot be recomputed, it carries an arbitrary
+K-factor and starting rating, and it is **order-dependent** — the same 28
+results in a different order give different ratings, which cuts against the
+derive-on-read rule the standings, bracket and profiles all follow. Bradley-Terry
+solves the whole result set at once: order-independent, no constants to invent.
+One real cost to state when built: an unbeaten player has an unbounded rating,
+so it needs regularisation, and that constant should be named as a trade rather
+than buried.
+
+**Rankings — the older framing, kept for the record.** The league now produces
 results, which is what this was waiting on. The choice is between a
 **Wilson-bounded win rate** (r43's `rate_ci` already exists, it is transparent,
 and it handles unequal games played) and **Elo** (which handles opponent

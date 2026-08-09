@@ -2016,6 +2016,49 @@ def new_solo_run():
             "penalty_s": 0.0, "over": False, "reason": None}
 
 
+def new_solo_session():
+    """r58: EVERY piece of per-run solo state, in one place. Pure.
+
+    r57 kept six separate locals and reset them in ONE routine -- `do_rack`.
+    `do_cycle_mode` reset three of them (the run and the two clock stamps) and
+    left the other three standing, so cycling round to SOLO instead of pressing
+    T carried `recorded` over from the previous run. The next clearance hit
+    `if not solo_recorded`, found it already True, and was silently dropped:
+    a run that said it counted and did not, which is the exact fault r57 was
+    written to remove.
+
+    The other two carried the same way -- a stale `new_best` put a NEW BEST
+    marker on a run that had not earned one, and a `standard_rack` cleared by
+    editing the table in sandbox disqualified a perfectly legitimate rack.
+
+    So the state becomes ONE THING that is reset ONE WAY. This is r49's lesson
+    exactly: two routines standing a frame up and drifting apart is a fault
+    this project has already paid a revision for, and six loose flags with two
+    partial resets is the same shape. A caller cannot now reset half of it.
+    """
+    return {"run": new_solo_run(), "start_t": None, "stop_t": None,
+            "standard_rack": True, "recorded": False, "new_best": False}
+
+
+def solo_session_after_reset(prev, keep_table=False):
+    """r58: the run state a reset should leave behind. Pure.
+
+    Pulled out of the closure so the one subtle bit is TESTABLE. A mutation
+    that gutted the `keep_table` guard inside the closure survived a
+    source-text check on the call site: the call was still written, the
+    behaviour was gone. A pure function can be asked what it returns.
+
+    `keep_table=True` is `do_reset_solo` -- restart the clock on the table as
+    it stands, without re-racking. An arranged table is still arranged, so the
+    rack-standard flag must survive the reset, or a personal best could be had
+    by laying out an easy rack and pressing reset instead of T.
+    """
+    s = new_solo_session()
+    if keep_table:
+        s["standard_rack"] = bool(prev.get("standard_rack", True))
+    return s
+
+
 def solo_apply_shot(run, potted_colours, cue_potted, first_contact,
                     colours_left, penalty_s=SOLO_FOUL_PENALTY_S):
     """r34: advance a solo run by one shot. Pure -- state in, new state out,
@@ -2058,7 +2101,9 @@ def solo_apply_shot(run, potted_colours, cue_potted, first_contact,
     return out
 
 
-def solo_status_lines(run, elapsed_s, colours_left, clock_on):
+def solo_status_lines(run, elapsed_s, colours_left, clock_on,
+                      best_s=None, beat_best=False,
+                      max_width=None, measure=len):
     """r37.1: the solo readout for the persistent status strip. Pure -- values
     in, list of strings out, no pygame and no closure.
 
@@ -2083,13 +2128,45 @@ def solo_status_lines(run, elapsed_s, colours_left, clock_on):
     SysFont with fallbacks, so line height is not identical on every machine,
     and a layout that only just fits here is one font substitution away from
     clipping on someone else's."""
+    # r57: the personal best RIDES ON THE EXISTING LINES and never adds one.
+    # The two-line cap above is not a style preference -- the strip clips
+    # silently, and r37 lost a whole finished-state line that way. A best is
+    # worth showing; it is not worth spending the line that says how the run
+    # ended.
+    pb = f"  (PB {format_clock(best_s)})" if best_s is not None else ""
+
+    def fit(base, extra):
+        """Add `extra` only if the line still fits. `measure` is injectable
+        for wrap_fields' reason -- testable with len() and no pygame.
+
+        MEASURED BEFORE IT WAS WRITTEN, and the measurement changed the design.
+        The live SOLO line is 344px at 1.0 scale against a 240px strip budget,
+        so it ALREADY overflows there without any of this -- appending a best
+        would have taken it to 448px and turned a pre-existing overflow into a
+        much worse one. In the band, where the readout has lived since r47, the
+        budget is 996-1734px and everything fits at every scale. So the suffix
+        is dropped when there is no room rather than shortened: what is left on
+        the table and how the run ended outrank a number you can also read on
+        the profile.
+        """
+        if not extra or max_width is None:
+            return base + extra
+        return base + extra if measure(base + extra) <= max_width else base
     if run["over"]:
         verdict = ("CLEARED" if run["reason"] == "cleared"
                    else "RUN OVER — " + str(run["reason"]))
         fw = "foul" if run["fouls"] == 1 else "fouls"
         tail = f"{run['shots']} shots, {run['fouls']} {fw} — T = rack"
         if clock_on:
-            return [f"{verdict}  {format_clock(elapsed_s)}", tail]
+            # A new best REPLACES the old-best note rather than sitting beside
+            # it: the number that was just beaten is on screen already, as the
+            # clock immediately to its left.
+            head = f"{verdict}  {format_clock(elapsed_s)}"
+            # A NEW BEST is never dropped for width -- it is the whole reason
+            # the run is worth watching finish, and it measures 217-351px
+            # against strip budgets of 240-370px, so it fits regardless.
+            head = (head + "  ★ NEW BEST") if beat_best else fit(head, pb)
+            return [head, tail]
         return [verdict, tail]
     if not clock_on:
         return [f"SOLO (clock off)   {colours_left} colours + black"]
@@ -2097,7 +2174,7 @@ def solo_status_lines(run, elapsed_s, colours_left, clock_on):
     if run["fouls"]:
         fw = "foul" if run["fouls"] == 1 else "fouls"
         line += f"  ({run['fouls']} {fw})"
-    return [line]
+    return [fit(line, pb)]
 
 
 SHOT_LOG_NAME = "hustler_shots.jsonl"
@@ -4100,7 +4177,7 @@ def make_shot_record(n, striker, name, colour, plan, potted, first_contact,
     }
 
 
-PROFILE_SCHEMA = 2
+PROFILE_SCHEMA = 3
 
 
 def new_profile(name, kind="human", nickname=None):
@@ -4137,6 +4214,18 @@ def new_profile(name, kind="human", nickname=None):
         "nickname": str(nickname if nickname else name),
         "kind": "ai" if kind == "ai" else "human",
         "games": [],
+        # r57 (schema 3): completed SOLO CLEARANCE RUNS. A `games` row is a
+        # frame against an opponent and has no time in it; a solo run has no
+        # opponent and is nothing BUT a time, so it cannot ride on that list.
+        #
+        # THE ONE PLACE THIS PROJECT STORES AN AGGREGATE RATHER THAN DERIVING
+        # IT, and the exception is deliberate: a clearance time cannot be
+        # recovered from the shot log. Solo rows carry no clock, no run
+        # boundary and no verdict -- 273 of the Maker's 295 solo rows have no
+        # timestamp at all -- so twelve runs, nine of which reached the black,
+        # are simply gone. Derive-on-read cannot rebuild what was never
+        # written down.
+        "solo": [],
         "params": None,
     }
 
@@ -4155,6 +4244,73 @@ def profile_record_game(profile, opponent, won, mode="tournament", shots=0):
         "shots": int(shots),
     }]
     return out
+
+
+def profile_record_solo(profile, seconds, shots, fouls, reason,
+                        standard_rack=True):
+    """r57: append ONE finished solo run. Pure, returns a new profile.
+
+    EVERY ATTEMPT IS STORED, not only the clearances -- the Maker's call, and
+    the right one: nine of their twelve inferred runs reached the black and
+    the three that did not are the interesting ones. A store that kept only
+    successes could never answer "how often do I actually finish", which is
+    the question a run of near-misses raises.
+
+    `seconds` is the elapsed clock WITH the foul penalty already inside it,
+    exactly as the strip shows it -- the penalty is time in this mode, and
+    storing the two apart would invite adding them twice.
+
+    `standard_rack` records whether the run began from a broken rack or from a
+    table the player had arranged. See `solo_best`: an edited layout still gets
+    a row, it just cannot set a best.
+    """
+    out = dict(profile)
+    out["solo"] = list(profile.get("solo", [])) + [{
+        "seconds": round(float(seconds), 2),
+        "shots": int(shots),
+        "fouls": int(fouls),
+        "cleared": reason == "cleared",
+        "reason": str(reason or "cleared"),
+        "standard_rack": bool(standard_rack),
+    }]
+    return out
+
+
+def solo_eligible(row):
+    """r57: may this run set a personal best? Pure.
+
+    Two conditions, both the Maker's: the rack must have been cleared, and it
+    must have started from a standard rack. A best you can beat by arranging
+    an easy table is not a best, and a run that ended on a foul has no time
+    worth comparing -- it stopped, it did not finish.
+    """
+    return bool(row.get("cleared")) and bool(row.get("standard_rack"))
+
+
+def solo_best(profile):
+    """r57: the best eligible run, or None. Pure -- derived, never stored.
+
+    The BEST is derived even though the runs are not, and the distinction
+    matters: a stored best is an aggregate that goes wrong silently the day
+    the eligibility rule changes, while a stored run is a fact that stays true.
+    Recompute the ranking, keep the record.
+    """
+    good = [r for r in profile.get("solo", []) if solo_eligible(r)]
+    return min(good, key=lambda r: r["seconds"]) if good else None
+
+
+def solo_summary(profile):
+    """r57: (runs, cleared, best_seconds or None, clear_rate, lo, hi). Pure.
+
+    The clear rate carries its Wilson interval for r43's reason -- twelve runs
+    is not a rate, it is a hint, and a bare percentage would say otherwise.
+    """
+    rows = [r for r in profile.get("solo", []) if isinstance(r, dict)]
+    n = len(rows)
+    c = sum(1 for r in rows if r.get("cleared"))
+    best = solo_best(profile)
+    rate, lo, hi = rate_ci(c, n)
+    return (n, c, (best["seconds"] if best else None), rate, lo, hi)
 
 
 def profile_record(profile, mode="tournament"):
@@ -4201,6 +4357,18 @@ def serialise_profile(profile):
                       "when": str(t.get("when", ""))}
                      for t in profile.get("trophies", [])
                      if isinstance(t, dict)],
+        # r57: added HERE and not just to new_profile, because this serialiser
+        # rebuilds a profile field by field rather than copying it -- which is
+        # exactly how r48 silently dropped `grannie` and `trophies` on the
+        # round trip. A run that survives the frame and dies on the save is
+        # worse than one never recorded, because the strip said it counted.
+        "solo": [{"seconds": float(r.get("seconds", 0.0)),
+                  "shots": int(r.get("shots", 0)),
+                  "fouls": int(r.get("fouls", 0)),
+                  "cleared": bool(r.get("cleared")),
+                  "reason": str(r.get("reason", "")),
+                  "standard_rack": bool(r.get("standard_rack"))}
+                 for r in profile.get("solo", []) if isinstance(r, dict)],
         "params": (dict(profile["params"]) if isinstance(profile.get("params"), dict)
                    else None),
     }
@@ -4230,6 +4398,26 @@ def deserialise_profile(data):
             prof["games"][-1]["grannie"] = g["grannie"]
     prof["trophies"] = [dict(t) for t in (data.get("trophies") or [])
                         if isinstance(t, dict)]
+    # r57: same tolerance as `games` above -- a hand-edited `"solo": 3` costs
+    # the solo history, not the game. A row with no `seconds` is not a run.
+    _solo = data.get("solo")
+    prof["solo"] = []
+    for r in (_solo if isinstance(_solo, list) else []):
+        if not isinstance(r, dict) or "seconds" not in r:
+            continue
+        try:
+            secs = float(r["seconds"])
+        except (TypeError, ValueError):
+            continue
+        prof["solo"].append({
+            "seconds": secs, "shots": int(r.get("shots", 0) or 0),
+            "fouls": int(r.get("fouls", 0) or 0),
+            "cleared": bool(r.get("cleared")),
+            "reason": str(r.get("reason", "")),
+            # Absent means TRUE: every run recorded before this field existed
+            # came from the normal rack, and defaulting it to False would
+            # silently disqualify a real best.
+            "standard_rack": bool(r.get("standard_rack", True))})
     if isinstance(data.get("params"), dict):
         prof["params"] = dict(data["params"])
     return prof
@@ -6658,6 +6846,19 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # a counter would need resetting in exactly the same three places anyway.
     next_is_break = True
     solo_run = new_solo_run()
+    # r57: did this run start from a rack, or from a table the player laid out?
+    # Fork 3 as chosen: an edited layout still RECORDS, it just cannot set a
+    # best. A personal best you can beat by arranging an easy table is not one.
+    # Set True by do_rack() and cleared the moment the table is edited.
+    solo_standard_rack = True
+    solo_recorded = False   # this run has already been written to the profile
+    solo_new_best = False   # ... and it beat the previous best when it did
+    # r57: the personal best, CACHED. The readout wants it every frame and the
+    # store is a file -- reading it at 60fps to render one bracketed number
+    # would be the r1 lesson (the panel is a fixed budget, the disk is not).
+    # Refreshed only where it can actually change: startup, rack, and the
+    # moment a run is written.
+    solo_pb = None
     solo_start_t = None     # stamped when the run's first strike lands
     solo_stop_t = None      # frozen the moment the run ends, so the final
                             # time stops climbing while it is being read
@@ -6977,8 +7178,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # owns standing a frame up. Leaving them declared here would be a
         # nonlocal that never assigns -- pyflakes says so, and it would mislead
         # the next reader about where the game gets built.
-        nonlocal mode, ai_plan, ai_wait, pending
-        nonlocal solo_run, solo_start_t, solo_stop_t, next_is_break
+        nonlocal mode, ai_plan, ai_wait, pending, next_is_break
         mode = (mode + 1) % len(MODES)
         ai_plan, ai_wait, pending = None, 0, False
         trail_history.clear()
@@ -6986,7 +7186,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # r37: a mode change always abandons any run in progress. Carrying a
         # half-finished clearance across into another mode and back would show
         # a clock that had been stopped for minutes.
-        solo_run, solo_start_t, solo_stop_t = new_solo_run(), None, None
+        # r58: the reset moved into `restart_frame` below, which this calls.
+        # It used to happen HERE and covered only three of the six pieces of
+        # run state -- a partial reset that read as a complete one.
         next_is_break = True          # r39: a new mode starts from a rack
         restart_frame()
 
@@ -6999,6 +7201,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         removing, and it would have been reintroduced three inches to the left.
         """
         nonlocal sim, game, ais, pending, sandbox_bih
+        # r58: a fresh frame is a fresh run, in EVERY mode and by every route.
+        # This is the line r57 was missing: do_cycle_mode reaches SOLO through
+        # here, and without it `recorded` survived from the previous run and
+        # the next clearance was dropped in silence.
+        solo_reset()
         if human_shooting():
             sim, game, ais = Sim(), None, None
             sim.auto_respot = False       # r23: sandbox places its own cue
@@ -7064,7 +7271,14 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         foot_h = panel_font.get_height()
         # The stack, in order, as (key, height). `None` marks a pair sharing a
         # row. Totalled once, at the end.
+        # r58: `solo` gets a full-width row of its own. The Maker's mode --
+        # 65% of every shot they have logged -- was reachable only by pressing
+        # M three times from the boot mode, cycling through two AI modes they
+        # do not use, with no route at all from the career shell. Practice was
+        # not it: that button sets no mode, it just closes the menu and leaves
+        # you in whichever mode was already up (SANDBOX at boot).
         stack = [("name", fh), ("nick", fh), ("save", fh), ("practice", fh),
+                 ("solo", fh),
                  ("table", rowh * n_rows), ("season", fh), ("resume", fh)]
         top = int(66 * UI_S)
         need = top + sum(h + gap for _, h in stack) + 2 * (foot_h + int(4 * UI_S))
@@ -7307,10 +7521,16 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             _play_label = "Play %s v %s" % _fx
         else:
             _play_label = "Play (Esc)"
+        # r58: the target goes ON the button, so it is in front of you before
+        # the clock starts rather than only once it is running.
+        _solo_label = "Solo — timed clearance"
+        if solo_pb:
+            _solo_label += "  (PB %s)" % format_clock(solo_pb[0])
         for key, label in (("save", "Save name"),
                            ("play", _play_label),
                            ("practice", "Practice (Esc)"),
-                           ("playoffs", "Play-offs")):
+                           ("playoffs", "Play-offs"),
+                           ("solo", _solo_label)):
             box = r[key]
             pygame.draw.rect(display, (58, 92, 64), box, border_radius=4)
             t = panel_font.render(
@@ -7399,6 +7619,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             menu_play_fixture()
         elif r["practice"].collidepoint(pos):
             menu_focus, menu_on = None, False
+        elif r["solo"].collidepoint(pos):
+            menu_start_solo()
         elif r["resume"].collidepoint(pos):
             resume_load()
         elif r["season"].collidepoint(pos):
@@ -7416,6 +7638,28 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             menu_play_tie()
         elif r["resolve"].collidepoint(pos):
             menu_resolve_ties()
+
+    def menu_start_solo():
+        """r58: put a timed clearance on the table, from the menu.
+
+        Resolved by MODE NAME, never by a literal index -- r30's rule, and the
+        one r49 spent a revision on. `restart_frame` stands the frame up and
+        `solo_reset` (called from it) clears the run state, so this cannot
+        inherit a half-finished clock or a stale `recorded` flag from whatever
+        was on screen before.
+        """
+        nonlocal menu_on, bracket_on, menu_focus, mode, menu_msg
+        nonlocal ai_plan, ai_wait, pending, next_is_break
+        menu_focus = None
+        mode = MODES.index("SOLO")
+        ai_plan, ai_wait, pending = None, 0, False
+        trail_history.clear()
+        pot_anims.clear()
+        next_is_break = True
+        restart_frame()
+        sim.rack()          # a clearance starts from a rack, not a bare table
+        menu_msg = ""
+        bracket_on, menu_on = False, False
 
     def menu_play_tie():
         """r56: put the human's play-off tie on the table.
@@ -7721,7 +7965,10 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # spin bug: a reset that doesn't reset. Selftest 72 now guards the
         # whole class rather than this one instance.
         nonlocal sim, game, ais, ai_plan, ai_wait, pending, sandbox_bih
-        nonlocal finale, solo_run, solo_start_t, solo_stop_t, next_is_break
+        nonlocal finale, next_is_break
+        # r58: the solo nonlocals are gone from here on purpose -- `solo_reset`
+        # owns that state now, and re-declaring it would let a future edit
+        # start assigning half of it here again.
         trail_history.clear()
         pot_anims.clear()
         finale = None
@@ -7729,7 +7976,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # clock reset with it. `start_t = None` rather than "now" -- the clock
         # starts on the first STRIKE, not on the rack, so a player can study
         # the table for as long as they like before committing.
-        solo_run, solo_start_t, solo_stop_t = new_solo_run(), None, None
+        solo_reset()                  # r58: the ONE reset -- see new_solo_session
         next_is_break = True          # r39: a fresh rack means a fresh break
         if human_shooting():
             sim.rack()
@@ -7761,8 +8008,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         to `start_t = None` rather than to now, so the clock waits for the
         next strike exactly as it does after a rack -- and the table unlocks
         again, since table_is_editable() keys off that same stamp."""
-        nonlocal solo_run, solo_start_t, solo_stop_t, next_is_break
-        solo_run, solo_start_t, solo_stop_t = new_solo_run(), None, None
+        nonlocal next_is_break
+        # r58: the third route, and it was carrying the same stale flags.
+        # `keep_table=True` -- this does not re-rack, so an arranged table is
+        # still arranged and must stay ineligible for a best.
+        solo_reset(keep_table=True)
         next_is_break = True          # r39: resetting a run restores its break
 
     def do_toggle_overlay():
@@ -7808,6 +8058,68 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                             d_follow, d_side)
 
     # ---- r10 custom mode ---------------------------------------------------
+    def solo_reset(keep_table=False):
+        """r58: clear the WHOLE solo run state. The single reset.
+
+        Called from all THREE routes that begin a run: `do_rack` (T),
+        `restart_frame` (mode cycle, opponent change, menu) and
+        `do_reset_solo` (abandon and start again). r57 reset only in do_rack,
+        so the other two carried `solo_recorded` over from the previous run and
+        the next clearance was dropped in silence.
+
+        `keep_table` exists because `do_reset_solo` deliberately does NOT
+        re-rack -- it restarts the clock on the table as it stands. If the
+        player had arranged that table, it is still arranged, so the
+        rack-standard flag has to survive the reset. Resetting it to True there
+        would hand out a personal best on a laid-out rack, which is exactly
+        what Fork 3 was chosen to prevent. The default is False, so the
+        careless call is the safe one.
+        """
+        nonlocal solo_run, solo_start_t, solo_stop_t
+        nonlocal solo_standard_rack, solo_recorded, solo_new_best
+        s = solo_session_after_reset(
+            {"standard_rack": solo_standard_rack}, keep_table)
+        solo_run, solo_start_t, solo_stop_t = s["run"], s["start_t"], s["stop_t"]
+        solo_standard_rack = s["standard_rack"]
+        solo_recorded = s["recorded"]
+        solo_new_best = s["new_best"]
+        refresh_solo_pb()
+
+    def refresh_solo_pb():
+        """r57: re-read the personal best from the profile store.
+
+        Returns nothing; sets `solo_pb` to (seconds, shots) or None. Silent on
+        failure, like resume_save: a missing best costs a bracketed number on
+        screen, and the run still records.
+        """
+        nonlocal solo_pb
+        solo_pb = None
+        try:
+            p = profile_store_path(__file__,
+                                   os.environ.get("HUSTLER_PROFILES"))
+            if not os.path.exists(p):
+                return
+            with open(p, "r", encoding="utf-8") as fh:
+                store = profiles_from_json(json.load(fh))
+            best = solo_best(store.get(profile_name) or {})
+            if best:
+                solo_pb = (best["seconds"], best["shots"])
+        except (OSError, ValueError):
+            pass
+
+    def mark_table_edited():
+        """r57: this table was arranged, not broken.
+
+        SOLO is editable until the run's first strike (see mode_flags), so a
+        player can lay out an easy clearance and then start the clock. The run
+        still records -- Fork 2 as chosen -- but `solo_eligible` will not let
+        it set a best. Called from every mutation point rather than inferred
+        from the layout afterwards: a placed ball and a potted-then-respotted
+        one look identical in the final position.
+        """
+        nonlocal solo_standard_rack
+        solo_standard_rack = False
+
     def custom_active():
         """Mouse-table interaction is enabled ONLY here -- the Custom tab, in
         SANDBOX mode, with the table at rest. Everywhere else R6.6 still holds:
@@ -7834,6 +8146,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         if sim.cue() is None:
             sim._respot_cue()
         layout_msg = "table cleared"
+        mark_table_edited()          # r57
 
     def custom_balls():
         """Current table as a (kind, (x, y)) list, metres. 'kind' is the ball's
@@ -7937,6 +8250,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 if kind == "black":
                     sim.black_id = bid
         layout_msg = f"loaded slot {layout_slot + 1}"
+        # r57: a loaded layout is the clearest case of all -- it is a table
+        # someone saved because it was worth setting up again.
+        mark_table_edited()
 
     def set_tab(i):
         nonlocal panel_tab
@@ -8282,6 +8598,10 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # NameError. Gated with everything else menu-related: --snap must not
         # go looking for a league file.
         menu_league = menu_load_league()
+        # r57: and the solo personal best, for the same reason and with the
+        # same gate -- the readout wants it from the first frame, and --snap
+        # must not go looking for a profile store.
+        refresh_solo_pb()
 
     while running:
         for ev in pygame.event.get():
@@ -8436,8 +8756,10 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                 drag_bid = hit      # grab and drag an existing ball
                             else:
                                 place_ball_at(wp)   # empty baize: drop a new one
+                            mark_table_edited()     # r57
                         elif ev.button == 3:
                             remove_ball_at(wp)
+                            mark_table_edited()     # r57
                     elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
                         drag_bid = None
                     elif (ev.type == pygame.MOUSEMOTION and drag_bid is not None
@@ -8583,6 +8905,48 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     sim.first_contact, _colours_left)
                 if solo_run["over"] and solo_stop_t is None:
                     solo_stop_t = pygame.time.get_ticks() / 1000.0
+                    # r57: WRITE THE RUN. Twelve runs' worth of the Maker's
+                    # solo play — nine of which reached the black — exist only
+                    # as shot rows with no clock, no boundary and no verdict,
+                    # because nothing has ever recorded a clearance. This is
+                    # that. Guarded on `solo_recorded` so the once-only write
+                    # cannot repeat while the finished run sits frozen on
+                    # screen for however long it is left there.
+                    if not solo_recorded:
+                        solo_recorded = True
+                        _secs = solo_elapsed(solo_start_t, solo_stop_t,
+                                             solo_run["penalty_s"])
+                        try:
+                            _sp = profile_store_path(
+                                __file__, os.environ.get("HUSTLER_PROFILES"))
+                            _sc = {}
+                            if os.path.exists(_sp):
+                                with open(_sp, "r", encoding="utf-8") as _f:
+                                    _sc = profiles_from_json(json.load(_f))
+                            if profile_name not in _sc:
+                                _sc = dict(_sc)
+                                _sc[profile_name] = new_profile(profile_name)
+                            _prev = solo_best(_sc[profile_name])
+                            _sc[profile_name] = profile_record_solo(
+                                _sc[profile_name], _secs, solo_run["shots"],
+                                solo_run["fouls"], solo_run["reason"],
+                                standard_rack=solo_standard_rack)
+                            _sc[profile_name]["kind"] = "human"
+                            _now = solo_best(_sc[profile_name])
+                            # A new best means the best MOVED, not merely that
+                            # this run is eligible: the first eligible run ever
+                            # played is a best too, and _prev is None there.
+                            solo_new_best = bool(
+                                _now and _now["seconds"] == round(_secs, 2)
+                                and (_prev is None
+                                     or _now["seconds"] < _prev["seconds"]))
+                            with open(_sp, "w", encoding="utf-8") as _f:
+                                json.dump(profiles_to_json(_sc), _f, indent=1,
+                                          sort_keys=True)
+                                _f.write("\n")
+                        except OSError:
+                            pass
+                        refresh_solo_pb()
 
         # ---- game logic (modes 1 and 2) ----
         if game is not None and sim.all_at_rest():
@@ -9139,12 +9503,24 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             if solo_active():
                 _end = (solo_stop_t if solo_run["over"]
                         else pygame.time.get_ticks() / 1000.0)
+                # r57: the personal best, read once per frame from the store
+                # and passed in. `solo_status_lines` stays pure and stays
+                # capped at two lines -- the best rides on the lines that are
+                # already there, and is dropped when the width will not take
+                # it. The budget differs by a factor of four between the band
+                # and the strip fallback, so it is measured, not assumed.
+                _pbw = ((max(80, win_w - PANEL_W - 2 * int(round(12 * UI_S))))
+                        if BAND_READOUT else PANEL_W - 20)
                 status_lines2.extend(solo_status_lines(
                     solo_run,
                     solo_elapsed(solo_start_t, _end, solo_run["penalty_s"]),
                     sum(1 for b in sim.balls
                         if sim.colours.get(b) in ("red", "yellow")),
-                    solo_clock_on))
+                    solo_clock_on,
+                    best_s=(solo_pb[0] if solo_pb else None),
+                    beat_best=solo_new_best,
+                    max_width=_pbw,
+                    measure=lambda s: panel_font.size(s)[0]))
             if aim_txt:
                 status_lines2.append(aim_txt)
         # r12: the spin-position icon is GONE from the frame (Maker's call --
@@ -13146,6 +13522,151 @@ def selftest():
           f"trophies {len(won114[champ114]['trophies'])} then "
           f"{len(again114[champ114]['trophies'])}")
 
+    # 115. r57: a solo run leaves a trace, and only an honest one sets a best.
+    #
+    # THIS IS THE ONE PLACE THE PROJECT STORES AN AGGREGATE RATHER THAN
+    # DERIVING IT, so the round trip is asserted rather than assumed. r48 lost
+    # `grannie` and `trophies` on exactly this path -- serialise_profile
+    # rebuilds a profile field by field instead of copying it, so anything not
+    # named there is silently dropped, and a run that survives the frame and
+    # dies on the save is worse than one never recorded, because the strip
+    # said it counted.
+    #
+    # The eligibility rule is the Maker's and both halves are checked: a run
+    # that ended on a foul has no time worth comparing, and a run from a table
+    # the player arranged cannot set a best -- otherwise the best is beaten by
+    # laying out an easy rack rather than by playing well. Both are stored
+    # either way, because "how often do I actually finish" is a question only
+    # the failures can answer, and nine of the Maker's twelve inferred runs
+    # reached the black.
+    #
+    # `standard_rack` DEFAULTS TO TRUE ON READ: every run recorded before the
+    # field existed came from a normal rack, and defaulting it False would
+    # silently disqualify a real best.
+    p115 = new_profile("MAKER")
+    p115 = profile_record_solo(p115, 272.5, 27, 1, "cleared")
+    p115 = profile_record_solo(p115, 240.0, 22, 0, "cleared",
+                               standard_rack=False)   # arranged: no best
+    p115 = profile_record_solo(p115, 190.0, 14, 2, "black potted early")
+    p115 = profile_record_solo(p115, 265.25, 25, 0, "cleared")   # the best
+    best115 = solo_best(p115)
+    n115, c115, bs115, rate115, lo115, hi115 = solo_summary(p115)
+    rt115 = deserialise_profile(serialise_profile(p115))
+    old115 = deserialise_profile({"name": "MAKER", "kind": "human",
+                                  "solo": [{"seconds": 100.0, "shots": 9,
+                                            "cleared": True}]})
+    bad115 = deserialise_profile({"name": "MAKER", "solo": 7})
+    # the readout: two lines, always, and the best rides on them
+    run115 = {"started": True, "shots": 27, "fouls": 1, "penalty_s": 10.0,
+              "over": True, "reason": "cleared"}
+    live115 = {"started": True, "shots": 9, "fouls": 0, "penalty_s": 0.0,
+               "over": False, "reason": None}
+    wide115 = solo_status_lines(run115, 265.25, 0, True, best_s=272.5)
+    new115 = solo_status_lines(run115, 265.25, 0, True, beat_best=True)
+    # a width too small for the suffix drops it rather than overflowing
+    tight115 = solo_status_lines(live115, 47.4, 6, True, best_s=272.5,
+                                 max_width=30, measure=len)
+    room115 = solo_status_lines(live115, 47.4, 6, True, best_s=272.5,
+                                max_width=200, measure=len)
+    check("r57 a solo clearance is recorded — every attempt is stored with its "
+          "verdict, but only a cleared run from a standard rack can set a "
+          "personal best, so a best cannot be won by arranging an easy table; "
+          "the runs survive the profile round trip that silently dropped two "
+          "fields at r48; and the best rides on the existing two readout lines "
+          "and is dropped rather than allowed to overflow",
+          # stored: all four, including the two that cannot set a best
+          len(p115["solo"]) == 4 and n115 == 4 and c115 == 3
+          # the best is the quickest ELIGIBLE run, not the quickest run
+          and best115["seconds"] == 265.25 and bs115 == 265.25
+          and not solo_eligible(p115["solo"][1])   # arranged table
+          and not solo_eligible(p115["solo"][2])   # ended on a foul
+          # the clear rate carries its interval and is not a bare number
+          and abs(rate115 - 0.75) < 1e-9 and lo115 < 0.75 < hi115
+          # r48's fault does not recur: the runs survive the round trip
+          and rt115["solo"] == p115["solo"]
+          and solo_best(rt115)["seconds"] == 265.25
+          # a record written before the field existed still counts
+          and old115["solo"][0]["standard_rack"] is True
+          and solo_best(old115)["seconds"] == 100.0
+          # a hand-edited store costs the solo history, not the game
+          and bad115 is not None and bad115["solo"] == []
+          # the readout: NEVER more than two lines, and the best is on them
+          and len(wide115) == 2 and len(new115) == 2
+          and "(PB 4:32.5)" in wide115[0] and "NEW BEST" in new115[0]
+          and "PB" not in new115[0]
+          # too narrow -> the suffix goes, the run state stays
+          and len(tight115) == 1 and "PB" not in tight115[0]
+          and "colours" in tight115[0] and "PB" in room115[0],
+          f"{n115} runs, {c115} cleared, best {bs115}s "
+          f"(quickest overall {min(r['seconds'] for r in p115['solo'])}s); "
+          f"round trip {'kept' if rt115['solo'] == p115['solo'] else 'LOST'} "
+          f"{len(rt115['solo'])} rows; readout {len(wide115)} lines")
+
+    # 116. r58: a fresh solo frame is fresh by EVERY route into it.
+    #
+    # THE BUG THIS PINS SHIPPED IN r57 AND WAS FOUND A DAY LATER. Six separate
+    # locals held the run state and exactly one routine reset them all --
+    # `do_rack`, i.e. pressing T. `do_cycle_mode` reset three of the six and
+    # left the rest, so reaching SOLO by cycling carried `recorded` over from
+    # the previous run; the next clearance hit `if not solo_recorded`, found it
+    # already True, and was DROPPED IN SILENCE. A run that said it counted and
+    # did not -- the exact fault r57 existed to remove, reintroduced by the
+    # release that removed it.
+    #
+    # The cure is structural, not a fourth careful reset: the state is one
+    # object with one constructor, so a caller cannot reset half of it. Same
+    # shape as r49, where two routines stood a frame up and drifted apart.
+    #
+    # The source clauses match text UNIQUE to each call site. r53 learned this
+    # the hard way -- a clause that matched a string appearing twice let a
+    # gutted guard keep passing against the wrong occurrence.
+    src116 = inspect.getsource(run_gui)
+    s116 = new_solo_session()
+    s116["run"]["shots"] = 99      # mutating one session must not touch the next
+    check("r58 every route into a solo frame starts a clean run — the run "
+          "state is one object with one reset, because r57 kept six loose "
+          "flags reset in a single routine and cycling round to SOLO carried "
+          "the last run's `recorded` flag over, silently dropping the next "
+          "clearance; and SOLO is reachable from the menu rather than three "
+          "presses of M behind two AI modes",
+          # every piece of run state is in the one constructor
+          set(s116) == {"run", "start_t", "stop_t", "standard_rack",
+                        "recorded", "new_best"}
+          # ... and the fresh values are the permissive ones
+          and s116["start_t"] is None and s116["stop_t"] is None
+          and s116["standard_rack"] is True
+          and s116["recorded"] is False and s116["new_best"] is False
+          and new_solo_session()["run"] == new_solo_run()
+          # a new session is a NEW dict, not a shared one
+          and new_solo_session()["run"]["shots"] == 0
+          # BOTH stand-up paths reset, and the partial reset is gone
+          and "solo_reset()                  # r58: the ONE reset" in src116
+          and "        solo_reset()\n        if human_shooting():" in src116
+          # the third route resets too, and KEEPS the arranged-table flag
+          and "solo_reset(keep_table=True)" in src116
+          # ... asserted on BEHAVIOUR, not on the call site: a mutant that
+          # gutted the guard inside the closure survived a source-text check,
+          # because the call was still written and only the effect was gone.
+          and solo_session_after_reset({"standard_rack": False},
+                                       keep_table=True)["standard_rack"] is False
+          and solo_session_after_reset({"standard_rack": False},
+                                       keep_table=False)["standard_rack"] is True
+          and solo_session_after_reset({"standard_rack": True},
+                                       keep_table=True)["standard_rack"] is True
+          # and a reset always clears `recorded`, by whichever route
+          and solo_session_after_reset({"standard_rack": False},
+                                       keep_table=True)["recorded"] is False
+          # ... and no partial reset survives anywhere
+          and "solo_run, solo_start_t, solo_stop_t = new_solo_run(), None, None" \
+              not in src116
+          # the menu can reach SOLO, and resolves it by NAME (r30)
+          and 'mode = MODES.index("SOLO")' in src116
+          and 'r["solo"].collidepoint(pos)' in src116
+          and '("solo", fh),' in src116,
+          f"session keys {sorted(s116)}; after mutating one session the next "
+          f"has {new_solo_session()['run']['shots']} shots; three reset "
+          f"routes present: {src116.count('solo_reset(')} call sites")
+
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
 
@@ -13288,6 +13809,18 @@ def main():
                 extra.append("%d trophy(s)" % r["trophies"])
             if extra:
                 print("               " + ", ".join(extra))
+            # r57: the solo record. Printed on its own line rather than folded
+            # into `extra` because it is not a footnote to the frame record --
+            # for this Maker it is 65% of everything they have played, and the
+            # clock is what they measure themselves against.
+            _sn, _sc, _sb, _sr, _slo, _shi = solo_summary(
+                profs.get(r["nickname"]) or {})
+            if _sn:
+                _bt = ("best %s" % format_clock(_sb)) if _sb is not None \
+                      else "no eligible best yet"
+                print("               solo: %d run(s), %d cleared "
+                      "(%.0f%% [%.0f-%.0f]), %s"
+                      % (_sn, _sc, _sr * 100, _slo * 100, _shi * 100, _bt))
         # A record, not a ranking -- see profile_table. Ranking has to account
         # for opponent strength and the Maker has asked for it separately.
         print("  (a record, not a ranking — intervals are Wilson, "
