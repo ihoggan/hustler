@@ -5,7 +5,66 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r60 — the machine only resolves fixtures it can actually play (current)
+## r61 — buttons that look like buttons (current)
+
+From the Maker's tester: he could not tell the buttons were buttons, because
+they did not move and had nothing 3D about them. He was right, and the code
+said so in three separate ways.
+
+`Button.draw` was one flat filled rect — no bevel, no border, no shadow.
+Nothing anywhere tracked hover. And `handle_event` fired on mouse-**DOWN**, so
+there was no moment between arming and acting for a pressed button to exist in:
+a press state was not merely missing, it was impossible.
+
+Six separate sites drew their own buttons, and they had already drifted — two
+different disabled greys and two different label whites between them.
+
+### What it does now
+
+**One renderer, `paint_button`.** Every rectangular click target goes through
+it: panel buttons, the career menu, the bracket, Resume. Six copies of a bevel
+would have drifted faster than six copies of a flat rect did.
+
+**The bevel is derived from each button's own base colour** — light top-left,
+dark bottom-right — so it cannot fall out of step with the fill. Solid colours
+only: `pygame.draw` writes RGBA flat without compositing, so a "subtle"
+translucent highlight would come out as a hard band. All widths scale with
+`UI_S`, because a two-pixel highlight is invisible at 2160x1350.
+
+**Held down, the bevel swaps over and the label moves one pixel** — the button
+reads as going in rather than merely changing colour.
+
+**Hover lifts the fill and the cursor becomes a hand.** The cursor is the
+strongest "this is clickable" signal there is and it cost three lines. It is set
+only on change, and only over ENABLED buttons — `Resolve AI (0)` offers no hand.
+
+**A disabled button comes back flat**, with no edges at all. Once everything
+else is raised, the absence of relief is what marks it out, and it costs no
+extra code because the caller draws the same three shapes either way.
+
+**Firing moved from press to release.** Arm on down, fire on release inside,
+slide off and let go to cancel. That is what every button anywhere does, it is
+what makes a pressed state worth drawing, and it means a misclick can be taken
+back. `bracket_click` is gone entirely — its three buttons go through the same
+arm-and-release path as everything else.
+
+### Notes
+
+**Assertion 116 failed, correctly, and that was the system working.** It pinned
+the route to SOLO as `r["solo"].collidepoint(pos)`, which r61 deleted. The
+clause was updated to the new dispatch key rather than dropped — it exists to
+check the menu can reach SOLO at all, and it still does.
+
+Assertion 119 pins behaviour, not source: the case that matters is pressing a
+button, thinking better of it, sliding off and releasing — and nothing
+happening. Seven mutants, all caught.
+
+Self-test **119**. `--snap` byte-identical at `62c87ddb…` — all of this sits
+behind the `smoke` gate.
+
+---
+
+## r60 — the machine only resolves fixtures it can actually play
 
 Found the moment r59 shipped, in the Maker's own terminal output. `--league`
 ended with:

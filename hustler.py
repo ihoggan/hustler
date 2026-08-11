@@ -5242,6 +5242,74 @@ def chamber_slots(n, width, d_max, gap):
     return d, [x + i * (d + gap) for i in range(n)]
 
 
+# r61: BUTTON AFFORDANCE. The Maker's tester could not tell the buttons were
+# buttons -- they did not move, and nothing about them read as pressable. He
+# was right: `Button.draw` was a single flat filled rect, `handle_event` fired
+# on mouse-DOWN so a press had nothing to show, nothing anywhere tracked hover,
+# and six separate sites drew their own.
+#
+# The colours are DERIVED from each button's base rather than listed, so a
+# bevel cannot drift out of step with the fill the way six hand-written sites
+# would. Solid colours throughout, never RGBA: `pygame.draw` writes RGBA flat
+# without compositing (the r33 lesson), so a "subtle" translucent highlight
+# would come out as a hard band.
+BTN_HOVER_K = 1.18      # lift under the pointer
+BTN_HI_K = 1.55         # top-left edge, catching the light
+BTN_LO_K = 0.55         # bottom-right edge, in shadow
+BTN_DISABLED_FILL = (52, 55, 60)
+BTN_TEXT = (240, 240, 240)
+BTN_TEXT_OFF = (120, 122, 126)
+
+
+def button_shade(colour, k):
+    """r61: one button colour, lightened or darkened. Pure, clamped."""
+    return tuple(max(0, min(255, int(round(c * k)))) for c in colour[:3])
+
+
+def button_face(base, enabled=True, hover=False, pressed=False):
+    """r61: every colour and offset one button needs. Pure.
+
+    Returns fill / hi / lo / text / dy. `dy` is how far the LABEL moves when
+    pressed -- one scaled pixel down, which with the swapped bevel is what
+    makes a press read as the button going in rather than merely changing
+    colour.
+
+    A DISABLED BUTTON COMES BACK FLAT: hi and lo both equal the fill, so it has
+    no edges at all. That is the point -- once the enabled ones are raised, the
+    absence of relief is what says "not this one", and it costs no extra code
+    because the caller draws the same three shapes either way.
+    """
+    if not enabled:
+        flat = BTN_DISABLED_FILL
+        return {"fill": flat, "hi": flat, "lo": flat,
+                "text": BTN_TEXT_OFF, "dy": 0}
+    fill = button_shade(base, BTN_HOVER_K) if hover else tuple(base[:3])
+    hi = button_shade(fill, BTN_HI_K)
+    lo = button_shade(fill, BTN_LO_K)
+    if pressed:
+        hi, lo = lo, hi          # the light comes from the other side
+    return {"fill": fill, "hi": hi, "lo": lo, "text": BTN_TEXT,
+            "dy": 1 if pressed else 0}
+
+
+def button_transition(armed, under, event):
+    """r61: the press state machine. Pure. Returns (armed, fired).
+
+    FIRING MOVED FROM DOWN TO UP, which is the whole reason a pressed state is
+    worth drawing: press to arm, release inside to fire, drag off to cancel.
+    Every button anywhere works this way and a misclick can be backed out of.
+
+    `under` is the key of the button beneath the pointer, or None. Releasing
+    always disarms, whether or not anything fired -- a press that ends outside
+    the button leaves no armed state behind to fire on some later release.
+    """
+    if event == "down":
+        return (under, None)
+    if event == "up":
+        return (None, under if (armed is not None and armed == under) else None)
+    return (armed, None)
+
+
 def fit_label(text, max_width, measure=len):
     """r56: shorten one label until it fits, with an ellipsis. Pure.
 
@@ -6538,6 +6606,42 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # maths lives in the module-level functions above (slider_frac etc.) so
     # it gets dependency-free selftest coverage.
     # ------------------------------------------------------------------
+    def paint_button(surf, rect, base, label, font, enabled=True,
+                     hover=False, pressed=False, fit=True):
+        """r61: THE one button renderer. Every click target goes through here.
+
+        There were six copies of this before, each a filled rect and a centred
+        label, and they had already drifted -- two different disabled greys and
+        two different label whites between them. Six copies of a bevel would
+        have drifted further and faster.
+
+        The bevel is drawn as four lines inset by the border width, all
+        SCALED BY UI_S: a two-pixel highlight is invisible on the Maker's
+        2160x1350 screen, and fixed pixels in a scaled layout is the fault this
+        project has hit four times.
+        """
+        face = button_face(base, enabled=enabled, hover=hover, pressed=pressed)
+        w = max(1, int(round(2 * UI_S)))
+        pygame.draw.rect(surf, face["fill"], rect, border_radius=int(4 * UI_S))
+        if face["hi"] != face["fill"]:      # flat when disabled, by design
+            h = w // 2
+            pygame.draw.line(surf, face["hi"], (rect.left + w, rect.top + h),
+                             (rect.right - w, rect.top + h), w)
+            pygame.draw.line(surf, face["hi"], (rect.left + h, rect.top + w),
+                             (rect.left + h, rect.bottom - w), w)
+            pygame.draw.line(surf, face["lo"], (rect.left + w, rect.bottom - h),
+                             (rect.right - w, rect.bottom - h), w)
+            pygame.draw.line(surf, face["lo"], (rect.right - h, rect.top + w),
+                             (rect.right - h, rect.bottom - w), w)
+        text = label() if callable(label) else label
+        if fit:
+            text = fit_label(text, rect.w - int(10 * UI_S),
+                             lambda s: font.size(s)[0])
+        img = font.render(text, True, face["text"])
+        cx, cy = rect.center
+        d = int(round(face["dy"] * UI_S))
+        surf.blit(img, img.get_rect(center=(cx + d, cy + d)))
+
     class Slider:
         def __init__(self, rect, lo, hi, get, set_, label, fmt="{:.2f}",
                      enabled=lambda: True):
@@ -6696,20 +6800,33 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         def __init__(self, rect, label, on_click, enabled=lambda: True):
             self.rect = pygame.Rect(rect)
             self.label, self.on_click, self.enabled = label, on_click, enabled
+            self.hover = False      # r61
+            self.armed = None       # None, or self while held down
 
         def handle_event(self, ev):
-            if (ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1
-                    and self.enabled() and self.rect.collidepoint(ev.pos)):
-                self.on_click()
+            # r61: arm on down, fire on RELEASE INSIDE -- see
+            # button_transition. Releasing off the button cancels, which is
+            # what every button anywhere does and what makes the pressed state
+            # worth drawing.
+            if not self.enabled():
+                self.armed = None
+                return
+            over = self.rect.collidepoint(getattr(ev, "pos", (-1, -1)))
+            here = self if over else None
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                self.armed, _ = button_transition(self.armed, here, "down")
+            elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
+                self.armed, fired = button_transition(self.armed, here, "up")
+                if fired is not None:
+                    self.on_click()
+            elif ev.type == pygame.MOUSEMOTION:
+                self.hover = over
 
         def draw(self, surf, font):
-            en = self.enabled()
-            pygame.draw.rect(surf, (90, 140, 90) if en else (52, 55, 60),
-                              self.rect, border_radius=4)
-            lbl = self.label() if callable(self.label) else self.label
-            txt = font.render(lbl, True,
-                               (240, 240, 240) if en else (120, 122, 126))
-            surf.blit(txt, txt.get_rect(center=self.rect.center))
+            paint_button(surf, self.rect, (90, 140, 90), self.label, font,
+                         enabled=self.enabled(), hover=self.hover,
+                         pressed=self.armed is not None and self.hover,
+                         fit=False)
 
     class MiniTable:
         """r33: a scale model of the real table, for nominating a shot.
@@ -7218,6 +7335,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # baseline unmoved since r41. It can only ever be turned on by a mouse
     # click, and the mouse branch is itself `not smoke`.
     bracket_on = False
+    # r61: which button the pointer is over, and which is held down. Keys are
+    # "menu:play" / "brk:back" so one pair of variables covers both screens and
+    # a stale key from one cannot light a button on the other.
+    btn_hover = None
+    btn_armed = None
+    btn_cursor = None
     running = True
     last_shown = screen
     def start_game(m):
@@ -7651,14 +7774,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 ("play", ("Play %s v %s" % (_bt["home"], _bt["away"]))
                  if _bt else "no tie of yours to play", bool(_bt)),
                 ("resolve", "Resolve ties (%d)" % _bp, _bp > 0)):
-            box = r[key]
-            pygame.draw.rect(display, (58, 92, 64) if live else (48, 50, 56),
-                              box, border_radius=4)
-            t = panel_font.render(
-                fit_label(label, box.w - int(10 * UI_S),
-                          lambda s: panel_font.size(s)[0]),
-                True, (235, 240, 235) if live else (120, 124, 132))
-            display.blit(t, t.get_rect(center=box.center))
+            paint_button(display, r[key], (58, 92, 64), label, panel_font,
+                         enabled=live,
+                         hover=(btn_hover == "brk:" + key),
+                         pressed=(btn_armed == "brk:" + key
+                                  and btn_hover == "brk:" + key))
         display.blit(panel_font.render(menu_msg, True, (150, 205, 160)),
                       (int(30 * UI_S), win_h - int(30 * UI_S) - int(34 * UI_S)
                        - int(24 * UI_S)))
@@ -7729,13 +7849,10 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                            ("practice", "Practice (Esc)"),
                            ("playoffs", "Play-offs"),
                            ("solo", _solo_label)):
-            box = r[key]
-            pygame.draw.rect(display, (58, 92, 64), box, border_radius=4)
-            t = panel_font.render(
-                fit_label(label, box.w - int(10 * UI_S),
-                          lambda s: panel_font.size(s)[0]),
-                True, (235, 240, 235))
-            display.blit(t, t.get_rect(center=box.center))
+            paint_button(display, r[key], (58, 92, 64), label, panel_font,
+                         hover=(btn_hover == "menu:" + key),
+                         pressed=(btn_armed == "menu:" + key
+                                  and btn_hover == "menu:" + key))
         # r53: the season, in the shell it was built for. Until now the league
         # existed only at the command line: a fixture was set as your opponent
         # without saying so, and the result recorded without showing you a
@@ -7777,28 +7894,28 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                            ("resolve", "Resolve AI (%d)"
                             % (len(league_pending_ai(lg, profile_name))
                                if lg else 0))):
-            box = r[key]
             live = lg is not None or key == "season"
-            pygame.draw.rect(display, (58, 92, 64) if live else (48, 50, 56),
-                              box, border_radius=4)
-            t = panel_font.render(label, True,
-                                   (235, 240, 235) if live else (120, 124, 132))
-            display.blit(t, t.get_rect(center=box.center))
+            paint_button(display, r[key], (58, 92, 64), label, panel_font,
+                         enabled=live,
+                         hover=(btn_hover == "menu:" + key),
+                         pressed=(btn_armed == "menu:" + key
+                                  and btn_hover == "menu:" + key))
         # r54: the frame you walked away from. Only offered when there is one
         # -- a dead button that does nothing is a worse answer than no button.
-        rb = r["resume"]
         saved = resume_available()
-        pygame.draw.rect(display, (62, 78, 108) if saved else (48, 50, 56),
-                          rb, border_radius=4)
         if saved:
             lab = "Resume %s v %s" % (saved["names"][0], saved["names"][1])
             if saved["fixture"]:
                 lab += "  (league)"
         else:
             lab = "no frame in progress"
-        t = panel_font.render(lab, True,
-                               (226, 232, 245) if saved else (120, 124, 132))
-        display.blit(t, t.get_rect(center=rb.center))
+        # r61: keeps its own blue base -- Resume is the one button that is not
+        # a green action, and the bevel is derived from whatever base it gets.
+        paint_button(display, r["resume"], (62, 78, 108), lab, panel_font,
+                     enabled=bool(saved),
+                     hover=(btn_hover == "menu:resume"),
+                     pressed=(btn_armed == "menu:resume"
+                              and btn_hover == "menu:resume"))
         # r56: the footers get RECTS from the same stack as everything else.
         # Measured from the panel bottom, they overlapped the Resume button by
         # 36px at 1.0 scale and 54px at 1.5, and printed over it.
@@ -7809,41 +7926,82 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             "Esc plays / returns here   Q quits", True, (140, 144, 152)),
             r["foot2"].topleft)
 
-    def menu_click(pos):
-        nonlocal menu_focus, menu_on, bracket_on, menu_msg
+    def button_under(pos):
+        """r61: the key of the ENABLED button under the pointer, or None.
+
+        One map, used for hit-testing, for hover, and for the cursor. Disabled
+        buttons are simply absent: that makes them unhoverable, uncliqueable
+        and un-cursored in one stroke rather than three checks that could
+        disagree -- and it is why `Resolve AI (0)` no longer offers a hand.
+        """
+        if bracket_on:
+            r = bracket_rects()
+            lg = menu_league
+            ok = lg is not None and league_complete(lg)
+            live = {"back": True,
+                    "play": bool(ok and playoff_next_tie(lg, profile_name)),
+                    "resolve": bool(ok and playoff_pending_ai(
+                        lg, profile_name))}
+            for key, box in ((k, r[k]) for k in ("back", "play", "resolve")):
+                if live[key] and box.collidepoint(pos):
+                    return "brk:" + key
+            return None
+        if not menu_on:
+            return None
         r = menu_rects()
-        if r["playoffs"].collidepoint(pos):
+        lg = menu_league
+        live = {"save": True, "play": True, "practice": True,
+                "playoffs": True, "solo": True, "season": True,
+                "resolve": lg is not None,
+                "resume": bool(resume_available())}
+        for key in ("save", "play", "practice", "playoffs", "solo",
+                    "season", "resolve", "resume"):
+            if live.get(key) and r[key].collidepoint(pos):
+                return "menu:" + key
+        return None
+
+    def button_fire(key):
+        """r61: run the action for a button key. Called on RELEASE."""
+        nonlocal menu_focus, menu_on, bracket_on, menu_msg
+        if key == "menu:playoffs":
             menu_focus, bracket_on, menu_msg = None, True, ""
-            return
+        elif key == "menu:save":
+            menu_commit()
+        elif key == "menu:play":
+            menu_play_fixture()
+        elif key == "menu:practice":
+            menu_focus, menu_on = None, False
+        elif key == "menu:solo":
+            menu_start_solo()
+        elif key == "menu:resume":
+            resume_load()
+        elif key == "menu:season":
+            menu_new_season()
+        elif key == "menu:resolve":
+            menu_resolve_ai()
+        elif key == "brk:back":
+            bracket_on, menu_msg = False, ""
+        elif key == "brk:play":
+            menu_play_tie()
+        elif key == "brk:resolve":
+            menu_resolve_ties()
+
+    def menu_click(pos):
+        """r61: the TEXT FIELDS only. Every button now arms on down and fires
+        on release through button_under/button_fire; the fields still take the
+        focus on the press, because a caret is not a button."""
+        nonlocal menu_focus
+        r = menu_rects()
         if r["name"].collidepoint(pos):
             menu_focus = "name"
         elif r["nick"].collidepoint(pos):
             menu_focus = "nick"
-        elif r["save"].collidepoint(pos):
-            menu_commit()
-        elif r["play"].collidepoint(pos):
-            menu_play_fixture()
-        elif r["practice"].collidepoint(pos):
-            menu_focus, menu_on = None, False
-        elif r["solo"].collidepoint(pos):
-            menu_start_solo()
-        elif r["resume"].collidepoint(pos):
-            resume_load()
-        elif r["season"].collidepoint(pos):
-            menu_new_season()
-        elif r["resolve"].collidepoint(pos) and menu_league is not None:
-            menu_resolve_ai()
+        elif button_under(pos) is not None:
+            menu_focus = None      # pressing a button drops the caret
 
-    def bracket_click(pos):
-        """r56: the play-off screen's three buttons."""
-        nonlocal bracket_on, menu_msg
-        r = bracket_rects()
-        if r["back"].collidepoint(pos):
-            bracket_on, menu_msg = False, ""
-        elif r["play"].collidepoint(pos):
-            menu_play_tie()
-        elif r["resolve"].collidepoint(pos):
-            menu_resolve_ties()
+    # r61: bracket_click is gone. Its three buttons go through
+    # button_under/button_fire like every other click target, so there is one
+    # arm-and-release path rather than one per screen.
 
     def menu_start_solo():
         """r58: put a timed clearance on the table, from the menu.
@@ -8923,11 +9081,38 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 build_panel_widgets()
             elif (ev.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
                               pygame.MOUSEMOTION) and not smoke):
+                # r61: hover, arm and fire for the menu and bracket screens.
+                # Done BEFORE the screen branches below so the state is right
+                # for the frame that is about to be drawn, and so a release
+                # that lands outside a button still disarms it.
+                if menu_on or bracket_on:
+                    _under = button_under(ev.pos)
+                    btn_hover = _under
+                    _kind = ("down" if ev.type == pygame.MOUSEBUTTONDOWN
+                             else "up" if ev.type == pygame.MOUSEBUTTONUP
+                             else "move")
+                    if _kind == "move" or getattr(ev, "button", 0) == 1:
+                        btn_armed, _fired = button_transition(
+                            btn_armed, _under, _kind)
+                        if _fired is not None:
+                            button_fire(_fired)
+                            continue
+                else:
+                    btn_hover, btn_armed = None, None
+                # The hand cursor is the strongest "this is clickable" signal
+                # there is, and it cost three lines. Only set on CHANGE --
+                # pygame rebuilds the cursor every call.
+                _want = (pygame.SYSTEM_CURSOR_HAND if btn_hover
+                         else pygame.SYSTEM_CURSOR_ARROW)
+                if _want != btn_cursor:
+                    btn_cursor = _want
+                    try:
+                        pygame.mouse.set_cursor(_want)
+                    except pygame.error:
+                        pass
                 if bracket_on:
                     # r56: the play-off screen is opaque and full-window, so
                     # it takes the mouse whole -- same rule as the menu below.
-                    if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-                        bracket_click(ev.pos)
                     continue
                 if menu_on:
                     # r51: the menu takes the mouse whole while it is up, for
@@ -13867,7 +14052,11 @@ def selftest():
               not in src116
           # the menu can reach SOLO, and resolves it by NAME (r30)
           and 'mode = MODES.index("SOLO")' in src116
-          and 'r["solo"].collidepoint(pos)' in src116
+          # r61 moved every button off menu_click and onto the shared
+          # arm-and-release path, so the route to SOLO is now a dispatch key.
+          # Updated rather than dropped: the clause exists to pin that the
+          # menu can reach SOLO at all, and that is still what it checks.
+          and 'elif key == "menu:solo":' in src116
           and '("solo", fh),' in src116,
           f"session keys {sorted(s116)}; after mutating one session the next "
           f"has {new_solo_session()['run']['shots']} shots; three reset "
@@ -14035,6 +14224,77 @@ def selftest():
           f"human {len(wrong118)}, with the right one {len(right118)}, with "
           f"none {len(none118)}; refusal {refused118!r}; "
           f"human resolved to {default_human_name(profs118)}")
+
+    # 119. r61: a button looks pressable, and a press can be taken back.
+    #
+    # THE TESTER'S COMPLAINT WAS THAT HE COULD NOT TELL THE BUTTONS WERE
+    # BUTTONS. They did not move and they had no relief. Three separate things
+    # were missing -- static affordance, hover, and any press state at all --
+    # and the third was impossible while `handle_event` fired on mouse-DOWN,
+    # because there was no moment between arming and acting for a pressed
+    # button to exist in.
+    #
+    # The state machine is pinned on BEHAVIOUR (r58's lesson), and the case
+    # that matters most is the one a user relies on without thinking: press a
+    # button, think better of it, slide off, release -- NOTHING HAPPENS. That
+    # cannot be checked by looking at whether the code calls a function.
+    #
+    # The bevel is asserted through the DERIVED colours rather than by drawing:
+    # top-left lighter than the fill, bottom-right darker, and the pair SWAPS
+    # when pressed, which is what makes a press read as the button going in.
+    # Disabled comes back flat -- no edges at all -- so the absence of relief
+    # is what marks it out once everything else is raised.
+    base119 = (58, 92, 64)
+    up119 = button_face(base119)
+    hov119 = button_face(base119, hover=True)
+    dn119 = button_face(base119, pressed=True)
+    off119 = button_face(base119, enabled=False)
+    # press, slide off, release -> nothing fires
+    a1_119, f1_119 = button_transition(None, "play", "down")
+    a2_119, f2_119 = button_transition(a1_119, None, "move")
+    a3_119, f3_119 = button_transition(a2_119, None, "up")
+    # press and release on the same button -> fires once
+    b1_119, _ = button_transition(None, "play", "down")
+    b2_119, fb_119 = button_transition(b1_119, "play", "up")
+    # press one, release over another -> nothing
+    c1_119, _ = button_transition(None, "play", "down")
+    _, fc_119 = button_transition(c1_119, "resolve", "up")
+    # a release with nothing armed fires nothing, however it arrived
+    _, fd_119 = button_transition(None, "play", "up")
+    check("r61 a button now looks pressable and a press can be taken back — "
+          "the bevel is derived from each button's own base so it cannot "
+          "drift from the fill, it swaps over when held so the button reads "
+          "as going in, a disabled button comes back flat with no edges at "
+          "all, and firing moved from press to release: arm, slide off, let "
+          "go, and nothing happens",
+          # relief: light above-left, dark below-right
+          sum(up119["hi"]) > sum(up119["fill"]) > sum(up119["lo"])
+          # ... and it swaps when held, which is the press
+          and dn119["hi"] == up119["lo"] and dn119["lo"] == up119["hi"]
+          and up119["dy"] == 0 and dn119["dy"] == 1
+          # hover lifts the fill without losing the relief
+          and sum(hov119["fill"]) > sum(up119["fill"])
+          and sum(hov119["hi"]) > sum(hov119["fill"]) > sum(hov119["lo"])
+          # disabled is FLAT — the edges are the fill
+          and off119["hi"] == off119["fill"] == off119["lo"]
+          and off119["dy"] == 0 and off119["text"] == BTN_TEXT_OFF
+          # shades stay inside 0-255 however extreme the base
+          and button_shade((250, 250, 250), 1.55) == (255, 255, 255)
+          and button_shade((4, 4, 4), 0.55) == (2, 2, 2)
+          # THE STATE MACHINE — armed, then dragged off, fires nothing
+          and a1_119 == "play" and a2_119 == "play" and a3_119 is None
+          and f1_119 is None and f2_119 is None and f3_119 is None
+          # a clean press and release fires exactly once and disarms
+          and fb_119 == "play" and b2_119 is None
+          # released over a different button: nothing
+          and fc_119 is None
+          # and a release with nothing armed never fires
+          and fd_119 is None,
+          f"fill {up119['fill']} hi {up119['hi']} lo {up119['lo']}; "
+          f"pressed dy {dn119['dy']}, edges swapped "
+          f"{dn119['hi'] == up119['lo']}; disabled flat "
+          f"{off119['hi'] == off119['fill']}; drag-off fired {f3_119!r}, "
+          f"clean click fired {fb_119!r}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r60 — playable, validated, no known blocking bugs.
+**Status:** r61 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~13,540 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,18 +16,43 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r60
+## Validation snapshot at r61
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 118 assertions |
+| `--selftest` | ALL PASS — 119 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY (nix5), all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 | GitHub Actions `Validate` | passing (Python 3.12 and 3.13) |
+
+## What r61 changed (as built)
+
+**Button affordance, from tester feedback:** he could not tell the buttons were
+buttons. Three things were missing — static relief, hover, and any press state
+at all. The third was impossible while `handle_event` fired on mouse-DOWN.
+
+**`paint_button` is THE renderer.** Panel, menu, bracket, Resume. Do not add a
+seventh hand-drawn button — the six that existed had already drifted to two
+disabled greys and two label whites.
+
+**Colours are DERIVED** (`button_face`) from each base, never listed. Solid
+only: `pygame.draw` writes RGBA flat (r33). Widths scale with `UI_S`.
+
+**`button_transition` is the press state machine**, pure and shared: arm on
+down, fire on release inside, drag off to cancel. `bracket_click` was deleted —
+one arm-and-release path for every screen.
+
+**Disabled = flat** (hi == fill == lo). `button_under` returns only ENABLED
+keys, so hover, click and cursor all follow from one map.
+
+**Trap:** assertion 116 pinned `r["solo"].collidepoint(pos)` and failed when the
+wiring moved. It was updated to the dispatch key, not dropped. Expect any
+source-text clause to need this when the plumbing changes — that is what it is
+for.
 
 ## What r60 changed (as built)
 
