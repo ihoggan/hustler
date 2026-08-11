@@ -5,7 +5,74 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r61 — buttons that look like buttons (current)
+## r62 — the Shot tab in the order it is played (current)
+
+All from the Maker, working off a screenshot he pulled apart by hand.
+
+**The Shoot button was in the middle of the panel.** The stack ran Power, Aim,
+**Shoot**, Spin — so the one irreversible control sat above the spin picker. It
+only looked right on a window too short to fit the picker at all, which is why
+the r61 screenshot showed Shoot at the bottom and his showed it halfway up. The
+order is now his: **Power, Aim angle, Spin, Shoot**, and Shoot is **pinned** to
+the bottom rather than stacked. A button pressed on every shot should not move
+up and down the panel depending on whether the picker fitted.
+
+**Spacing is distributed, not fixed.** The three groups are measured and the
+leftover space is divided evenly between them. Fixed gaps pile all the slack at
+the bottom, which is what he was working around with "my spacing isnt good".
+
+**Text no longer overlaps anything.** The miscue caption printed straight across
+the draw/follow/left/right row beneath it — the clearance meant to hold it never
+scaled with `UI_S`, so at 1.5 it landed on the buttons. The caption is gone. The
+dashed advisory ring **stays**: he asked for the text removed, not the advisory,
+and r30's reasoning for the ring is untouched.
+
+**Nothing starts with a lower-case letter.** `Power`, `Aim angle`, `Spin`,
+`Balls`, `Call` — the panel and the band above the table both.
+
+**The degree symbol, not the word.** `-1 deg` becomes `-1°`. Measured at 54px
+against 27px, so it halves the widest label on the row and pays for the spacing.
+
+**The spin row is glyphs**: ▲ follow, ▼ draw, ◀ ▶ side. Solid triangles rather
+than line arrows because they ink 97–104 pixels against 40–46 at 22pt, more
+than twice as legible on a small green button. The mapping is spatial and reads
+straight off the picker above them — the pad is a cue-ball face.
+
+**The power slider trail is red.** It was a light blue that read as decoration.
+
+**The tabs are folder tabs.** "The Tab in the hud dont look like tabs at all,
+the are so squashed together" — both halves true. They were laid end to end with
+`w = rect.w // n` and no gap of any kind, and distinguished only by a blue tint.
+A folder tab is defined by one thing: the selected one has **no bottom edge**,
+so it joins the panel below. The shoulder line is now drawn in segments around
+the active tab instead of straight across. Inactive tabs sit two pixels lower,
+and they hover and press like every other button.
+
+### Notes
+
+**Two existing assertions failed, both correctly.** Assertion 100 pinned the
+call-site variable `shot_spin_r`, which the reorder renamed; assertion 116 was
+already updated at r61. Both were **updated to the new names, not dropped** —
+they exist to prove a scaled cap reaches the call site and that the menu can
+reach SOLO, and they still prove exactly that.
+
+**Assertion 120's first cut searched the source for the triangle glyph and
+failed while the code was correct** — the glyphs are written as `\u` escapes, and
+a substring search cannot see them. They now live in module constants and the
+assertion checks what they *evaluate to*. A later clause looking for `" deg"`
+matched `for deg, major, lbl_ in dial_ticks()`, a loop variable; narrowed to
+`" deg\""`.
+
+**A mutant survived**: forgetting to subtract the gaps from the tab budget still
+produced four tidy gaps and a flush right edge — it just quietly stole 12px from
+the last tab. "Gaps exist" and "ends flush" are both true of a visibly wrong
+strip; only checking the widths against each other catches it.
+
+Self-test **120**. `--snap` byte-identical at `62c87ddb…`.
+
+---
+
+## r61 — buttons that look like buttons
 
 From the Maker's tester: he could not tell the buttons were buttons, because
 they did not move and had nothing 3D about them. He was right, and the code

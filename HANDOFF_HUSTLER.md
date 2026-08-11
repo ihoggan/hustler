@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r61 — playable, validated, no known blocking bugs.
+**Status:** r62 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~13,540 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,18 +16,45 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r61
+## Validation snapshot at r62
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 119 assertions |
+| `--selftest` | ALL PASS — 120 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY (nix5), all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 | GitHub Actions `Validate` | passing (Python 3.12 and 3.13) |
+
+## What r62 changed (as built)
+
+**Shot tab order is Power, Aim angle, Spin, Shoot** — Shoot PINNED to the panel
+bottom (`shoot_y = win_h - bottom_margin - shoot_h`), outside the stacking flow.
+It used to sit between the aim group and the spin picker. Gaps between groups
+are DISTRIBUTED from the leftover space, not fixed.
+
+**`DEG` and `SPIN_NUDGE` are module constants** so the selftest can assert what
+they evaluate to. Do not inline the glyphs — a source search cannot see a `\u`
+escape, which is how assertion 120's first cut failed against correct code.
+
+**`tab_slots()` is the pure tab geometry.** Equal widths, real gaps, last slot
+absorbs the rounding so the strip ends flush. All three matter: a mutant that
+dropped the gaps from the budget still gave tidy gaps and a flush edge while
+stealing 12px from the last tab.
+
+**Folder tabs**: the ACTIVE tab has no shoulder line under it — that gap is what
+makes it read as joined to the panel. Inactive tabs drop 2px and carry hover and
+press through `button_transition`.
+
+**The miscue caption is deleted; the dashed ring stays.** The Maker asked for the
+text, not the advisory. r30's reasoning for the ring is unaffected.
+
+**Trap:** two assertions (100, 116) pin call-site variable names in `run_gui`.
+Renaming things there will fail them. Update them to the new name — do not
+delete them.
 
 ## What r61 changed (as built)
 

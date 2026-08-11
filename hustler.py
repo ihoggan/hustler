@@ -4031,9 +4031,9 @@ def call_led(call_on, ball, pocket, logged_ago=None, flash_frames=45,
     if not call_on:
         return ((70, 74, 80), "calling off")
     if ball is None:
-        return ((210, 60, 55), "call: pick a ball")
+        return ((210, 60, 55), "Call: pick a ball")
     if pocket is None:
-        return ((235, 165, 60), "call: pick a pocket")
+        return ((235, 165, 60), "Call: pick a pocket")
     return ((90, 210, 110), "CALLED — ready")
 
 
@@ -5308,6 +5308,43 @@ def button_transition(armed, under, event):
     if event == "up":
         return (None, under if (armed is not None and armed == under) else None)
     return (armed, None)
+
+
+# r62: the HUD's symbol vocabulary, at module scope so it can be ASSERTED
+# rather than grepped for. The first cut of assertion 120 searched the SOURCE
+# for the triangle glyph and failed while the code was perfectly correct --
+# they were written as \u escapes, which a substring search cannot see. Assert
+# what a constant evaluates to, never how it happens to be spelled.
+DEG = "\u00b0"
+# Read off the picker directly above them: the pad is a cue-ball face, so up is
+# follow, down is draw, left and right are side. Solid triangles rather than
+# line arrows because they ink 97-104 pixels against 40-46 at 22pt -- more than
+# twice as legible on a small green button.
+SPIN_NUDGE = (("\u25b2", 0.01, 0.0), ("\u25bc", -0.01, 0.0),
+              ("\u25c0", 0.0, -0.01), ("\u25b6", 0.0, 0.01))
+
+
+def tab_slots(x, w, n, gap):
+    """r62: where each tab starts and how wide it is. Pure.
+
+    The Maker: "the Tab in the hud dont look like tabs at all, the are so
+    squashed together". They were laid end to end with `w = rect.w // n` and no
+    gap of any kind, so five tabs read as one striped bar.
+
+    THE LAST SLOT ABSORBS THE ROUNDING. Integer division leaves up to n-1
+    pixels unspent, and spending them nowhere leaves a ragged sliver against
+    the panel edge -- the same class of arithmetic that left the eighth
+    standings row undrawn at r56. Returns [(x, w), ...] covering exactly
+    `x .. x + w` with `gap` between neighbours and nothing left over.
+    """
+    if n <= 0:
+        return []
+    each = (w - gap * (n - 1)) // n
+    out = []
+    for i in range(n):
+        sx = x + i * (each + gap)
+        out.append((sx, (x + w - sx) if i == n - 1 else each))
+    return out
 
 
 def fit_label(text, max_width, measure=len):
@@ -6692,7 +6729,10 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             pygame.draw.rect(surf, (60, 64, 72), track, border_radius=3)
             frac = slider_frac(self.get(), self.lo, self.hi)
             fill_w = int(track.w * frac)
-            fill_col = (140, 170, 210) if en else (70, 74, 80)
+            # r62: RED, the Maker's call. It was a light blue that read as
+            # decoration; power is the one control on every single shot and
+            # the trail should say so.
+            fill_col = (198, 54, 48) if en else (70, 74, 80)
             if fill_w > 0:
                 pygame.draw.rect(surf, fill_col,
                                   (track.x, track.y, fill_w, track.h), border_radius=3)
@@ -6701,7 +6741,10 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                 (track.x + fill_w, track.y + track.h // 2),
                                 self._geom()[1])
             txt_col = COL["hud"] if en else (120, 122, 126)
+            # r62: capitalised. "Text should not ... start with lower case
+            # letters" -- the Maker, and it applies to every label on the HUD.
             txt = f"{self.label}: {self.fmt.format(self.get())}"
+            txt = txt[:1].upper() + txt[1:]
             surf.blit(font.render(txt, True, txt_col), (self.rect.x, self.rect.y))
 
     class SpecBlock:
@@ -7039,10 +7082,19 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             pygame.draw.circle(surf, (206, 58, 54), (int(px), int(py)), tip_r, 2)
             pygame.draw.circle(surf, (206, 58, 54), (int(px), int(py)), 2)
 
-            lbl = font.render(f"spin  f{follow:+.2f} s{side:+.2f}", True, COL["hud"])
+            lbl = font.render(f"Spin  f{follow:+.2f} s{side:+.2f}", True,
+                              COL["hud"])
             surf.blit(lbl, (cx - R, cy - R - 18))
-            adv = font.render("- - miscue (real cue)", True, (198, 132, 96))
-            surf.blit(adv, (cx - R, cy + R + 4))
+            # r62: THE MISCUE CAPTION IS GONE. It printed straight across the
+            # draw/follow/left/right row beneath it -- the clearance that was
+            # supposed to hold it (radius + 22) never scaled with UI_S, so at
+            # 1.5 the text landed on the buttons.
+            #
+            # The DASHED RING STAYS. The Maker asked for the text removed, not
+            # the advisory, and r30's reasoning for the ring is unaffected: it
+            # marks where a real cue starts to miscue, it is drawn and never
+            # enforced, and nothing inside the rim is unreachable. If the ring
+            # should go too, that is a separate decision.
 
     class Dial:
         """Rotating cue-angle knob (Bug-report follow-up, R6.6): drag
@@ -7104,7 +7156,10 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             hr = max(6, int(r * 0.09))
             pygame.draw.circle(surf, (255, 90, 90), (int(ex), int(ey)), hr, 2)
             pygame.draw.circle(surf, (255, 90, 90), (int(ex), int(ey)), 2)
-            lbl = font.render(f"aim angle  {ang:6.2f} deg", True, COL["hud"])
+            # r62: capitalised, and the degree SYMBOL rather than the word --
+            # the same rule as the nudge buttons below it.
+            lbl = font.render(f"Aim angle  {ang:6.2f}{DEG}", True,
+                              COL["hud"])
             surf.blit(lbl, (cx - r, cy - r - 18))
 
     class TabStrip:
@@ -7113,25 +7168,91 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             self.rect, self.labels = pygame.Rect(rect), labels
             self.get, self.set = get_index, set_index
 
+        # r62: FOLDER TABS. The Maker: "the Tab in the hud dont look like tabs
+        # at all, the are so squashed together". Both halves were true -- they
+        # were butted edge to edge with no gap at all (w = rect.w // n, laid
+        # end to end), and they were flat fills distinguished only by a blue
+        # tint, which reads as a highlight rather than as a tab.
+        #
+        # A folder tab is defined by ONE thing: the selected one has no bottom
+        # edge, so it joins the panel below and reads as the front of a stack.
+        # The line under the strip is therefore drawn in segments AROUND the
+        # active tab rather than straight across, which is what the old code
+        # did and why nothing looked connected to anything.
+        GAP = 3          # at 1.0 scale; scaled below
+
+        def _gap(self):
+            return max(1, int(round(self.GAP * UI_S)))
+
         def _tab_rect(self, i):
-            w = self.rect.w // len(self.labels)
-            return pygame.Rect(self.rect.x + i * w, self.rect.y, w, self.rect.h)
+            sx, sw = tab_slots(self.rect.x, self.rect.w, len(self.labels),
+                               self._gap())[i]
+            return pygame.Rect(sx, self.rect.y, sw, self.rect.h)
 
         def handle_event(self, ev):
-            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+            # r61's arm-and-release, applied to tabs: a tab is a button.
+            if not hasattr(self, "armed"):
+                self.armed, self.hover = None, None
+            pos = getattr(ev, "pos", None)
+            under = None
+            if pos is not None:
                 for i in range(len(self.labels)):
-                    if self._tab_rect(i).collidepoint(ev.pos):
-                        self.set(i)
+                    if self._tab_rect(i).collidepoint(pos):
+                        under = i
+                        break
+            if ev.type == pygame.MOUSEMOTION:
+                self.hover = under
+            elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                self.armed, _ = button_transition(self.armed, under, "down")
+            elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
+                self.armed, fired = button_transition(self.armed, under, "up")
+                if fired is not None:
+                    self.set(fired)
 
         def draw(self, surf, font):
             cur = self.get()
+            hov = getattr(self, "hover", None)
+            held = getattr(self, "armed", None)
+            edge = (68, 72, 80)
+            lw = max(1, int(round(UI_S)))
             for i, lab in enumerate(self.labels):
                 r = self._tab_rect(i)
-                pygame.draw.rect(surf, (60, 90, 120) if i == cur else (42, 45, 51), r)
-                txt = font.render(lab, True, COL["hud"])
-                surf.blit(txt, txt.get_rect(center=r.center))
-            pygame.draw.line(surf, (68, 72, 80),
-                              (self.rect.x, self.rect.bottom), (self.rect.right, self.rect.bottom), 1)
+                active = i == cur
+                if active:
+                    base = (60, 90, 120)
+                else:
+                    base = (42, 45, 51)
+                    if hov == i:
+                        base = button_shade(base, 1.35)
+                    if held == i and hov == i:
+                        base = button_shade(base, 0.85)
+                # An inactive tab sits two pixels LOWER and is drawn shorter,
+                # so the active one stands proud of the row.
+                drop = 0 if active else max(2, int(round(2 * UI_S)))
+                rr = pygame.Rect(r.x, r.y + drop, r.w, r.h - drop)
+                pygame.draw.rect(surf, base, rr,
+                                 border_top_left_radius=int(5 * UI_S),
+                                 border_top_right_radius=int(5 * UI_S))
+                pygame.draw.line(surf, button_shade(base, 1.45),
+                                 (rr.left + lw, rr.top + lw // 2),
+                                 (rr.right - lw, rr.top + lw // 2), lw)
+                col = (238, 240, 246) if active else COL["hud"]
+                txt = font.render(lab, True, col)
+                surf.blit(txt, txt.get_rect(center=rr.center))
+                if not active:
+                    # the shoulder line under an inactive tab
+                    pygame.draw.line(surf, edge, (r.left, self.rect.bottom),
+                                     (r.right, self.rect.bottom), lw)
+                else:
+                    # ... and NOT under the active one: that gap is the join.
+                    pygame.draw.line(surf, edge, (r.left, self.rect.bottom),
+                                     (r.left, self.rect.bottom), lw)
+            # the gaps between tabs still need the shoulder drawn
+            g = self._gap()
+            for i in range(len(self.labels) - 1):
+                r = self._tab_rect(i)
+                pygame.draw.line(surf, edge, (r.right, self.rect.bottom),
+                                 (r.right + g, self.rect.bottom), lw)
 
     sim = Sim()
     # r23 (BUG 3 follow-up): "people play solo on pool tables" -- sandbox has no
@@ -8711,16 +8832,22 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                    lambda: (spin_follow, spin_side), set_spin))
             yy = cy_ + radius + 22        # clears the advisory-ring caption
             qq = (pw - 12) // 4
-            target.append(Button((px, yy, qq, U(22)), "draw",
-                                  lambda: nudge_spin_by(-0.01, 0.0)))
-            target.append(Button((px + qq + U(4), yy, qq, U(22)), "foll",
-                                  lambda: nudge_spin_by(0.01, 0.0)))
-            target.append(Button((px + 2 * (qq + 4), yy, qq, U(22)), "left",
-                                  lambda: nudge_spin_by(0.0, -0.01)))
-            target.append(Button((px + 3 * (qq + 4), yy, qq, U(22)), "right",
-                                  lambda: nudge_spin_by(0.0, 0.01)))
+            # r62: SOLID TRIANGLES, not words and not line arrows. The Maker
+            # asked for arrow symbols; measured at 22pt, the line arrows ink
+            # 40-46 pixels against 97-104 for the triangles, so on a small
+            # green button the triangles are more than twice as legible.
+            #
+            # The mapping is SPATIAL and reads off the picker directly above:
+            # the pad is a cue-ball face, so up is follow, down is draw, and
+            # left/right are side. That adjacency is what makes a bare glyph
+            # unambiguous -- these would not work on their own elsewhere.
+            for i_, (glyph, df_, ds_) in enumerate(SPIN_NUDGE):
+                target.append(Button(
+                    (px + i_ * (qq + U(4)), yy, qq, U(22)), glyph,
+                    (lambda a, b: lambda: nudge_spin_by(a, b))(df_, ds_)))
             yy += U(28)
-            target.append(Button((px, yy, pw, U(26)), "Reset spin", do_reset_spin))
+            target.append(Button((px, yy, pw, U(26)), "Reset spin",
+                                  do_reset_spin))
             return yy + 26   # r33: the caller stacks below this
 
         def add_aim_group(target, y_top, radius):
@@ -8734,7 +8861,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                 set_aim_angle))
             yy = cy_ + radius + 8
             nw = (pw - 8) // 2
-            for step, lab in ((1.0, "1 deg"), (0.1, "0.1 deg"), (0.01, "0.01 deg")):
+            # r62: the DEGREE SYMBOL, not the word. Measured: "-1 deg" is 54px
+            # against "-1°" at 27px in both panel fonts, so this halves the
+            # widest label on the row and buys the space back for spacing.
+            for step, lab in ((1.0, "1" + DEG), (0.1, "0.1" + DEG),
+                              (0.01, "0.01" + DEG)):
                 target.append(Button((px, yy, nw, U(22)), f"-{lab}",
                                       (lambda d: lambda: nudge_aim_angle(-d))(step)))
                 target.append(Button((px + nw + 8, yy, nw, U(22)), f"+{lab}",
@@ -8778,65 +8909,59 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                             lambda: nudge_power_by(0.1)))
         y += U(29)
 
-        # r40: the aim group is now built by the shared add_aim_group() and
-        # sized by the same fit-or-omit rule the Shot-tab spin picker uses. The
-        # old radius was 38, which is 1.51 degrees per pixel of drag against a
-        # readout showing hundredths -- the control could not reach the
-        # precision it displayed, the third and last instance of the defect
-        # power (r29) and spin (r30) already had fixed.
+        # r62: THE SHOT TAB IS LAID OUT IN THE ORDER IT IS PLAYED --
+        # Power, Aim angle, Spin, then Shoot pinned to the bottom.
         #
-        # `extra=104` is everything in the group that is not the diameter:
-        # 20 above the dial to clear its readout label, 8 below it, then three
-        # 25px nudge rows plus a 1px allowance. If it will not fit the Shot tab
-        # honestly, it is OMITTED here -- the Aim tab always carries the full
-        # size one, so that costs a tab click, not a capability.
-        # `extra` is EVERYTHING on this tab that is not the dial's diameter,
-        # counted rather than estimated -- my first attempt used 104 and the
-        # Shot tab ran 19px off the bottom of a 548-tall window, because I had
-        # costed the group and forgotten what sits BELOW it:
-        #   20  above the dial, to clear its readout label
-        #    8  below the dial
-        #   75  three 25px nudge rows
-        #   34  the r10 separation gap (see the r30.1 note below)
-        #   30  the Shoot button
-        #   23  headroom, deliberately spare
-        # = 190. The headroom is not padding for its own sake: r37.1 clipped a
-        # status line because a layout that merely fitted here met a taller
-        # font fallback elsewhere.
-        aim_r = spin_group_radius(win_h - y, pw // 2 - 4,
-                                  r_max=U(100), r_min=U(60), extra=U(190))
-        if aim_r:
-            y = add_aim_group(shot, y, aim_r)
-        else:
-            y = add_aim_group(shot, y, U(38))
-        # r30.1 BUG FIX: this was `y += U(12)` and Shoot overlapped the 0.01 deg
-        # row by 10px. The 34 it replaced was never "the separation gap" -- it
-        # was the 0.01 deg row's own 22px height PLUS a 12px gap, and I read
-        # the comment instead of the arithmetic. It stays 34: 22 clears the
-        # row, and the remaining 12 keeps Shoot visually apart from the fine
-        # adjust rows, which matters because Shoot is the irreversible one.
-        y += U(34)
-        shot.append(Button((px, y, pw, U(26)), "Shoot", do_shoot,
+        # It used to run Power, Aim, SHOOT, Spin, so the irreversible button
+        # sat in the MIDDLE of the panel with the spin picker below it. That
+        # only looked right on a window too short to fit the picker at all,
+        # which is why my own r61 screenshot showed Shoot at the bottom and the
+        # Maker's did not. His words: "the play sequence is Power, Aim Angle,
+        # Spin then shoot."
+        #
+        # Shoot is PINNED rather than stacked. It is the one control pressed on
+        # every shot, and a button that moves up and down the panel depending
+        # on whether the spin picker fitted is a button the hand has to look
+        # for. Everything else shares the space above it.
+        #
+        # The gaps are DISTRIBUTED, not fixed: the three groups are measured,
+        # and whatever is left over is divided evenly between them. Fixed gaps
+        # were what produced the "spacing isnt good" the Maker was working
+        # around -- they pile all the slack at the bottom.
+        shoot_h = U(26)
+        bottom_margin = U(12)
+        shoot_y = win_h - bottom_margin - shoot_h
+        # Everything from here down to Shoot is the budget for aim + spin.
+        avail = shoot_y - y - U(24)      # 24 = minimum breathing above Shoot
+
+        # Both groups are sized against HALF the budget each, so neither can
+        # starve the other -- the old code gave aim first refusal on the whole
+        # panel and spin whatever survived.
+        aim_r = spin_group_radius(avail // 2, pw // 2 - 4,
+                                  r_max=U(100), r_min=U(60), extra=U(115))
+        spin_r = spin_group_radius(avail // 2, pw // 2 - 4,
+                                   r_max=U(100), r_min=U(60), extra=U(100))
+        # `extra` for aim is the group minus the diameter: 20 above the dial to
+        # clear its readout, 8 below, three 25px nudge rows, 12 spare. Shoot is
+        # NO LONGER counted here -- it is pinned outside this budget, which is
+        # the arithmetic error r30.1 warned about, avoided by removing the term
+        # rather than by getting it right again.
+        aim_h = (2 * aim_r + U(115)) if aim_r else (2 * U(38) + U(115))
+        spin_h = (2 * spin_r + U(100)) if spin_r else 0
+
+        slack = max(0, avail - aim_h - spin_h)
+        gap = slack // (2 if spin_r else 1)
+
+        y += gap
+        y = add_aim_group(shot, y, aim_r or U(38))
+        if spin_r is not None:
+            y += gap
+            add_spin_group(shot, y, spin_r)
+
+        shot.append(Button((px, shoot_y, pw, shoot_h), "Shoot", do_shoot,
                             enabled=lambda: shoot_enabled(
-                                sim.cue() is not None, sim.all_at_rest(), my_turn())))
-        y += U(26)
-        # r30.2 (Fork C): a second strike-point picker here when the window is
-        # tall enough, so a desktop-sized game never leaves the Shot tab. The
-        # fit rule is the pure spin_group_radius(); None means the window is
-        # too short and the Spin tab keeps sole custody, which is the honest
-        # outcome rather than drawing a picker too small to aim with.
-        # r50: r_max/r_min/extra were left at their UNSCALED defaults here,
-        # so the Shot tab's picker was capped at 100px at every HUD scale
-        # while the Spin tab's reached 150 at 1.5x. Not a design decision --
-        # a fixed pixel inside a scaled layout, the same family r41 and r42
-        # kept finding. The aim call directly above always passed U(100); this
-        # one never did, because r41 scaled the literals inside
-        # build_panel_widgets and not the arguments handed to a pure function.
-        shot_spin_r = spin_group_radius(win_h - (y + 32) - 8, pw // 2 - 4,
-                                        r_max=U(100), r_min=U(60),
-                                        extra=U(100))
-        if shot_spin_r is not None:
-            add_spin_group(shot, y + 32, shot_spin_r)
+                                sim.cue() is not None, sim.all_at_rest(),
+                                my_turn())))
         panel_widgets["Shot"] = shot
 
         # r50: the Call tab. Was "Spin", carrying the picker with the caller
@@ -9849,9 +9974,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # never four lines). Reclaiming them is what pays for Fork 3B's
         # leading, and it takes a full game with ball in hand from nine lines
         # against a budget of seven -- silently clipping two -- down to six.
+        # r62: capitalised. The Maker's rule is about the HUD, not only the
+        # panel: "Text should not overlap widgets or start with lower case
+        # letters". These two lead the band above the table.
         status_fields = [
-            f"power {power:4.2f} m/s",
-            f"spin s{spin_side:+.2f} f{spin_follow:+.2f}",
+            f"Power {power:4.2f} m/s",
+            f"Spin s{spin_side:+.2f} f{spin_follow:+.2f}",
         ]
         if game is not None:
             def ptxt(i):
@@ -9881,7 +10009,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             # solo_status_lines() already reports what is left, and the strip
             # clips silently, so every line has to earn its place.
             status_lines2 = ([] if solo_active() else [
-                f"balls {len(sim.balls)}  potted {len(sim.potted_log)}"
+                f"Balls {len(sim.balls)}  potted {len(sim.potted_log)}"
                 f" [{','.join(sim.potted_colours()) or '-'}]"
             ])
             if human_shooting() and sandbox_bih:
@@ -13429,7 +13557,10 @@ def selftest():
           # function alone left the fix unguarded: a mutation that stripped the
           # arguments back off went unnoticed, because the pure function still
           # honoured a cap nobody was giving it. Same shape as r49.2's `shots`.
-          and "shot_spin_r = spin_group_radius(" in src105
+          # r62 renamed this to `spin_r` when the Shot tab was reordered.
+          # Updated, not dropped: the clause exists to prove the CALL SITE
+          # passes a scaled cap, and that is still exactly what it checks.
+          and "spin_r = spin_group_radius(" in src105
           # TWO scaled calls: the aim group and the spin group. Checking for
           # the substring alone passed even with the spin arguments stripped,
           # because the aim call above carries the identical text -- the
@@ -14295,6 +14426,70 @@ def selftest():
           f"{dn119['hi'] == up119['lo']}; disabled flat "
           f"{off119['hi'] == off119['fill']}; drag-off fired {f3_119!r}, "
           f"clean click fired {fb_119!r}")
+
+    # 120. r62: the Shot tab reads in the order it is played, and the tabs
+    # look like tabs.
+    #
+    # THE SHOOT BUTTON WAS IN THE MIDDLE OF THE PANEL. The stack ran Power,
+    # Aim, SHOOT, Spin -- so the one irreversible control sat above the spin
+    # picker. It only looked right on a window too short to fit the picker at
+    # all, which is why my own screenshot showed Shoot at the bottom and the
+    # Maker's showed it halfway up. His order: Power, Aim angle, Spin, Shoot.
+    #
+    # The tab geometry is pinned through `tab_slots` because the fault was
+    # arithmetic, not taste: `w = rect.w // n` laid end to end with NO gap,
+    # which is why five tabs read as one striped bar. Gaps must exist, slots
+    # must not overlap, and the strip must end EXACTLY flush -- integer
+    # division leaves up to n-1 pixels unspent, and a sliver against the panel
+    # edge is the same class of error that left the eighth standings row
+    # undrawn at r56.
+    src120 = "\n".join(ln for ln in inspect.getsource(run_gui).split("\n")
+                       if not ln.lstrip().startswith("#"))
+    slots120 = tab_slots(10, 305, 5, 3)
+    ends120 = [x + w for x, w in slots120]
+    gaps120 = [slots120[i + 1][0] - ends120[i] for i in range(4)]
+    odd120 = tab_slots(0, 101, 5, 3)      # deliberately unspendable width
+    check("r62 the Shot tab reads in the order it is played and the tabs look "
+          "like tabs — Shoot is pinned to the bottom instead of sitting "
+          "halfway up above the spin picker, the aim readout and its nudge "
+          "buttons use the degree symbol rather than the word, the spin row "
+          "is glyphs read off the picker above it, and the tab slots have "
+          "real gaps and still end flush with the panel edge",
+          # tabs: gaps exist, nothing overlaps, the strip ends flush
+          len(slots120) == 5 and gaps120 == [3, 3, 3, 3]
+          and ends120[-1] == 10 + 305
+          and all(w > 0 for _, w in slots120)
+          # EVERY SLOT THE SAME WIDTH bar rounding. Without this a mutant that
+          # forgot to subtract the gaps from the budget still produced four
+          # tidy gaps and a flush right edge -- it just quietly stole 12px from
+          # the last tab to pay for them. "Ends flush" and "gaps exist" are
+          # both true of a visibly wrong strip; only the widths catch it.
+          and max(w for _, w in slots120) - min(w for _, w in slots120) < 5
+          and tab_slots(0, 101, 5, 3)[-1][0] + odd120[-1][1] == 101
+          and tab_slots(0, 100, 1, 3) == [(0, 100)]
+          and tab_slots(0, 100, 0, 3) == []
+          # Shoot is pinned to the bottom, NOT stacked after the aim group
+          and "shot.append(Button((px, shoot_y, pw, shoot_h)" in src120
+          and "shoot_y = win_h - bottom_margin - shoot_h" in src120
+          # ... and the old mid-panel ordering is gone
+          and 'y += U(34)\n        shot.append(Button((px, y, pw, U(26)), '
+              '"Shoot"' not in src120
+          # Asserted as CHARACTERS, not as source text -- see SPIN_NUDGE.
+          and DEG == chr(0xB0)
+          and [g for g, _, _ in SPIN_NUDGE] == [chr(0x25B2), chr(0x25BC),
+                                                chr(0x25C0), chr(0x25B6)]
+          # up is follow (+f), down is draw (-f), left and right are side
+          and [(f, s) for _, f, s in SPIN_NUDGE] == [(0.01, 0.0), (-0.01, 0.0),
+                                                     (0.0, -0.01), (0.0, 0.01)]
+          # ... and the WORD is gone from every visible LABEL. Matched as
+          # ` deg"` -- a bare " deg" also catches `for deg, major, lbl_ in
+          # dial_ticks()`, which is a loop variable and not a label at all.
+          and ' deg"' not in src120
+          and "miscue (real cue)" not in src120
+          # labels do not start lower case
+          and 'f"Aim angle' in src120 and '"Reset spin"' in src120,
+          f"slots {slots120}; gaps {gaps120}; flush "
+          f"{ends120[-1] == 315}; odd-width last slot {odd120[-1]}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
