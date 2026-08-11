@@ -5,6 +5,31 @@ etc.) are the internal build markers used during development.
 
 ---
 
+## r62.4 — Shoot follows the controls (current)
+
+"the shoot button is too far down, bring it up to 20pixels below the spin
+controls". r62.3 tightened the gaps between the groups and pooled the slack
+underneath them, which left Shoot marooned at the foot of a long empty band.
+
+It now sits **one `GROUP_GAP` below the last control** — 21px at his 1.5, the
+20 he asked for — rather than at the foot of the window. `shoot_button_y()`
+survives as a **clamp**: on a window with no slack to pool, Shoot still cannot
+be pushed down into the strip r62.2 measured as undrawable. It follows the
+controls where there is room and stops where the screen does.
+
+Measured: at 2880x1800 the controls end at 1115 and Shoot occupies 1136-1175.
+At 1024x520 the clamp takes over — 10px below the controls rather than 14, and
+still 70px clear of the bottom.
+
+**One latent bug fixed on the way.** `add_spin_group` returned `yy + 26`, a bare
+pixel where every other dimension in it is scaled, so the bottom it reported was
+13px short at 1.5. Nothing had ever depended on that return value; placing Shoot
+from it is what made it matter.
+
+Self-test **121**. `--snap` byte-identical at `62c87ddb…`.
+
+---
+
 ## r62.3 — the gap between the groups is a gap, not a share (current)
 
 The Maker, on r62.2: "I am unhappy with the position of the aim angle and spin

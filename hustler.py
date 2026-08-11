@@ -8893,7 +8893,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             yy += U(28)
             target.append(Button((px, yy, pw, U(26)), "Reset spin",
                                   do_reset_spin))
-            return yy + 26   # r33: the caller stacks below this
+            # r62.4: U(26), not a bare 26 -- this is the Reset button's own
+            # height and the caller stacks below it, so at 1.5 the returned
+            # bottom was 13px short of the truth. Nothing depended on it until
+            # Shoot started being placed from it.
+            return yy + U(26)
 
         def add_aim_group(target, y_top, radius):
             """r40: the aim dial plus its three nudge rows. ONE builder called
@@ -8976,9 +8980,10 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         shoot_h = U(26)
         # r62.2: was `win_h - U(12) - shoot_h`, which put Shoot 18px from the
         # bottom of an 1800-tall window and off the Maker's visible screen.
-        shoot_y = shoot_button_y(win_h, UI_S, shoot_h)
+        # This is now the LOWEST Shoot may go, not where it goes -- see below.
+        shoot_max = shoot_button_y(win_h, UI_S, shoot_h)
         # Everything from here down to Shoot is the budget for aim + spin.
-        avail = shoot_y - y - U(24)      # 24 = minimum breathing above Shoot
+        avail = shoot_max - y - U(24)    # 24 = minimum breathing above Shoot
         # The groups are now sized against a budget that ENDS above Shoot, so
         # they move up to make room for it rather than the other way round.
 
@@ -9024,8 +9029,19 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         y = add_aim_group(shot, y, aim_r or U(38))
         if spin_r is not None:
             y += GROUP_GAP
-            add_spin_group(shot, y, spin_r)
+            y = add_spin_group(shot, y, spin_r)
 
+        # r62.4: Shoot sits ONE GAP BELOW THE CONTROLS, not at the foot of the
+        # window. The Maker: "the shoot button is too far down, bring it up to
+        # 20pixels below the spin controls". r62.3 tightened the gaps between
+        # the groups and pooled the slack underneath, which left Shoot marooned
+        # at the bottom of a long empty band.
+        #
+        # `shoot_max` still applies as a CLAMP, so on a window with no slack to
+        # pool Shoot cannot be pushed down into the strip r62.2 found to be
+        # undrawable. It follows the controls where there is room and stops
+        # where the screen does.
+        shoot_y = min(y + GROUP_GAP, shoot_max)
         shot.append(Button((px, shoot_y, pw, shoot_h), "Shoot", do_shoot,
                             enabled=lambda: shoot_enabled(
                                 sim.cue() is not None, sim.all_at_rest(),
@@ -14546,7 +14562,11 @@ def selftest():
           # r62.2: the pin now goes through shoot_button_y(), which keeps it
           # clear of the unusable bottom strip. Same intent: Shoot is placed
           # from the WINDOW, not stacked after whatever came before it.
-          and "shoot_y = shoot_button_y(win_h, UI_S, shoot_h)" in src120
+          # r62.4: Shoot now follows the controls but is still CLAMPED by the
+          # window-derived limit, so it can never re-enter the undrawable
+          # strip. Both halves are checked -- the clamp is the safety property.
+          and "shoot_max = shoot_button_y(win_h, UI_S, shoot_h)" in src120
+          and "shoot_y = min(y + GROUP_GAP, shoot_max)" in src120
           # ... and the old mid-panel ordering is gone
           and 'y += U(34)\n        shot.append(Button((px, y, pw, U(26)), '
               '"Shoot"' not in src120
