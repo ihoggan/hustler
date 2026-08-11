@@ -5,6 +5,37 @@ etc.) are the internal build markers used during development.
 
 ---
 
+## r62.1 — labels off the widgets, and the gaps computed honestly (current)
+
+From the Maker's screenshot of r62 running on his own machine.
+
+**"The text for aim angle and spin are still embedded into the top of the
+widget and it just looks bad."** Correct. Both labels were blitted at
+`(cx - r, cy - r - 18)` — hard against the widget's left edge, and 18
+**unscaled** pixels above a dial that is 300px across at 1.5. They now sit
+centred over their widget with a scaled gap clear of it.
+
+**"the direction and spin are spaced too far apart."** Also correct, and the
+cause was arithmetic rather than taste. Both group builders mixed scaled and
+unscaled constants — `y_top + radius + 24`, `cy + radius + 22`, `+ 20`, `+ 8`
+— so each group's true height diverged from the `extra` the fit rule charged it
+by tens of pixels at 1.5. r62 then distributed the *leftover* as gaps, so every
+pixel of that error was spent pushing the groups apart. **Fifth instance** of a
+fixed pixel inside a scaled layout in this project (r41, r42, r50.1, r56, here).
+
+Every constant in both builders is now scaled, which makes each group's height
+exactly `2r + extra`: `AIM_EXTRA = U(103)`, `SPIN_EXTRA = U(122)`. The gaps are
+computed against the real numbers.
+
+**The missing Shoot button is not reproduced and is not yet fixed.** It renders
+at every window size tested — 2145x1305, 2560x1440, 3840x2160, 1920x1080. The
+working hypothesis is that the game window extends below the visible screen, so
+a button pinned to `win_h` falls off the bottom; before r62 it was stacked
+mid-panel and stayed in view. That needs the Maker's actual numbers rather than
+another guess.
+
+---
+
 ## r62 — the Shot tab in the order it is played (current)
 
 All from the Maker, working off a screenshot he pulled apart by hand.

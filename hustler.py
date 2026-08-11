@@ -7082,9 +7082,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             pygame.draw.circle(surf, (206, 58, 54), (int(px), int(py)), tip_r, 2)
             pygame.draw.circle(surf, (206, 58, 54), (int(px), int(py)), 2)
 
+            # r62.1: centred and clear of the pad -- see the Dial's note.
             lbl = font.render(f"Spin  f{follow:+.2f} s{side:+.2f}", True,
                               COL["hud"])
-            surf.blit(lbl, (cx - R, cy - R - 18))
+            surf.blit(lbl, lbl.get_rect(
+                midbottom=(cx, cy - R - int(round(8 * UI_S)))))
             # r62: THE MISCUE CAPTION IS GONE. It printed straight across the
             # draw/follow/left/right row beneath it -- the clearance that was
             # supposed to hold it (radius + 22) never scaled with UI_S, so at
@@ -7158,9 +7160,16 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             pygame.draw.circle(surf, (255, 90, 90), (int(ex), int(ey)), 2)
             # r62: capitalised, and the degree SYMBOL rather than the word --
             # the same rule as the nudge buttons below it.
+            # r62.1: CENTRED over the dial and a scaled gap clear of it. It
+            # was blitted at (cx - r, cy - r - 18): hard against the widget's
+            # left edge, and 18 UNSCALED pixels above a dial that is 300px
+            # across at 1.5 -- so the text sat on the rim and read as part of
+            # the widget. The Maker: "the text ... are still embedded into the
+            # top of the widget and it just looks bad".
             lbl = font.render(f"Aim angle  {ang:6.2f}{DEG}", True,
                               COL["hud"])
-            surf.blit(lbl, (cx - r, cy - r - 18))
+            surf.blit(lbl, lbl.get_rect(
+                midbottom=(cx, cy - r - int(round(8 * UI_S)))))
 
     class TabStrip:
 
@@ -8827,10 +8836,16 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # both from one function is what keeps them identical; do not inline
         # either of them back.
         def add_spin_group(target, y_top, radius):
-            cx_, cy_ = px + pw // 2, y_top + radius + 24
+            # r62.1: U() -- these were bare pixels. FIFTH instance of a fixed
+            # pixel inside a scaled layout (r41, r42, r50.1, r56, here), and
+            # this one did real damage: the group's true height diverged from
+            # the `extra` the fit rule costs it by tens of pixels at 1.5, so
+            # the distributed gaps were computed against a lie and the aim and
+            # spin groups drifted apart down the panel.
+            cx_, cy_ = px + pw // 2, y_top + radius + U(24)
             target.append(SpinPad((cx_, cy_), radius,
                                    lambda: (spin_follow, spin_side), set_spin))
-            yy = cy_ + radius + 22        # clears the advisory-ring caption
+            yy = cy_ + radius + U(22)     # clears the advisory ring
             qq = (pw - 12) // 4
             # r62: SOLID TRIANGLES, not words and not line arrows. The Maker
             # asked for arrow symbols; measured at 22pt, the line arrows ink
@@ -8856,10 +8871,10 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             drift apart, and both are views onto the same `aim_angle` closure
             var so they cannot disagree on state -- event dispatch only ever
             reaches the visible tab's widget list. Exactly the r30.2 shape."""
-            cx_, cy_ = px + pw // 2, y_top + radius + 20
+            cx_, cy_ = px + pw // 2, y_top + radius + U(20)
             target.append(Dial((cx_, cy_), radius, lambda: aim_angle,
                                 set_aim_angle))
-            yy = cy_ + radius + 8
+            yy = cy_ + radius + U(8)
             nw = (pw - 8) // 2
             # r62: the DEGREE SYMBOL, not the word. Measured: "-1 deg" is 54px
             # against "-1°" at 27px in both panel fonts, so this halves the
@@ -8937,17 +8952,24 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # Both groups are sized against HALF the budget each, so neither can
         # starve the other -- the old code gave aim first refusal on the whole
         # panel and spin whatever survived.
+        # r62.1: `extra` is now EXACTLY what each builder adds beyond the
+        # diameter, because both builders are fully scaled:
+        #   aim  = U(20) above + U(8) below + three U(25) rows      = U(103)
+        #   spin = U(24) above + U(22) below + U(22) + U(28) + U(26) = U(122)
+        # It was estimated before (115 and 100) against builders that mixed
+        # scaled and unscaled constants, so the numbers could not have been
+        # right at any scale but 1.0 -- and the leftover was silently spent as
+        # a gap, which is what pushed the two groups apart.
+        AIM_EXTRA, SPIN_EXTRA = U(103), U(122)
         aim_r = spin_group_radius(avail // 2, pw // 2 - 4,
-                                  r_max=U(100), r_min=U(60), extra=U(115))
+                                  r_max=U(100), r_min=U(60), extra=AIM_EXTRA)
         spin_r = spin_group_radius(avail // 2, pw // 2 - 4,
-                                   r_max=U(100), r_min=U(60), extra=U(100))
-        # `extra` for aim is the group minus the diameter: 20 above the dial to
-        # clear its readout, 8 below, three 25px nudge rows, 12 spare. Shoot is
-        # NO LONGER counted here -- it is pinned outside this budget, which is
-        # the arithmetic error r30.1 warned about, avoided by removing the term
-        # rather than by getting it right again.
-        aim_h = (2 * aim_r + U(115)) if aim_r else (2 * U(38) + U(115))
-        spin_h = (2 * spin_r + U(100)) if spin_r else 0
+                                   r_max=U(100), r_min=U(60), extra=SPIN_EXTRA)
+        # Shoot is NOT counted in either budget -- it is pinned outside them,
+        # which is the arithmetic error r30.1 warned about, avoided by removing
+        # the term rather than by getting it right again.
+        aim_h = 2 * (aim_r or U(38)) + AIM_EXTRA
+        spin_h = (2 * spin_r + SPIN_EXTRA) if spin_r else 0
 
         slack = max(0, avail - aim_h - spin_h)
         gap = slack // (2 if spin_r else 1)
@@ -13566,7 +13588,12 @@ def selftest():
           # because the aim call above carries the identical text -- the
           # mutation survived twice before this was counted rather than found.
           and src105.count("r_max=U(100), r_min=U(60)") == 2
-          and "extra=U(100))" in src105
+          # r62.1: `extra` is now named (AIM_EXTRA / SPIN_EXTRA) because the
+          # builders' true heights are exact. The clause still checks the same
+          # thing -- that the call site passes a SCALED extra, not a bare
+          # literal or the function's unscaled default.
+          and "AIM_EXTRA, SPIN_EXTRA = U(103), U(122)" in src105
+          and "extra=AIM_EXTRA)" in src105 and "extra=SPIN_EXTRA)" in src105
           and spin_group_radius(0, 500, r_max=150, r_min=90, extra=150) is None
           # every tab is resolved by NAME, never by a literal index (r30)
           and "panel_tab == 0" not in src105
