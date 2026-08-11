@@ -8982,6 +8982,23 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # The groups are now sized against a budget that ENDS above Shoot, so
         # they move up to make room for it rather than the other way round.
 
+        # r62.3: A FIXED GAP BETWEEN GROUPS, not a distributed one. r62 split
+        # all the leftover space evenly between the two gaps, which on a
+        # 1800-tall screen is a great deal of leftover -- the Maker: "I am
+        # unhappy with the position of the aim angle and spin widget. Can we
+        # push them back up toward the power adjuster, I wanted a gap between
+        # them but not as large, maybe 20 pixels".
+        #
+        # 14 scaled units, which is the 20 PIXELS HE ASKED FOR at his own HUD
+        # scale of 1.5 (14 x 1.5 = 21). He is reading a number off his screen,
+        # so the constant is chosen to produce that number where he is looking,
+        # and scales from there like everything else.
+        #
+        # The slack now falls BELOW the spin group instead of between the
+        # groups, so the stack sits up under the power adjuster and Shoot stays
+        # pinned where r62.2 put it.
+        GROUP_GAP = U(14)
+
         # Both groups are sized against HALF the budget each, so neither can
         # starve the other -- the old code gave aim first refusal on the whole
         # panel and spin whatever survived.
@@ -8994,23 +9011,19 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # right at any scale but 1.0 -- and the leftover was silently spent as
         # a gap, which is what pushed the two groups apart.
         AIM_EXTRA, SPIN_EXTRA = U(103), U(122)
-        aim_r = spin_group_radius(avail // 2, pw // 2 - 4,
+        budget = max(0, avail - 2 * GROUP_GAP)
+        aim_r = spin_group_radius(budget // 2, pw // 2 - 4,
                                   r_max=U(100), r_min=U(60), extra=AIM_EXTRA)
-        spin_r = spin_group_radius(avail // 2, pw // 2 - 4,
+        spin_r = spin_group_radius(budget // 2, pw // 2 - 4,
                                    r_max=U(100), r_min=U(60), extra=SPIN_EXTRA)
         # Shoot is NOT counted in either budget -- it is pinned outside them,
         # which is the arithmetic error r30.1 warned about, avoided by removing
         # the term rather than by getting it right again.
-        aim_h = 2 * (aim_r or U(38)) + AIM_EXTRA
-        spin_h = (2 * spin_r + SPIN_EXTRA) if spin_r else 0
 
-        slack = max(0, avail - aim_h - spin_h)
-        gap = slack // (2 if spin_r else 1)
-
-        y += gap
+        y += GROUP_GAP
         y = add_aim_group(shot, y, aim_r or U(38))
         if spin_r is not None:
-            y += gap
+            y += GROUP_GAP
             add_spin_group(shot, y, spin_r)
 
         shot.append(Button((px, shoot_y, pw, shoot_h), "Shoot", do_shoot,

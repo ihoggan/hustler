@@ -5,6 +5,31 @@ etc.) are the internal build markers used during development.
 
 ---
 
+## r62.3 — the gap between the groups is a gap, not a share (current)
+
+The Maker, on r62.2: "I am unhappy with the position of the aim angle and spin
+widget. Can we push them back up toward the power adjuster, I wanted a gap
+between them but not as large, maybe 20 pixels".
+
+r62 distributed all the leftover space evenly between the two gaps. On an
+1800-tall screen there is a great deal of leftover, so the two groups drifted
+down the panel in proportion to how much room there was — the more screen, the
+worse it looked.
+
+`GROUP_GAP = U(14)`, which is **the 20 pixels he asked for at his own HUD scale
+of 1.5** (14 x 1.5 = 21). He is reading a number off his screen, so the constant
+is chosen to produce that number where he is looking, and scales from there like
+everything else in the panel.
+
+The slack now falls **below** the spin group rather than between the groups, so
+the stack sits up under the power adjuster and Shoot stays pinned where r62.2
+put it. Measured at 2880x1800: power row ends 156, dial 218-518, spin pad
+701-1001, Shoot 1656-1695 with 105px clear beneath.
+
+Self-test **121**. `--snap` byte-identical at `62c87ddb…`.
+
+---
+
 ## r62.2 — the Shoot button stays where it can be seen (current)
 
 r62 pinned Shoot to `win_h - U(12) - h`. On the Maker's 2880x1800 desktop that
