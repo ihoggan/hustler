@@ -5,6 +5,36 @@ etc.) are the internal build markers used during development.
 
 ---
 
+## r62.2 — the Shoot button stays where it can be seen (current)
+
+r62 pinned Shoot to `win_h - U(12) - h`. On the Maker's 2880x1800 desktop that
+is y 1743-1782 — eighteen pixels of clearance — and **he could not see it at
+all**. Not cropped by his screenshot: absent from the running game.
+
+Correct arithmetic against a number that lies. pygame reports the full desktop,
+and the bottom of that desktop is not necessarily drawable. Measured from his
+screenshot: Reset spin at ~1716 renders, Shoot at 1743 does not, so 60 to 85
+pixels are lost to desktop furniture.
+
+`BOTTOM_SAFE = 70` scaled units — 105px at his 1.5 — is a **measured
+allowance**, not a round number. Shoot now occupies 1656-1695 on his screen,
+ending 21px above the last row he could already see. The aim and spin groups
+give up the room, which is what he asked for: "move the angle and spin widgets
+up enough to give room for the shoot button as its quite important for the
+game."
+
+Assertion 121 pins it **at his exact resolution**, because a general "inside the
+window" rule passes the broken version perfectly well — 18px of clearance is
+still inside the window.
+
+This is the fault this project keeps relearning in a new costume: a layout
+anchored to a number nobody checked. r41 and r42 were fixed pixels in a scaled
+layout; this is a scaled pixel against an unusable edge.
+
+Self-test **121**. `--snap` byte-identical at `62c87ddb…`.
+
+---
+
 ## r62.1 — labels off the widgets, and the gaps computed honestly (current)
 
 From the Maker's screenshot of r62 running on his own machine.

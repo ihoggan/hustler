@@ -5324,6 +5324,36 @@ SPIN_NUDGE = (("\u25b2", 0.01, 0.0), ("\u25bc", -0.01, 0.0),
               ("\u25c0", 0.0, -0.01), ("\u25b6", 0.0, 0.01))
 
 
+# r62.2: the bottom strip of the window that cannot be relied on.
+#
+# The Maker's Shoot button was drawn at y 1743-1782 on an 1800-tall window --
+# 18px of clearance -- and was NOT VISIBLE on his screen. Measured from his
+# screenshot: Reset spin at ~1716 renders, Shoot at 1743 does not, so between
+# 60 and 85 pixels at the bottom are lost to desktop furniture or to a window
+# that runs past the usable area. pygame reports the full 2880x1800 either way,
+# so nothing in the app can see it.
+#
+# 70 scaled units (105px at his 1.5) clears the measured 85 with room. This is
+# a MEASURED ALLOWANCE, not a round number picked for looks -- if it is ever
+# wrong it should be re-measured the same way rather than nudged.
+BOTTOM_SAFE = 70
+
+
+def shoot_button_y(win_h, ui_s, shoot_h):
+    """r62.2: where the Shoot button goes. Pure.
+
+    Pinned near the bottom -- the Maker's order is Power, Aim angle, Spin,
+    Shoot and it must not wander -- but clear of BOTTOM_SAFE rather than hard
+    against `win_h`, which is what put it off the edge of his screen.
+
+    Everything above is then laid out in what is LEFT, so the groups move up to
+    make room instead of Shoot being squeezed out. His words: "move the angle
+    and spin widgets up enough to give room for the shoot button as its quite
+    important for the game."
+    """
+    return win_h - int(round(BOTTOM_SAFE * ui_s)) - shoot_h
+
+
 def tab_slots(x, w, n, gap):
     """r62: where each tab starts and how wide it is. Pure.
 
@@ -8944,10 +8974,13 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # were what produced the "spacing isnt good" the Maker was working
         # around -- they pile all the slack at the bottom.
         shoot_h = U(26)
-        bottom_margin = U(12)
-        shoot_y = win_h - bottom_margin - shoot_h
+        # r62.2: was `win_h - U(12) - shoot_h`, which put Shoot 18px from the
+        # bottom of an 1800-tall window and off the Maker's visible screen.
+        shoot_y = shoot_button_y(win_h, UI_S, shoot_h)
         # Everything from here down to Shoot is the budget for aim + spin.
         avail = shoot_y - y - U(24)      # 24 = minimum breathing above Shoot
+        # The groups are now sized against a budget that ENDS above Shoot, so
+        # they move up to make room for it rather than the other way round.
 
         # Both groups are sized against HALF the budget each, so neither can
         # starve the other -- the old code gave aim first refusal on the whole
@@ -14497,7 +14530,10 @@ def selftest():
           and tab_slots(0, 100, 0, 3) == []
           # Shoot is pinned to the bottom, NOT stacked after the aim group
           and "shot.append(Button((px, shoot_y, pw, shoot_h)" in src120
-          and "shoot_y = win_h - bottom_margin - shoot_h" in src120
+          # r62.2: the pin now goes through shoot_button_y(), which keeps it
+          # clear of the unusable bottom strip. Same intent: Shoot is placed
+          # from the WINDOW, not stacked after whatever came before it.
+          and "shoot_y = shoot_button_y(win_h, UI_S, shoot_h)" in src120
           # ... and the old mid-panel ordering is gone
           and 'y += U(34)\n        shot.append(Button((px, y, pw, U(26)), '
               '"Shoot"' not in src120
@@ -14517,6 +14553,45 @@ def selftest():
           and 'f"Aim angle' in src120 and '"Reset spin"' in src120,
           f"slots {slots120}; gaps {gaps120}; flush "
           f"{ends120[-1] == 315}; odd-width last slot {odd120[-1]}")
+
+    # 121. r62.2: Shoot stays on the screen.
+    #
+    # IT WAS DRAWN AT 1743-1782 ON AN 1800-TALL WINDOW AND THE MAKER COULD NOT
+    # SEE IT. r62 pinned it to `win_h - U(12) - h`, which is correct arithmetic
+    # against a number that lies: pygame reports the full desktop, and the
+    # bottom of that desktop is not necessarily drawable. Measured from his
+    # screenshot -- Reset spin at ~1716 renders, Shoot at 1743 does not -- so
+    # 60 to 85 pixels are lost to desktop furniture.
+    #
+    # The lesson is the one this project keeps relearning in a new costume: a
+    # layout anchored to a number nobody checked. r41 and r42 were fixed pixels
+    # in a scaled layout; this is a SCALED pixel against an unusable edge.
+    #
+    # Asserted at his exact resolution, because a general rule would have
+    # passed the broken version too: 18px of clearance satisfies "inside the
+    # window" perfectly well.
+    h121 = int(round(26 * 1.5))
+    y121 = shoot_button_y(1800, 1.5, h121)
+    check("r62.2 the Shoot button stays where it can be seen — pinned clear of "
+          "the unusable strip at the bottom of the screen rather than hard "
+          "against the window edge, which drew it 18px from the bottom of an "
+          "1800-tall desktop and off the Maker's display entirely; the aim and "
+          "spin groups give up the room rather than Shoot being squeezed out",
+          # his screen: Shoot must END above the last row he could actually see
+          y121 + h121 <= 1716
+          # ... and it is still NEAR the bottom, not floating mid-panel
+          and y121 + h121 >= 1800 - int(round(BOTTOM_SAFE * 1.5)) - h121
+          # the reserve scales with the HUD, like everything else since r41
+          and shoot_button_y(1800, 1.0, 26) - shoot_button_y(1800, 1.5, 26)
+              == int(round(BOTTOM_SAFE * 1.5)) - BOTTOM_SAFE
+          # the old pin is gone: 12 units would have left it below the cut
+          and y121 < 1800 - int(round(12 * 1.5)) - h121
+          # taller window, same clearance -- it tracks the edge, not a constant
+          and 2160 - (shoot_button_y(2160, 1.5, h121) + h121)
+              == 1800 - (y121 + h121),
+          f"at 2880x1800 UI_S 1.5 Shoot occupies {y121}..{y121 + h121}, "
+          f"{1800 - (y121 + h121)}px clear of the bottom; the r62 pin would "
+          f"have put it at {1800 - int(round(12 * 1.5)) - h121}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
