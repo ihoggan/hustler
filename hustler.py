@@ -5395,6 +5395,51 @@ BANNER_DWELL = 2.6      # seconds a transient message holds the banner
 BANNER_ROLL = 0.32      # seconds to roll one message up and the next in
 
 
+# Words that stay lower case inside a banner unless they lead it. "vs" is the
+# one that matters -- "Maker Vs Spider" is wrong in a way everyone can see --
+# and the rest are ordinary title-case practice.
+BANNER_SMALL = {"vs", "v", "a", "an", "and", "at", "in", "of", "on", "or",
+                "the", "to"}
+# Acronyms that must survive title case intact. Found by running the real
+# strings through it: "AI vs AI" came out as "Ai vs Ai", which is worse than
+# the shouting it replaced. Anything here is left exactly as written.
+BANNER_KEEP = {"AI", "PB", "T", "UK"}
+
+
+def banner_case(text):
+    """r64.1: Title Case for the banner. Pure.
+
+    r64 shouted everything in capitals, which satisfied the Maker's "no lower
+    case" rule by brute force. He then asked for "first letter capitals", so
+    the rule is proper title case: every word capitalised, the small words left
+    alone, and the FIRST word always capitalised however small it is.
+
+    The input arrives in three different cases and all three have to come out
+    the same: names are stored upper ("MAKER"), modes are upper ("SANDBOX"),
+    and the rules layer writes sentence case ("your break -- aim at the pack").
+    So each word is lowered before it is capitalised; without that, "SANDBOX"
+    would survive a naive .capitalize() chain as "Sandbox" but "MAKER" inside a
+    longer string would not.
+    """
+    words = str(text).split()
+    out = []
+    for i, w in enumerate(words):
+        low = w.lower()
+        if w.upper() in BANNER_KEEP:
+            out.append(w.upper())
+        elif i > 0 and low in BANNER_SMALL:
+            out.append(low)
+        elif w[:1].isalpha():
+            out.append(low[:1].upper() + low[1:])
+        else:
+            # leading punctuation (an em dash, a bracket) is not a letter --
+            # capitalise the first letter that is, not the first character
+            j = next((k for k, c in enumerate(w) if c.isalpha()), None)
+            out.append(w if j is None
+                       else w[:j] + low[j].upper() + low[j + 1:])
+    return " ".join(out)
+
+
 def banner_line(mode_name, names=None, human=None):
     """r64: the resting banner -- who is at this table. Pure.
 
@@ -5409,6 +5454,8 @@ def banner_line(mode_name, names=None, human=None):
     if not names or len(names) < 2:
         return str(mode_name).upper()
     a, b = str(names[0]).upper(), str(names[1]).upper()
+    # r64.1: still normalised to upper HERE so the seat comparison below is
+    # case-blind; `banner_case` decides how it is finally shown.
     if human and b == str(human).upper():
         a, b = b, a
     return "%s vs %s" % (a, b)
@@ -10466,8 +10513,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 while _bh >= 12:
                     _bfont = pygame.font.SysFont(
                         "consolas,menlo,monospace", _bh, bold=True)
-                    if max(_bfont.size(banner_shown.upper())[0],
-                           _bfont.size(banner_prev.upper())[0]) <= bw:
+                    if max(_bfont.size(banner_case(banner_shown))[0],
+                           _bfont.size(banner_case(banner_prev))[0]) <= bw:
                         break
                     _bh -= 2
                 # The roll: the outgoing line leaves upward and the incoming
@@ -10488,9 +10535,15 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     # sentence case from the rules layer. Raising it here
                     # rather than at the source keeps the rules text usable
                     # anywhere else it is read.
-                    _img = _bfont.render(_txt.upper(), True, (236, 232, 214))
+                    # r64.1: Title Case, and CENTRED in the band rather than
+                    # ranged left off the same margin as the sub-line. A
+                    # banner that changes width every few seconds looks
+                    # unanchored when its left edge is fixed; centred, the
+                    # text grows and shrinks about a point that does not move.
+                    _img = _bfont.render(banner_case(_txt), True,
+                                         (236, 232, 214))
                     display.blit(_img, _img.get_rect(
-                        center=(bx + _img.get_width() // 2,
+                        center=((win_w - PANEL_W) // 2,
                                 int(_cy + _off * TOP_BAND_H))))
                 display.set_clip(_clip)
                 # r64: whose turn, and on what colour, pinned UNDER the banner
@@ -14963,6 +15016,21 @@ def selftest():
           # an expired message does not outrank a live older one
           and banner_active("REST", [("A", 0.0, 9.0), ("B", 0.5, 0.1)], 1.0)
           == "A"
+          # r64.1 TITLE CASE. Three input cases all have to come out the
+          # same: names are stored upper, modes are upper, and the rules layer
+          # writes sentence case. "vs" stays down or it reads as "Maker Vs
+          # Spider"; acronyms survive intact, because the first cut turned
+          # "AI vs AI" into "Ai vs Ai" -- worse than the shouting it replaced.
+          and banner_case("MAKER vs SPIDER") == "Maker vs Spider"
+          and banner_case("AI vs AI") == "AI vs AI"
+          and banner_case("SOLO") == "Solo"
+          and banner_case("your break — aim at the pack")
+          == "Your Break — Aim at the Pack"
+          and banner_case("BALL IN HAND — drag cue in baulk")
+          == "Ball in Hand — Drag Cue in Baulk"
+          # a small word LEADING the line is still capitalised
+          and banner_case("in hand") == "In Hand"
+          and banner_case("") == ""
           # the roll, clamped BOTH ways
           and roll_frac(0.0, -1.0, 1.0) == 0.0
           and roll_frac(0.0, 0.5, 1.0) == 0.5

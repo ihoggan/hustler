@@ -5,6 +5,34 @@ etc.) are the internal build markers used during development.
 
 ---
 
+## r64.1 — Title Case, centred (current)
+
+"could we center align it and follow the first letter capitals".
+
+r64 shouted the banner in capitals, which satisfied the no-lower-case rule by
+brute force. `banner_case()` now applies proper title case: every word
+capitalised, small words left down, and the first word always capitalised
+however small it is.
+
+Three input cases all have to come out the same, which is why this is a
+function and not a `.title()` call: names are stored upper (`MAKER`), modes are
+upper (`SANDBOX`), and the rules layer writes sentence case (`your break — aim
+at the pack`).
+
+**`vs` stays down** or it reads as "Maker Vs Spider". **Acronyms survive
+intact** — the first cut turned "AI vs AI" into "Ai vs Ai", which is worse than
+the shouting it replaced. Found by running the real strings through it rather
+than by reasoning about it.
+
+**Centred in the band.** A banner whose width changes every few seconds looks
+unanchored when its left edge is fixed; centred, it grows and shrinks about a
+point that does not move.
+
+Self-test **123** (assertion 123 extended, three more mutants caught).
+`--snap` byte-identical at `62c87ddb…`.
+
+---
+
 ## r64 — the band becomes a banner (current)
 
 The Maker asked for the mode above the table in big letters, then corrected the
