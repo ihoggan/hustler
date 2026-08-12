@@ -5354,6 +5354,34 @@ def shoot_button_y(win_h, ui_s, shoot_h):
     return win_h - int(round(BOTTOM_SAFE * ui_s)) - shoot_h
 
 
+# r63: DRAG CONTROLS. Buttons got their affordance at r61 and tabs at r62; the
+# power slider, the aim dial and the spin pad still had none -- no hover, no
+# held state, no hand cursor. They cannot borrow r61's arm-and-release: a drag
+# has no "release inside to fire", it acts continuously while held. What they
+# share with a button is that the pointer should be able to tell, without
+# clicking, that the thing is grabbable.
+GRAB_HOVER_K = 1.22     # lift under the pointer
+GRAB_HELD_K = 0.80      # pushed in while dragged
+
+
+def grab_face(base, hover=False, held=False):
+    """r63: the colour a drag handle should be. Pure.
+
+    HELD OUTRANKS HOVER, and it has to: a drag keeps the mouse captured after
+    the pointer leaves the widget, so for most of a real drag `hover` is False
+    while `held` is True. Testing hover first would make the handle brighten as
+    you grabbed it and go dull the moment you dragged anywhere useful.
+
+    Held is DARKER and hover LIGHTER, matching r61's buttons, so one vocabulary
+    covers the whole HUD: lighter means "you could", darker means "you are".
+    """
+    if held:
+        return button_shade(base, GRAB_HELD_K)
+    if hover:
+        return button_shade(base, GRAB_HOVER_K)
+    return tuple(base[:3])
+
+
 def tab_slots(x, w, n, gap):
     """r62: where each tab starts and how wide it is. Pure.
 
@@ -6716,6 +6744,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             self.lo, self.hi, self.get, self.set = lo, hi, get, set_
             self.label, self.fmt, self.enabled = label, fmt, enabled
             self.dragging = False
+            self.hover = False      # r63
 
         # r50.1: every dimension in here was a fixed pixel -- a 6px track 20px
         # down, a radius-7 knob, a 14px grab margin -- so the slider stayed the
@@ -6735,6 +6764,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         def _track(self):
             return pygame.Rect(self._geom()[0])
 
+        def wants_cursor(self, pos):
+            """r63: is the pointer over the grabbable part? ONE source for the
+            hover paint and for the hand cursor, so the two cannot disagree."""
+            return bool(self.enabled()) and self._track().inflate(
+                0, self._geom()[2]).collidepoint(pos)
+
         def handle_event(self, ev):
             if not self.enabled():
                 self.dragging = False
@@ -6746,7 +6781,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     self._apply(ev.pos[0], track)
             elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
                 self.dragging = False
-            elif ev.type == pygame.MOUSEMOTION and self.dragging:
+            elif ev.type == pygame.MOUSEMOTION and not self.dragging:
+                self.hover = self.wants_cursor(ev.pos)          # r63
+            if ev.type == pygame.MOUSEMOTION and self.dragging:
                 self._apply(ev.pos[0], track)
 
         def _apply(self, x, track):
@@ -6766,7 +6803,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             if fill_w > 0:
                 pygame.draw.rect(surf, fill_col,
                                   (track.x, track.y, fill_w, track.h), border_radius=3)
-            knob_col = (225, 230, 238) if en else (110, 112, 116)
+            knob_col = (grab_face((225, 230, 238), hover=self.hover,
+                                  held=self.dragging)
+                        if en else (110, 112, 116))
             pygame.draw.circle(surf, knob_col,
                                 (track.x + fill_w, track.y + track.h // 2),
                                 self._geom()[1])
@@ -6875,6 +6914,10 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             self.label, self.on_click, self.enabled = label, on_click, enabled
             self.hover = False      # r61
             self.armed = None       # None, or self while held down
+
+        def wants_cursor(self, pos):
+            """r63: a live button offers the hand; a disabled one does not."""
+            return bool(self.enabled()) and self.rect.collidepoint(pos)
 
         def handle_event(self, ev):
             # r61: arm on down, fire on RELEASE INSIDE -- see
@@ -7030,10 +7073,15 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         def __init__(self, centre, radius, get, set_):
             self.centre, self.radius, self.get, self.set = centre, radius, get, set_
             self.dragging = False
+            self.hover = False      # r63
 
         def _hit(self, pos):
             dx, dy = pos[0] - self.centre[0], pos[1] - self.centre[1]
             return math.hypot(dx, dy) <= self.radius + 6
+
+        def wants_cursor(self, pos):
+            """r63: over the cue-ball face."""
+            return self._hit(pos)
 
         def handle_event(self, ev):
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1 and self._hit(ev.pos):
@@ -7041,7 +7089,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 self._apply(ev.pos)
             elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
                 self.dragging = False
-            elif ev.type == pygame.MOUSEMOTION and self.dragging:
+            elif ev.type == pygame.MOUSEMOTION and not self.dragging:
+                self.hover = self._hit(ev.pos)                  # r63
+            if ev.type == pygame.MOUSEMOTION and self.dragging:
                 self._apply(ev.pos)
 
         def _apply(self, pos):
@@ -7082,7 +7132,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             # exact signal Fork 3 decided NOT to send, since the whole point is
             # that nothing inside the rim is unreachable. Shading that means
             # nothing is worse than no shading. Do not re-add it.
-            pygame.draw.circle(surf, (232, 231, 226), (cx, cy), R)
+            # r63: the ball face lifts under the pointer and darkens while
+            # held -- same vocabulary as every other control since r61.
+            pygame.draw.circle(surf, grab_face((232, 231, 226),
+                                               hover=self.hover,
+                                               held=self.dragging),
+                               (cx, cy), R)
             # Crosshair, then the inner named ring.
             pygame.draw.line(surf, (176, 174, 168), (cx - R, cy), (cx + R, cy), 1)
             pygame.draw.line(surf, (176, 174, 168), (cx, cy - R), (cx, cy + R), 1)
@@ -7137,10 +7192,15 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         def __init__(self, centre, radius, get, set_):
             self.centre, self.radius, self.get, self.set = centre, radius, get, set_
             self.dragging = False
+            self.hover = False      # r63
 
         def _hit(self, pos):
             dx, dy = pos[0] - self.centre[0], pos[1] - self.centre[1]
             return math.hypot(dx, dy) <= self.radius + 6
+
+        def wants_cursor(self, pos):
+            """r63: over the dial face."""
+            return self._hit(pos)
 
         def handle_event(self, ev):
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1 and self._hit(ev.pos):
@@ -7148,7 +7208,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 self._apply(ev.pos)
             elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
                 self.dragging = False
-            elif ev.type == pygame.MOUSEMOTION and self.dragging:
+            elif ev.type == pygame.MOUSEMOTION and not self.dragging:
+                self.hover = self._hit(ev.pos)                  # r63
+            if ev.type == pygame.MOUSEMOTION and self.dragging:
                 self._apply(ev.pos)
 
         def _apply(self, pos):
@@ -7158,7 +7220,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         def draw(self, surf, font):
             cx, cy = self.centre
             r = self.radius
-            pygame.draw.circle(surf, (60, 64, 72), (cx, cy), r)
+            # r63: the face lifts under the pointer and darkens while held.
+            pygame.draw.circle(surf, grab_face((60, 64, 72),
+                                               hover=self.hover,
+                                               held=self.dragging),
+                               (cx, cy), r)
             pygame.draw.circle(surf, (150, 150, 150), (cx, cy), r, 1)
             # r40: plain degree ticks -- the Maker's choice over a compass rose
             # or clock face, both of which would assert a frame of reference
@@ -7227,6 +7293,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             sx, sw = tab_slots(self.rect.x, self.rect.w, len(self.labels),
                                self._gap())[i]
             return pygame.Rect(sx, self.rect.y, sw, self.rect.h)
+
+        def wants_cursor(self, pos):
+            """r63: anywhere on the strip that is a tab."""
+            return any(self._tab_rect(i).collidepoint(pos)
+                       for i in range(len(self.labels)))
 
         def handle_event(self, ev):
             # r61's arm-and-release, applied to tabs: a tab is a button.
@@ -9308,6 +9379,20 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                             continue
                 else:
                     btn_hover, btn_armed = None, None
+                    # r63: in-game, the hand comes from the PANEL widgets.
+                    # Each one answers `wants_cursor` for itself, from the same
+                    # hit test it paints its hover with, so the cursor and the
+                    # highlight cannot disagree -- which is the fault r61 fixed
+                    # for buttons by giving them one map.
+                    _pos = getattr(ev, "pos", None)
+                    if _pos is not None:
+                        _tabw = panel_widgets.get("tabstrip")
+                        _over = any(
+                            w.wants_cursor(_pos)
+                            for w in ([_tabw] if _tabw else [])
+                            + panel_widgets.get(TAB_LABELS[panel_tab], [])
+                            if hasattr(w, "wants_cursor"))
+                        btn_hover = "panel" if _over else None
                 # The hand cursor is the strongest "this is clickable" signal
                 # there is, and it cost three lines. Only set on CHANGE --
                 # pygame rebuilds the cursor every call.
@@ -14625,6 +14710,48 @@ def selftest():
           f"at 2880x1800 UI_S 1.5 Shoot occupies {y121}..{y121 + h121}, "
           f"{1800 - (y121 + h121)}px clear of the bottom; the r62 pin would "
           f"have put it at {1800 - int(round(12 * 1.5)) - h121}")
+
+    # 122. r63: the drag controls say they are grabbable.
+    #
+    # r61 gave buttons a bevel and r62 gave the tabs one, which left the three
+    # controls you actually DRAG -- the power slider, the aim dial, the spin
+    # pad -- as the only things on the HUD with no feedback at all. They cannot
+    # borrow r61's machinery: a drag has no "release inside to fire".
+    #
+    # HELD MUST OUTRANK HOVER, and that is the whole assertion. A drag captures
+    # the mouse, so once you are actually dragging, the pointer is usually off
+    # the widget and `hover` is False while `held` is True. Test hover first --
+    # the obvious way to write it -- and the handle brightens as you grab it
+    # and goes dull the moment you drag anywhere useful, which is precisely
+    # backwards.
+    #
+    # The direction is asserted too, because it is shared vocabulary now:
+    # LIGHTER means "you could", DARKER means "you are", across buttons, tabs
+    # and drag handles alike.
+    base122 = (200, 204, 212)
+    rest122 = grab_face(base122)
+    hov122 = grab_face(base122, hover=True)
+    held122 = grab_face(base122, held=True)
+    both122 = grab_face(base122, hover=True, held=True)
+    check("r63 the drag controls say they are grabbable — the slider knob, the "
+          "aim dial and the spin pad lift under the pointer and darken while "
+          "held, the same lighter-means-you-could vocabulary the buttons and "
+          "tabs already use; and HELD beats HOVER, because a drag captures the "
+          "mouse and spends most of its life with the pointer somewhere else "
+          "entirely",
+          # untouched is the base colour, unchanged
+          rest122 == tuple(base122)
+          # lighter under the pointer, darker while held
+          and sum(hov122) > sum(rest122) > sum(held122)
+          # THE ORDERING: dragging off the widget still reads as held
+          and both122 == held122
+          # ... and it is not merely equal by both being the base colour
+          and both122 != rest122
+          # clamped like every other shade since r61
+          and grab_face((250, 250, 250), hover=True) == (255, 255, 255)
+          and all(0 <= c <= 255 for c in grab_face((3, 3, 3), held=True)),
+          f"rest {rest122} hover {hov122} held {held122}; "
+          f"hover+held resolves to {both122}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0

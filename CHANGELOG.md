@@ -5,6 +5,37 @@ etc.) are the internal build markers used during development.
 
 ---
 
+## r63 — the drag controls say they are grabbable (current)
+
+r61 gave the buttons a bevel and r62 gave the tabs one, which left the three
+controls you actually **drag** — the power slider, the aim dial, the spin pad —
+as the only things on the HUD with no feedback at all.
+
+They cannot borrow r61's machinery. A button arms on press and fires on release
+inside; a drag has no "release inside to fire", it acts continuously while held.
+What they share is that the pointer should be able to tell, without clicking,
+that the thing is grabbable.
+
+**Hover lifts, held darkens** — the same vocabulary as the buttons and tabs, so
+one rule covers the whole HUD: lighter means *you could*, darker means *you
+are*.
+
+**HELD OUTRANKS HOVER, and that ordering is the whole assertion.** A drag
+captures the mouse, so once you are actually dragging, the pointer is usually
+off the widget: `hover` is False while `held` is True. Test hover first — the
+obvious way to write it — and the handle brightens as you grab it and goes dull
+the moment you drag anywhere useful, which is precisely backwards.
+
+**The hand cursor now works in-game**, not just on the menu screens. Every
+widget answers `wants_cursor()` for itself, from the same hit test it paints its
+hover with, so the cursor and the highlight cannot disagree — the one-map rule
+r61 established for buttons, extended to the panel. A disabled button offers no
+hand.
+
+Self-test **122**, four mutants caught. `--snap` byte-identical at `62c87ddb…`.
+
+---
+
 ## r62.4 — Shoot follows the controls (current)
 
 "the shoot button is too far down, bring it up to 20pixels below the spin
