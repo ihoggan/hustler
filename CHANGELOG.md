@@ -5,6 +5,54 @@ etc.) are the internal build markers used during development.
 
 ---
 
+## r64 — the band becomes a banner (current)
+
+The Maker asked for the mode above the table in big letters, then corrected the
+idea into something better: "I was hoping for the banner to say Maker vs Spider
+or whatever AI name he is playing against". A mode is a category; **the two
+names are the frame you are actually in**, and they tell you the mode by
+implication.
+
+**Fork 1B — the first line is gone.** Power, spin and the pot/cut readout have
+left the band. All three live on the Shot tab, a step away, and the band now has
+one job. `aim_txt` is no longer built at all; `pot_assessment` still runs for the
+aim overlay, which is where that information is useful — on the table, beside
+the ghost ball.
+
+**Fork 2B — the band has a floor** so the letters can be big. It used to be
+purely what the table fit left over. `BANNER_BAND_H = 74` scaled units. `smoke`
+still gets zero, so `--snap` is untouched.
+
+**Fork 3A — transients roll through and give the banner back.** Ball in hand, a
+foul, a frame ending: each takes the banner for 2.6s with a vertical roll, then
+it settles back on the names. The **newest** unexpired message wins rather than
+the oldest — at a table the most recent thing is the thing you need.
+
+**Ball selection is back on the Call tab**, directly under the controls that set
+it. It sat in the band from r33.1 so it would be visible from every tab; that
+reason expired when the band became the banner.
+
+**The players-and-colours line is pinned under the banner and never rolls.** I
+pushed back on folding it into the rotation and the Maker left it alone: it is
+read on every single shot, and a fact you need constantly is the worst possible
+thing to put on a carousel.
+
+The banner type is sized to the band and then **shrunk until it fits the width**
+— measured, not assumed, because "MAKER vs SPIDER" is nearly three times the
+width of "SOLO". A banner is worth shrinking, not worth truncating.
+
+### Note
+
+Assertion 123 caught a real bug before it shipped: `banner_active` tested only
+whether a message had **expired**, not whether it had **started**, so one added
+at t=0.5 already outranked a live one at t=0.25 — it won the banner before it
+existed. The wall clock only moves forward in the running game, so nothing would
+ever have shown it.
+
+Self-test **123**, five mutants caught. `--snap` byte-identical at `62c87ddb…`.
+
+---
+
 ## r63 — the drag controls say they are grabbable (current)
 
 r61 gave the buttons a bevel and r62 gave the tabs one, which left the three

@@ -5382,6 +5382,68 @@ def grab_face(base, hover=False, held=False):
     return tuple(base[:3])
 
 
+# r64: THE BANNER. The Maker: "I would like to use this space to display the
+# current mode ... in big letters that fit the area so its clear what mode were
+# in", and for a frame against an opponent, "I was hoping for the banner to say
+# Maker vs Spider or whatever AI name he is playing against".
+#
+# So the banner is not a mode LABEL, it is WHO IS AT THE TABLE. "PLAYER vs AI"
+# is a category; "MAKER vs SPIDER" is the frame you are actually in, and it
+# tells you the mode by implication.
+BANNER_BAND_H = 74      # minimum band height in scaled units -- see Fork 2B
+BANNER_DWELL = 2.6      # seconds a transient message holds the banner
+BANNER_ROLL = 0.32      # seconds to roll one message up and the next in
+
+
+def banner_line(mode_name, names=None, human=None):
+    """r64: the resting banner -- who is at this table. Pure.
+
+    A frame gives the two names. SOLO and SANDBOX have no opponent, so they
+    give the mode instead, which is the honest answer to "what am I in".
+
+    The HUMAN GOES FIRST wherever they are seated. `names` comes from the game
+    in seat order and the human is not always seat 0 -- reading it out in seat
+    order would say "SPIDER vs MAKER" half the time, which is not how anybody
+    describes their own frame.
+    """
+    if not names or len(names) < 2:
+        return str(mode_name).upper()
+    a, b = str(names[0]).upper(), str(names[1]).upper()
+    if human and b == str(human).upper():
+        a, b = b, a
+    return "%s vs %s" % (a, b)
+
+
+def banner_active(resting, transients, now):
+    """r64: which line the banner should be showing. Pure.
+
+    `transients` is [(text, added_at, dwell)]. The LAST unexpired one wins, so
+    a newer message (a foul during ball-in-hand) takes the banner from an older
+    one rather than queueing behind it -- at a table the most recent thing is
+    the thing you need. When they have all expired it falls back to `resting`,
+    which is the Maker's requirement that it "rotate back to the play mode".
+    """
+    # A message must have STARTED as well as not expired. The first cut only
+    # tested expiry, so one added at t=0.5 already outranked a live one at
+    # t=0.25 -- it won the banner before it existed. Caught by the assertion,
+    # which is the only reason it is not in the build: the wall clock only ever
+    # moves forward in the running game, so nothing would have shown it.
+    live = [t for t in (transients or []) if t[1] <= now < t[1] + t[2]]
+    return live[-1][0] if live else str(resting)
+
+
+def roll_frac(changed_at, now, dur=BANNER_ROLL):
+    """r64: how far through the roll, 0.0 to 1.0. Pure.
+
+    Clamped at BOTH ends. `now` before `changed_at` happens whenever the clock
+    is read twice in a frame, and an unclamped negative would roll the text in
+    from the wrong side.
+    """
+    if dur <= 0:
+        return 1.0
+    return max(0.0, min(1.0, (now - changed_at) / float(dur)))
+
+
 def tab_slots(x, w, n, gap):
     """r62: where each tab starts and how wide it is. Pure.
 
@@ -6554,7 +6616,13 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # r47: the band is what the fit leaves above the table. It only exists
         # because the scene is centred in the window, so it is computed here,
         # from the fitted height, and nowhere else.
-        TOP_BAND_H = 0 if smoke else max(0, (win_h - fit_H1) // 2)
+        # r64 Fork 2B: the band is given a FLOOR so the banner can be big.
+        # It used to be purely what the fit left over, which on a wide window
+        # is very little -- "big letters that fit the area" reads the other way
+        # round: the area should suit the letters. Costs a little table height
+        # and nothing else. `smoke` still gets zero, so --snap is untouched.
+        TOP_BAND_H = 0 if smoke else max(int(round(BANNER_BAND_H * UI_S)),
+                                         (win_h - fit_H1) // 2)
         screen = pygame.Surface((W, H))
         try:
             font = pygame.font.SysFont("consolas,menlo,monospace",
@@ -7267,6 +7335,37 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             surf.blit(lbl, lbl.get_rect(
                 midbottom=(cx, cy - r - int(round(8 * UI_S)))))
 
+    class CallLed:
+        """r64: the call indicator, on the Call tab where the nomination is
+        actually made. The Maker: "the ball selection can go back onto the
+        Call tab".
+
+        It sat in the band from r33.1 so it would be visible from every tab,
+        including Shot. That reason has expired: the band is the banner now,
+        and a nomination you make on this tab is a thing you can see on this
+        tab. Everything it reports -- armed, part-called, called, just-logged
+        -- comes from the same pure `call_led()` as before.
+        """
+
+        def __init__(self, rect):
+            self.rect = pygame.Rect(rect)
+
+        def handle_event(self, ev):
+            pass
+
+        def draw(self, surf, font):
+            col, lab = call_led(call_on, call_ball, call_pocket,
+                                (frames - logged_frame)
+                                if logged_frame is not None else None,
+                                made=logged_made)
+            r = max(3, int(round(5 * UI_S)))
+            cy = self.rect.y + font.get_height() // 2
+            pygame.draw.circle(surf, col, (self.rect.x + r, cy), r)
+            surf.blit(font.render(
+                fit_label(lab, self.rect.w - 3 * r,
+                          lambda s: font.size(s)[0]), True, col),
+                (self.rect.x + 2 * r + int(round(6 * UI_S)), self.rect.y))
+
     class TabStrip:
 
         def __init__(self, rect, labels, get_index, set_index):
@@ -7572,6 +7671,13 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     btn_hover = None
     btn_armed = None
     btn_cursor = None
+    # r64: the banner. `banner_msgs` holds transients as (text, added, dwell);
+    # `banner_shown` is what is on screen now and `banner_since` when it
+    # arrived, which together drive the roll.
+    banner_msgs = []
+    banner_shown = ""
+    banner_since = 0.0
+    banner_prev = ""
     running = True
     last_shown = screen
     def start_game(m):
@@ -9136,6 +9242,9 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                     do_call_toggle))
             spin_tab.append(Button((px + pw // 2 + 4, y6, pw // 2 - 4, U(24)),
                                     "Clear call", do_call_clear))
+            # r64: the indicator, directly under the controls that set it.
+            y6 += U(32)
+            spin_tab.append(CallLed((px, y6, pw, panel_font.get_height())))
         panel_widgets["Call"] = spin_tab   # key MUST match TAB_LABELS (r12.1)
 
         table = []
@@ -9829,7 +9938,6 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         pygame.draw.circle(screen, (185, 215, 190), w2s((x0 + (x1 - x0) * 0.75, (y0 + y1) / 2)), max(1, int(2 * RSF)))
 
         cue = sim.cue()
-        aim_txt = ""
         # r37: this was a second, hand-copied copy of my_turn(). One
         # definition, so the two cannot drift apart when a mode is added.
         human_turn = my_turn()
@@ -9936,9 +10044,12 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                                max(1, int(RSF)))
 
                     screen.blit(ov, (0, 0))
-                    aim_txt = (f"pot {prob*100:3.0f}%  cut {pa['angle_deg']:4.1f}deg"
-                               if pa else
-                               f"contact {gb['fullness']*100:3.0f}% full")
+                    # r64: the pot/cut string used to be built here and shown
+                    # in the band. Fork 1B removed it from the band, so it is
+                    # no longer built at all -- `pot_assessment` is still
+                    # called above for the overlay itself, which is where the
+                    # information is actually useful: on the table, next to
+                    # the ghost ball, rather than as text above it.
                 else:
                     cpath = one_bounce_path(tuple(cue.position), dxy, ball_r())
                     for a, b in zip(cpath, cpath[1:]):
@@ -10146,10 +10257,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # r62: capitalised. The Maker's rule is about the HUD, not only the
         # panel: "Text should not overlap widgets or start with lower case
         # letters". These two lead the band above the table.
-        status_fields = [
-            f"Power {power:4.2f} m/s",
-            f"Spin s{spin_side:+.2f} f{spin_follow:+.2f}",
-        ]
+        # r64: Fork 1B -- Power, Spin and the pot/cut readout are GONE from the
+        # band. All three live on the Shot tab, a step away, and the band now
+        # has one job: say who is at this table. The Maker: "We dont really
+        # need power and angle to be shown there."
+        status_fields = []
         if game is not None:
             def ptxt(i):
                 col = game.colours.get(i)
@@ -10161,14 +10273,16 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             # on -- which is what makes the result record with no second mode
             # to be in, and also what made it invisible. The band has the room
             # since r47, so the implicit thing becomes a stated one.
-            _lead = MODES[mode]
+            _lead = banner_line(MODES[mode], game.names, profile_name)
             if menu_league is not None:
                 _lnx = league_next_fixture(menu_league, profile_name)
                 if _lnx and profile_name in _lnx \
                         and human_opponent in _lnx:
                     _lead = f"LEAGUE — {_lnx[0]} v {_lnx[1]}"
-            status_lines2 = [_lead, f"{ptxt(0)} vs {ptxt(1)}",
-                             game.last_event]
+            # r64: the resting banner first, then the transients. The
+            # players-and-colours line is NOT a transient -- see the sub-line
+            # below; it is checked every shot and must not roll away.
+            status_lines2 = [_lead, game.last_event]
             if game.ball_in_hand:
                 status_lines2.append("BALL IN HAND — drag cue in baulk")
             if game.over:
@@ -10209,8 +10323,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     beat_best=solo_new_best,
                     max_width=_pbw,
                     measure=lambda s: panel_font.size(s)[0]))
-            if aim_txt:
-                status_lines2.append(aim_txt)
+            # r64: `aim_txt` (pot % and cut angle) no longer rides the band --
+            # see Fork 1B above. It is still computed for the aim overlay.
         # r12: the spin-position icon is GONE from the frame (Maker's call --
         # spin already has the SpinPad and the numeric readout in the panel, so
         # a third copy of it painted on the woodwork was pure duplication).
@@ -10310,6 +10424,25 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                 (frames - logged_frame)
                                 if logged_frame is not None else None,
                                 made=logged_made)
+            # r64: THE BANNER. `status_lines2[0]` is the resting line -- who is
+            # at this table -- and everything after it is a transient state
+            # that takes the banner for a moment and then gives it back.
+            _rest = status_lines2[0] if status_lines2 else MODES[mode]
+            _now = pygame.time.get_ticks() / 1000.0
+            for _m in status_lines2[1:]:
+                # A message is only pushed when it is NEW. Without this the
+                # band would re-add "BALL IN HAND" sixty times a second and the
+                # roll would never finish -- it would sit permanently at frac 0
+                # and read as a stutter rather than a roll.
+                if not any(x[0] == _m for x in banner_msgs
+                           if _now < x[1] + x[2]):
+                    banner_msgs.append((_m, _now, BANNER_DWELL))
+            banner_msgs = [x for x in banner_msgs
+                           if _now < x[1] + x[2] + 1.0][-6:]
+            _want = banner_active(_rest, banner_msgs, _now)
+            if _want != banner_shown:
+                banner_prev, banner_shown = banner_shown, _want
+                banner_since = _now
             if BAND_READOUT:
                 # r47: the readout has moved to the band above the table. Wide
                 # and short instead of narrow and tall, so the SAME fields that
@@ -10321,24 +10454,57 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 bx = int(round(12 * UI_S))
                 bw = max(80, win_w - PANEL_W - 2 * bx)
                 bmeasure = lambda s: panel_font.size(s)[0]   # noqa: E731
-                blines = (wrap_fields(status_fields, bw, bmeasure)
-                          + wrap_fields(status_lines2, bw, bmeasure))
-                bfh = panel_font.get_height()
-                bstep = bfh + _band_lead
-                cap = band_capacity(TOP_BAND_H, bfh, _band_lead, _band_pad)
-                by = max(0, (TOP_BAND_H - min(len(blines), cap) * bstep) // 2)
-                for ln in blines[:cap]:
-                    display.blit(panel_font.render(ln, True, COL["hud"]),
-                                  (bx, by))
-                    by += bstep
-                # The call indicator rides along on its own line, same as it
-                # did at the foot of the strip.
-                if len(blines) < cap:
-                    _lr = max(3, int(round(5 * UI_S)))
-                    pygame.draw.circle(display, _lc,
-                                        (bx + _lr, by + bfh // 2), _lr)
-                    display.blit(panel_font.render(_lt, True, _lc),
-                                  (bx + 2 * _lr + int(round(6 * UI_S)), by))
+                # THE BANNER, drawn big and rolled. The type is sized to the
+                # band and then SHRUNK UNTIL IT FITS THE WIDTH -- measured, not
+                # assumed, because "MAKER vs SPIDER" is nearly three times the
+                # width of "SOLO" and a fixed size that suits one clips the
+                # other. Same discipline as fit_label, applied to the size
+                # rather than to the string: a banner is worth shrinking, not
+                # worth truncating.
+                _bh = max(12, int(TOP_BAND_H * 0.52))
+                _bfont = None
+                while _bh >= 12:
+                    _bfont = pygame.font.SysFont(
+                        "consolas,menlo,monospace", _bh, bold=True)
+                    if max(_bfont.size(banner_shown.upper())[0],
+                           _bfont.size(banner_prev.upper())[0]) <= bw:
+                        break
+                    _bh -= 2
+                # The roll: the outgoing line leaves upward and the incoming
+                # one arrives from below, both clipped to the band, so it reads
+                # as a departure board rather than a cut.
+                _f = roll_frac(banner_since, _now)
+                _clip = display.get_clip()
+                display.set_clip(pygame.Rect(0, 0, win_w - PANEL_W,
+                                             TOP_BAND_H))
+                _cy = TOP_BAND_H // 2
+                for _txt, _off in ((banner_prev, -_f),
+                                   (banner_shown, 1.0 - _f)):
+                    if not _txt:
+                        continue
+                    # r64: UPPER CASE in the banner. The Maker's rule is that
+                    # nothing on the HUD starts lower case, and a game event
+                    # like "your break -- aim at the pack" arrives in
+                    # sentence case from the rules layer. Raising it here
+                    # rather than at the source keeps the rules text usable
+                    # anywhere else it is read.
+                    _img = _bfont.render(_txt.upper(), True, (236, 232, 214))
+                    display.blit(_img, _img.get_rect(
+                        center=(bx + _img.get_width() // 2,
+                                int(_cy + _off * TOP_BAND_H))))
+                display.set_clip(_clip)
+                # r64: whose turn, and on what colour, pinned UNDER the banner
+                # and never rolled. I pushed back on folding this into the
+                # rotation and the Maker left it alone: it is the one thing
+                # read on every single shot, and a fact you need constantly is
+                # the worst possible thing to put on a carousel.
+                if game is not None:
+                    _sub = panel_font.render(
+                        fit_label(f"{ptxt(0)}  vs  {ptxt(1)}", bw, bmeasure),
+                        True, COL["hud"])
+                    display.blit(_sub, (bx, max(0, TOP_BAND_H
+                                                - _sub.get_height()
+                                                - int(round(4 * UI_S)))))
             else:
                 measure = lambda s: panel_font.size(s)[0]
                 strip_lines = (wrap_fields(status_fields, sw, measure)
@@ -14752,6 +14918,60 @@ def selftest():
           and all(0 <= c <= 255 for c in grab_face((3, 3, 3), held=True)),
           f"rest {rest122} hover {hov122} held {held122}; "
           f"hover+held resolves to {both122}")
+
+    # 123. r64: the banner says who is at the table, and gives itself back.
+    #
+    # The Maker asked for the mode in big letters and then corrected the idea
+    # into something better: "I was hoping for the banner to say Maker vs
+    # Spider or whatever AI name he is playing against". A mode is a category;
+    # the two names are the frame you are actually in.
+    #
+    # THE HUMAN GOES FIRST WHEREVER THEY ARE SEATED. `game.names` is in seat
+    # order and the human is not always seat 0, so reading it out in seat order
+    # would say "SPIDER vs MAKER" half the time -- which is not how anybody
+    # describes their own frame. Both seatings are checked.
+    #
+    # And the LAST unexpired transient wins rather than the first: at a table
+    # the most recent thing is the thing you need, so a foul arriving during
+    # ball-in-hand takes the banner instead of queueing behind it. Then they
+    # all expire and it falls back -- the Maker's "rotate back to the play
+    # mode".
+    check("r64 the banner says who is at the table — the human's name first "
+          "whichever seat they are in, the mode alone when there is no "
+          "opponent; a transient state takes the banner, the newest of them "
+          "wins, and when they expire it gives itself back to the resting "
+          "line; and the roll is clamped at both ends so it cannot arrive "
+          "from the wrong side",
+          # names, human first, in either seat
+          banner_line("YOU vs AI", ("MAKER", "SPIDER"), "MAKER")
+          == "MAKER vs SPIDER"
+          and banner_line("YOU vs AI", ("SPIDER", "MAKER"), "MAKER")
+          == "MAKER vs SPIDER"
+          # ... and an AI-only frame is left in seat order
+          and banner_line("AI vs AI", ("SHARK", "DOC"), "MAKER")
+          == "SHARK vs DOC"
+          # no opponent: the mode is the honest answer
+          and banner_line("SOLO") == "SOLO"
+          and banner_line("Sandbox", None, "MAKER") == "SANDBOX"
+          # transients: newest wins, and expiry hands the banner back
+          and banner_active("REST", [("A", 0.0, 2.0), ("B", 0.5, 2.0)], 1.0)
+          == "B"
+          and banner_active("REST", [("A", 0.0, 2.0), ("B", 0.5, 2.0)], 0.25)
+          == "A"
+          and banner_active("REST", [("A", 0.0, 2.0)], 2.5) == "REST"
+          and banner_active("REST", [], 0.0) == "REST"
+          # an expired message does not outrank a live older one
+          and banner_active("REST", [("A", 0.0, 9.0), ("B", 0.5, 0.1)], 1.0)
+          == "A"
+          # the roll, clamped BOTH ways
+          and roll_frac(0.0, -1.0, 1.0) == 0.0
+          and roll_frac(0.0, 0.5, 1.0) == 0.5
+          and roll_frac(0.0, 9.0, 1.0) == 1.0
+          and roll_frac(0.0, 0.0, 0.0) == 1.0,
+          f"seat0 {banner_line('YOU vs AI', ('MAKER', 'SPIDER'), 'MAKER')!r}; "
+          f"seat1 {banner_line('YOU vs AI', ('SPIDER', 'MAKER'), 'MAKER')!r}; "
+          f"solo {banner_line('SOLO')!r}; newest wins "
+          f"{banner_active('REST', [('A', 0.0, 2.0), ('B', 0.5, 2.0)], 1.0)!r}")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
