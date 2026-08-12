@@ -28,10 +28,32 @@ You can:
 
 - **Play single-player** — set up the balls, aim from the control panel, and
   pot them yourself. This is what the project is mainly for.
+- **Race a timed clearance** — SOLO mode clocks you from the first strike to the
+  black. Every run is recorded against your profile, with a personal best you
+  have to beat.
+- **Play a career** — a menu shell holds your profile, an eight-player league
+  played one fixture at a time, play-offs seeded by the final table, and
+  trophies that stay on your record.
 - **Use custom mode** — clear the table and place balls exactly where you want
   for trick shots and practice, with four save/load layout slots.
-- **Watch or study the AI** — two emergent AI personalities can play each other,
-  either for fun or as a way to stress-test the physics.
+- **Watch or study the AI** — eight emergent AI personalities, matched so they
+  differ in temperament rather than in how straight they aim.
+
+## The career menu
+
+The game boots into a menu rather than straight onto the table. It holds your
+profile name and nickname, a **Solo** row showing your best clearance time, the
+league table with each player's strength beside it, the play-off bracket, and
+**Resume** for a frame you left half-played.
+
+A league fixture is an ordinary frame that happens to be the one the season is
+waiting on — there is no separate mode to remember being in, and no way to play
+your fixture and have it not count. Press `Esc` at any point to come back here.
+
+Ranking is by Bradley-Terry strength, which weighs *who* you beat rather than
+how many: seeing off the runaway leader counts for more than seeing off the
+bottom seed. The win rate is shown beside it with its Wilson interval, because
+over seven games a percentage on its own says more than it knows.
 
 ## Requirements
 
@@ -70,9 +92,9 @@ the mouse. Angle, power and spin each have a coarse control and fine adjustment
 buttons, and all three snap to a grid fine enough that the number you read is
 the number you get: a shot you can write down is a shot you can play again.
 
-Spin is set by clicking or dragging on a cue-ball picker, which has its own
-**Spin** tab and also appears on the **Shot** tab when the window is tall
-enough to hold it. The rim of the drawn ball is the most spin the engine can
+The **Shot** tab is laid out in the order a shot is played: power, aim angle,
+spin, then Shoot. Spin is set by clicking or dragging on a cue-ball picker on
+that same tab, when the window is tall enough to hold it. The rim of the drawn ball is the most spin the engine can
 apply — nothing is greyed out, because everything inside it is reachable. The
 dashed ring at three-quarters is an advisory note about where a real cue starts
 to miscue; the simulation does not model a tip, so nothing enforces it. The
@@ -84,7 +106,9 @@ fiddly — it is fiddly in reality, for the same reason.
 | Key | Action |
 |-----|--------|
 | `Space` | Take the shot |
-| `M` | Cycle mode (game / sandbox / custom) |
+| `M` | Cycle mode (sandbox / you vs AI / AI vs AI / solo) |
+| `Esc` | Back to the career menu (and back out to the table) |
+| `Q` | Quit |
 | `T` | Re-rack |
 | `R` | Reset table (sandbox) |
 | `N` | Add a random ball (sandbox) |
