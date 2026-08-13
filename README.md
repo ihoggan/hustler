@@ -4,7 +4,7 @@ A UK blackball pool physics sandbox, written in Python. Real table geometry,
 real units, honest cushions — and a set of brutal, tangent-true pocket jaws
 that reward a properly lined-up shot and punish a lazy one.
 
-![HUSTLER — the table, balls and pockets, every pixel drawn from code](Screenshot.png)
+![HUSTLER in Sandbox mode: a full rack of reds and yellows around the black, the cue ball in hand on the baulk line with a red aim line and ghost ball projected into the pack. A banner above the table names the mode, with the ball count and ball-in-hand prompt on the line beneath. The tabbed control panel sits down the right-hand side. Every pixel is drawn from code](Screenshot.png)
 
 Everything you see and hear in the game is generated from code — no image
 files, no sound files, no third-party assets loaded at runtime. The table, the

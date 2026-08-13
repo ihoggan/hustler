@@ -2,7 +2,7 @@
 
 ## Current status: r65 — playable, validated
 
-**Validation snapshot (r49, measured on nix5 and reproduced in a Linux
+**Validation snapshot (r65, measured on nix5 and reproduced in a Linux
 container):**
 
 | Check | Result |
