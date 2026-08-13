@@ -15550,16 +15550,25 @@ def selftest():
           # frozen resolves from the executable, source from the script
           _fp127 == _exe127
           and _sp127 == _src127
-          # a source run is byte-for-byte what it was before r66
-          and shot_log_path(_sp127) \
-          == "/home/iain/hustler/" + SHOT_LOG_NAME
-          # frozen, the stores sit beside the exe
-          and store_dir(_fp127) == "/home/tester/Desktop/HUSTLER"
-          and profile_store_path(_fp127) \
-          == "/home/tester/Desktop/HUSTLER/" + PROFILE_STORE_NAME
+          # r67: ASSERTED AS RELATIONSHIPS, NOT AS PATH LITERALS. The r66
+          # version compared against hardcoded POSIX strings and was quietly
+          # Linux-only -- it would have failed the first time the Windows CI
+          # job ran the selftest, on my own test rather than on the build.
+          # ntpath joins with a backslash AND `abspath` rewrites separators
+          # and prepends a drive, so no literal written here can be right on
+          # both platforms. What is under test is the DECISION, not the
+          # spelling: which path the stores resolve from, and that all five
+          # agree. Both survive any separator convention.
+          and os.path.basename(profile_store_path(_fp127)) \
+          == PROFILE_STORE_NAME
+          and os.path.basename(shot_log_path(_sp127)) == SHOT_LOG_NAME
           # THE DRIFT GUARD: one directory, not four-plus-one
           and len({os.path.dirname(p) for p in _stores127}) == 1
           and os.path.dirname(_stores127[0]) == store_dir(_exe127)
+          # and frozen genuinely RELOCATES -- the stores must not still be
+          # sitting beside the script when the app is frozen
+          and store_dir(_fp127) != store_dir(_sp127)
+          and os.path.dirname(shot_log_path(_sp127)) == store_dir(_src127)
           # frozen with no executable path must not return None -- every
           # caller joins a filename onto this
           and frozen_app_path(True, _src127, None) == _src127

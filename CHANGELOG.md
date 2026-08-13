@@ -5,7 +5,43 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r66 — the stores resolve from one place, and survive being frozen (current)
+## r67 — the r66 assertion was Linux-only (current)
+
+A correctness fix to r66, found before it could cost anything, by asking a
+question the project had never had to ask: what happens when the selftest runs
+on Windows?
+
+The Windows build job will run `--selftest` on `windows-latest`. Nothing in
+this repo has ever executed on anything but POSIX, and assertion 127 -- added
+one revision earlier, and the assertion guarding the very change that exists
+to make a Windows build possible -- compared store paths against hardcoded
+POSIX string literals. On Windows `os.path.join` uses a backslash, and
+`abspath` rewrites separators AND prepends a drive letter. **The Windows job
+would have gone red on my own test rather than on the build**, and the first
+round of debugging would have gone looking for PyInstaller faults that were
+not there.
+
+The first fix was also wrong, which is the part worth recording. Swapping the
+`"/"` concatenation for `os.path.join` looked sufficient and was declared so;
+running the functions under `ntpath` showed it still failed, because the
+problem is `abspath`, not `join`. No path literal written in that assertion can
+be correct on both platforms.
+
+So the assertion tests RELATIONSHIPS rather than spellings: frozen picks the
+executable and source picks the script, the store basenames are right, all
+five stores land in one directory, frozen genuinely relocates away from the
+script directory, and the environment overrides still win. Every one of those
+holds under any separator convention -- verified by evaluating each clause
+under both `posixpath` and `ntpath`, and by re-running all six r66 mutants,
+which are still caught.
+
+No behaviour change. `hustler.py` resolves its stores exactly as it did at
+r66; only the test that proves it got portable. The assertion count is
+unchanged at 127.
+
+---
+
+## r66 — the stores resolve from one place, and survive being frozen
 
 Groundwork for a Windows build. The Maker wants an exe to hand to friends for
 testing, and the honest answer to "how do I get non-technical friends to

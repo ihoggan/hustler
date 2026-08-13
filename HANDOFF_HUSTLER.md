@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r66 — playable, validated, no known blocking bugs.
+**Status:** r67 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~15,680 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,7 +16,7 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r66
+## Validation snapshot at r67
 
 | Check | Result |
 |---|---|
@@ -28,6 +28,24 @@ source of truth.
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY (nix5), all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 | GitHub Actions `Validate` | passing (Python 3.12 and 3.13) |
+
+## What r67 changed (as built)
+
+Assertion 127 only. No behaviour change — the stores resolve exactly as they
+did at r66; the test that proves it got portable.
+
+**The lesson, because it will recur the moment anything else runs on Windows:**
+this repo had never executed on a non-POSIX machine, and the r66 assertion
+compared store paths against hardcoded POSIX literals. `os.path.join` uses a
+backslash on Windows and `abspath` rewrites separators and prepends a drive,
+so no path literal in a test can be right on both platforms. The Windows build
+job would have failed on the selftest rather than on the build.
+
+The first fix — swapping `"/"` concatenation for `os.path.join` — was declared
+sufficient and was not; running the functions under `ntpath` showed it still
+failed. **Assert relationships, not spellings.** What is under test is the
+decision (which path the stores resolve from, and that all five agree), not how
+a separator is written.
 
 ## What r66 changed (as built)
 
