@@ -274,6 +274,46 @@ normal path.
 
 ---
 
+## 8. The banner never named the mode in Sandbox or Solo — FIXED at r65
+
+**Symptom:** the Maker, on shipped r64.1: in Sandbox the banner "rests on Ball
+in Hand — Drag Cue in Baulk" and the word "Sandbox" never appears. In Solo the
+mode is likewise never named.
+
+**Diagnosis:** two faults stacked, and the second was only found by re-running
+the frame loop after fixing the first.
+
+The resting line was taken as `status_lines2[0]`. That slot holds the
+mode-or-names line only in a **game** frame — in Sandbox it is the ball count,
+in Solo the clock — so `banner_line()` was never reached in half the modes. The
+banner was built and tested in a YOU vs AI frame, the one arrangement where the
+wiring happens to be right, and assertion 123 tested `banner_line()` in
+isolation, so it passed for the whole of r64 and r64.1 while nothing called it.
+
+Solo was worse than a wrong word. The clock ticks ten times a second, so the
+resting line changed at 10Hz and every change restarted the roll. Measured over
+600 frames: `roll_frac` never once reached 1.0 (max **0.313**, mean 0.132). The
+banner sat permanently a third of the way through a roll. This is why Fork 1B
+(Solo keeping the clock in the banner) was withdrawn rather than offered.
+
+**And fixing that was not enough.** Ball-in-hand is a persistent *state*, and
+r64 re-pushed any transient once its dwell expired — so it re-armed forever and
+the banner still never returned to "Sandbox". A resting-line fix on its own
+changed nothing the Maker could see.
+
+**The fix:** `band_lines()` derives the resting line from the mode always and
+routes persistent facts to the sub-line (whose `if game is not None` gate is
+gone). `banner_new_msgs()` triggers on the rising edge, so a state announces
+once, rolls away and gives the banner back, while staying readable in the
+sub-line. Measured after: Sandbox settles on "Sandbox" at 2.6s; Solo's roll
+completes 460 frames of 480.
+
+**The lesson worth keeping:** an assertion on a pure helper proves the helper,
+not that anything calls it. Assertion 124 asserts the split the render actually
+consumes.
+
+---
+
 ## Recently fixed
 
 Resolved in r23–r27 — kept here briefly because the diagnoses are worth having

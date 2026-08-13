@@ -5,7 +5,73 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r64.1 — Title Case, centred (current)
+## r65 — the banner names the mode, the other four tabs, colour by meaning (current)
+
+Three jobs, in the order the Maker set them.
+
+**The banner names the mode, in all four modes.** Shipped r64.1 never said
+"Sandbox". The resting line was taken as `status_lines2[0]`, which holds the
+mode-or-names line only in a game frame — in Sandbox that slot is the ball
+count and in Solo the clock. The banner was built and tested in a YOU vs AI
+frame, the one arrangement where the wiring happens to be right, and assertion
+123 tested `banner_line()` in isolation, so it passed the whole time nothing
+called it.
+
+Solo was worse than a wrong word. The clock ticks ten times a second, so the
+resting line changed ten times a second and every change restarted the roll:
+measured over 600 frames, `roll_frac` never once reached 1.0 (max 0.313, mean
+0.132). The banner sat permanently a third of the way through a roll. That
+measurement is why Fork 1B — Solo keeping the clock in the banner — was
+withdrawn rather than offered: keeping the clock there *is* the stutter.
+
+The fix is a split, not a substitution. `band_lines()` returns
+`(resting, transients, sub_lines)`; the resting line comes from the mode
+always, and the persistent facts go to the sub-line, whose `if game is not
+None` gate is gone. That gate is why the slot was empty in exactly the two
+modes that needed it.
+
+**Fixing the resting line was not enough, and re-running the frame loop is the
+only reason that was caught.** Ball-in-hand is a persistent state, not an
+event, and r64 re-pushed any transient once its dwell expired — so it re-armed
+forever and the banner still never got back to "Sandbox". `banner_new_msgs()`
+triggers on the rising edge instead: a state announces once, rolls away, and
+the mode gets its banner back, while the state stays readable in the sub-line.
+Sandbox now shows "Ball in Hand — Drag Cue in Baulk" and settles on "Sandbox"
+at 2.6s; Solo's roll completes 460 frames of 480.
+
+**The other four tabs.** Only Shot had been re-laid-out at r62. Surveyed at
+2880x1800, 1920x1080, 1280x800 and 1024x548: no overlaps, no label wider than
+its widget, and nothing bottom-anchored, so the r62.2 Shoot fault does not
+exist there. Three real faults did. MiniTable's off-state caption was drawn at
+`rect.bottom - 16` — a font height measured once and frozen — clearing the
+bottom edge by 1px at 1.0 and spilling six pixels onto the Call buttons at 1.5;
+`inset_label_pos()` derives the drop from the font actually in use. The Call
+and Cust gutters were bare pixels in a scaled layout. And the Table sliders sat
+at `U(34)` on a `U(42)` pitch against Shot's `U(46)`/`U(50)`, which because
+`slider_geometry` anchors the track to the bottom of the rect was paid for out
+of the label's headroom: 10px of clearance against Shot's 28px.
+
+**Colour by meaning, and a pulse on arrival.** Amber for a foul, green for the
+table being handed to you, bright for a frame decided. The pulse lifts the
+incoming line toward white and decays over 0.45s; only the incoming line
+pulses, since lifting the outgoing one reads as the whole band flashing.
+
+Fouls are recognised by `assess_foul`'s own words rather than by the literal
+"foul", and that came out of a surviving mutant: the real foul strings are
+`scratch`, `no contact`, `wrong ball first`, `no cushion, no pot`, not one of
+which contains "foul", so the severity ordering could never collide and the
+clause asserting it was decoration. Matching the real vocabulary makes
+`MAKER wins: black potted illegally (scratch)` a genuine collision — a frame
+decided, not a foul — and the ordering is now load-bearing and asserted.
+
+Assertions 124, 125 and 126. Sixteen mutants, all verified as applied and all
+caught. Two of them found weak clauses first: an inequality asserting a caption
+"stays inside the widget" passed both a frozen drop and a zero pad, so the
+positions are pinned as literals.
+
+---
+
+## r64.1 — Title Case, centred
 
 "could we center align it and follow the first letter capitals".
 

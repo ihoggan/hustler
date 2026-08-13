@@ -16,18 +16,53 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r62
+## Validation snapshot at r65
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 123 assertions |
+| `--selftest` | ALL PASS — 126 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY (nix5), all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 | GitHub Actions `Validate` | passing (Python 3.12 and 3.13) |
+
+## What r65 changed (as built)
+
+**The banner names the mode in all four modes.** `band_lines()` returns
+`(resting, transients, sub_lines)` and both render branches go through it. The
+resting line is derived from the mode; the ball count, the solo clock and the
+players-and-colours line go to the sub-line, which is no longer gated on
+`game is not None` — that gate left the slot empty in exactly the two modes
+that needed it.
+
+The r64 defect in one line: the resting line was `status_lines2[0]`, which is
+the mode-or-names line only in a game frame. Assertion 123 tested
+`banner_line()` in isolation and passed while nothing called it, which is the
+gap assertion 124 closes — it asserts the split the render actually consumes,
+and that `fact` and `solo_lines` can reach the sub-line and nowhere else.
+
+**`banner_new_msgs()` — the rising edge.** Fixing the resting line alone did
+not fix the reported symptom, and only re-running the frame loop showed it:
+ball-in-hand is a persistent state, r64 re-pushed a transient whenever its
+dwell expired, so it re-armed forever and "Sandbox" still never appeared. A
+state now announces once and gives the banner back, and stays readable in the
+sub-line.
+
+**The other four tabs (Fork 3A).** `inset_label_pos()` for MiniTable's
+off-state caption (`rect.bottom - 16` was a frozen font height: clear by 1px at
+1.0, six pixels onto the Call buttons at 1.5). Call and Cust gutters scaled.
+Table sliders raised to Shot's `U(46)`/`U(50)` — because `slider_geometry`
+anchors the track to the bottom of the rect, the shorter rect was being paid
+for out of label headroom (10px clearance against Shot's 28px).
+
+**Colour by meaning and an arrival pulse (Fork 2B).** `banner_colour`,
+`banner_pulse`, `banner_rgb`. Fouls are matched on `assess_foul`'s own
+vocabulary rather than the literal "foul" — none of the real foul strings
+contains that word, so the severity ordering was untestable until the rule
+matched what the rules layer actually writes.
 
 ## What r62 changed (as built)
 

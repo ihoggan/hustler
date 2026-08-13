@@ -5461,6 +5461,177 @@ def banner_line(mode_name, names=None, human=None):
     return "%s vs %s" % (a, b)
 
 
+def band_lines(mode_name, names=None, human=None, fixture=None,
+               last_event=None, ball_in_hand=False, over=False,
+               fact=None, solo_lines=()):
+    """r65: what the band shows -- (resting, transients, sub_lines). Pure.
+
+    THIS EXISTS BECAUSE r64 NEVER REACHED `banner_line()` IN TWO MODES OF FOUR.
+    The resting line was taken as `status_lines2[0]`, which is the mode-or-names
+    line only in a GAME frame. In SANDBOX that slot holds the ball count and in
+    SOLO the clock, so the banner rested on those instead and the word "Sandbox"
+    never appeared at all. I built and tested the banner in a YOU vs AI frame,
+    the one arrangement where the wiring happens to be right, and assertion 123
+    tested `banner_line()` in ISOLATION -- it passed while nothing called it.
+
+    SOLO was worse than a wrong word. The clock ticks ten times a second, so the
+    resting line changed ten times a second, and every change reset the roll:
+    measured over 600 frames, `roll_frac` never once reached 1.0 (max 0.313,
+    mean 0.132). The banner sat permanently a third of the way through a roll.
+    That measurement is also why Fork 1B was withdrawn -- keeping the clock in
+    the banner IS the stutter, not a milder version of it.
+
+    So the split is the fix, not a substitution. The resting line comes from the
+    MODE, always. Transients roll and expire. The persistent facts -- ball count,
+    solo clock, who is on which colour -- go to the sub-line, which was already
+    there and, being gated on `game is not None`, was EMPTY in exactly the two
+    modes that needed it.
+
+    Placement is decided HERE rather than by the caller on purpose. If the
+    caller chose which list each string joined, an assertion on this function
+    could only check that it passed them through -- the r56 circular-assertion
+    fault. Because `fact` and `solo_lines` can reach the sub-line and nowhere
+    else, a mutant that lets the clock into the banner fails.
+    """
+    resting = fixture or banner_line(mode_name, names, human)
+    trans = []
+    if last_event:
+        trans.append(last_event)
+    if ball_in_hand:
+        trans.append("BALL IN HAND — drag cue in baulk")
+    if over:
+        trans.append("T = new game")
+    # BALL IN HAND IS BOTH, and that is the point. It ANNOUNCES like an event
+    # and it PERSISTS like a fact -- it lasts until the cue is actually placed,
+    # which in Sandbox can be the whole time the Maker is looking at the band.
+    # Listing it only as a transient is what kept the word "Sandbox" off the
+    # screen even after the resting line was fixed: see banner_new_msgs.
+    subs = [s for s in ([fact] + list(solo_lines or ())) if s]
+    if ball_in_hand:
+        subs.append("Ball in hand — drag cue in baulk")
+    return resting, trans, subs
+
+
+def banner_new_msgs(current, previous):
+    """r65: which transients are NEW this frame, on a rising edge. Pure.
+
+    r64 pushed any message that was not currently unexpired, which re-armed a
+    PERSISTENT state forever: `BALL IN HAND` expired after its dwell, was
+    immediately re-added because the state was still true, and took the banner
+    again. The Maker reported the symptom exactly -- in Sandbox the banner
+    "rests on Ball in Hand — Drag Cue in Baulk" and the word "Sandbox" never
+    appears. Fixing the resting line alone did NOT fix that, which is why this
+    function exists: I re-ran the frame loop after the first fix and the banner
+    was still stuck on ball-in-hand at six seconds.
+
+    So the trigger is the EDGE, not the expiry. A state announces itself once
+    when it arrives, rolls away, and the banner returns to the mode. The state
+    itself stays readable in the sub-line, so nothing is lost by letting it go.
+
+    An event repeating with identical text does not re-announce, and that is
+    correct rather than merely tolerable: `last_event` holds the same string
+    until the next event, so a re-announce would be the banner repeating itself
+    for something that never happened twice.
+    """
+    prev = set(previous or ())
+    return [m for m in (current or ()) if m and m not in prev]
+
+
+# r65 Fork 2B: the banner says what KIND of thing it is showing, in colour.
+# Amber for a foul, green for the table being handed to you, bright for a frame
+# decided; everything else rests in the ordinary parchment.
+BANNER_COL = {
+    "foul":  (232, 172, 92),
+    "turn":  (150, 205, 160),
+    "won":   (255, 249, 232),
+    "rest":  (236, 232, 214),
+}
+BANNER_PULSE = 0.45     # seconds a newly arrived banner stays lifted
+BANNER_LIFT = 0.55      # how far toward white the pulse lifts it at arrival
+
+
+def banner_colour(text):
+    """r65: which meaning-colour a banner line carries. Pure.
+
+    Keyed off the rules layer's own phrasing rather than a parallel set of
+    flags, because every one of these strings is already written in exactly one
+    place: `foul — {foul}`, `{name} wins: {reason}`, `your break — ...`, and
+    r64's ball-in-hand transient. A second source of truth for "was that a
+    foul" is the kind of thing that drifts apart within two revisions -- see the
+    two difficulty models still in this file.
+
+    Fouls are recognised by `assess_foul`'s OWN WORDS -- scratch, no contact,
+    wrong ball first, no cushion -- and not merely by the word "foul". That
+    matters because `Game` writes those words into two different lines: the
+    plain `foul — scratch`, and the frame-ending `MAKER wins: black potted
+    illegally (scratch)`. Matching only the literal "foul" would have missed
+    nothing today, but it would also have made the ordering below untestable,
+    which is how a defensive rule quietly becomes an unasserted one.
+
+    So severity order is REAL and is asserted: the second of those lines ends
+    the frame and must read as a frame decided, not as a foul, even though it
+    contains a foul's own description. `wins:` is tested first.
+    """
+    t = str(text).lower()
+    if "wins:" in t:
+        return BANNER_COL["won"]
+    if "foul" in t or any(f in t for f in
+                          ("scratch", "no contact", "wrong ball first",
+                           "no cushion")):
+        return BANNER_COL["foul"]
+    if t.startswith("your ") or "ball in hand" in t:
+        return BANNER_COL["turn"]
+    return BANNER_COL["rest"]
+
+
+def banner_pulse(changed_at, now, dur=BANNER_PULSE):
+    """r65: how lifted a just-arrived banner is, 1.0 down to 0.0. Pure.
+
+    A brightness pulse rather than a size one: the roll already animates the
+    arrival positionally, and re-rendering the type at a second size every
+    frame to scale it would cost a font rasterisation per frame for an effect
+    the eye reads as a flash anyway.
+
+    CLAMPED AT BOTH ENDS, for r64's reason in `roll_frac` -- `now` before
+    `changed_at` happens whenever the clock is read twice in one frame, and an
+    unclamped value would over-brighten past white.
+    """
+    if dur <= 0:
+        return 0.0
+    return max(0.0, min(1.0, 1.0 - (now - changed_at) / float(dur)))
+
+
+def banner_rgb(text, changed_at, now, dur=BANNER_PULSE, lift=BANNER_LIFT):
+    """r65: the banner's colour this frame -- meaning, lifted by the pulse.
+
+    Pure. Mixes toward white rather than scaling the channels, so a colour that
+    is already at 255 in one channel still brightens in the others instead of
+    clipping and shifting hue.
+    """
+    base = banner_colour(text)
+    amt = lift * banner_pulse(changed_at, now, dur)
+    return tuple(int(round(c + (255 - c) * amt)) for c in base)
+
+
+def inset_label_pos(rect_x, rect_bottom, font_h, ui_s):
+    """r65: bottom-left corner text INSIDE a widget, at any HUD scale. Pure.
+
+    The seventh instance of a fixed pixel in a scaled layout, and the reason
+    this is a function rather than two better-chosen numbers. MiniTable drew its
+    "calling off" caption at `(rect.x + 6, rect.bottom - 16)`: at UI_S 1.0 the
+    15px font cleared the bottom edge by 1px, and at the Maker's 1.5 the 22px
+    font ran from 213 to 235 against a rect bottom of 229 -- six pixels out of
+    the mini table and onto the row where the Call buttons start.
+
+    `- 16` was never a margin, it was a font height that had been measured once
+    and then frozen. So the drop is derived FROM THE FONT: the text bottom is
+    the rect bottom less a scaled pad, whatever the font turns out to be.
+    """
+    pad = max(1, int(round(4 * ui_s)))
+    return (rect_x + max(1, int(round(6 * ui_s))),
+            rect_bottom - font_h - pad)
+
+
 def banner_active(resting, transients, now):
     """r64: which line the banner should be showing. Pure.
 
@@ -7148,8 +7319,13 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                      self._w2s(bp, sc, ox, oy),
                                      self._w2s(pocket, sc, ox, oy), 1)
             if not enabled:
-                lbl = font.render("calling off", True, (170, 170, 170))
-                surf.blit(lbl, (self.rect.x + 6, self.rect.bottom - 16))
+                # r65: sentence case (the Maker's no-lower-case rule, which
+                # this caption had been quietly breaking since r33), and
+                # positioned from the FONT rather than from a frozen 16px --
+                # see inset_label_pos for the six pixels it used to spill.
+                lbl = font.render("Calling off", True, (170, 170, 170))
+                surf.blit(lbl, inset_label_pos(self.rect.x, self.rect.bottom,
+                                               lbl.get_height(), UI_S))
 
     class SpinPad:
         """Drag or click the contact point on the cue-ball face: vertical =
@@ -7722,6 +7898,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # `banner_shown` is what is on screen now and `banner_since` when it
     # arrived, which together drive the roll.
     banner_msgs = []
+    banner_last_trans = []      # r65: previous frame's transients, for the edge
     banner_shown = ""
     banner_since = 0.0
     banner_prev = ""
@@ -9280,14 +9457,21 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         # test below now almost always passes.
         spin_tab = []
         y6 = STATUS_STRIP_H + U(34)
-        mini_h = pw // 2 + 4
-        if win_h - (y6 + mini_h + 34) > 8:
+        # r65: every one of these was a bare pixel in a scaled layout -- the
+        # `+ 4` on the mini table's height, the `+ 6` under it, the `- 4`
+        # gutter between the two buttons and the `+ 34` in the fit test. Sixth
+        # family instance, and the same cure as r62.1: scale them, and derive
+        # the gutter once instead of writing 4 in four places.
+        gut = U(4)
+        mini_h = pw // 2 + gut
+        half6 = (pw - gut) // 2
+        if win_h - (y6 + mini_h + U(34)) > U(8):
             spin_tab.append(MiniTable((px, y6, pw, mini_h), mini_state,
                                        set_call_ball, set_call_pocket))
-            y6 += mini_h + 6
-            spin_tab.append(Button((px, y6, pw // 2 - 4, U(24)), "Call: on/off",
+            y6 += mini_h + U(6)
+            spin_tab.append(Button((px, y6, half6, U(24)), "Call: on/off",
                                     do_call_toggle))
-            spin_tab.append(Button((px + pw // 2 + 4, y6, pw // 2 - 4, U(24)),
+            spin_tab.append(Button((px + half6 + gut, y6, half6, U(24)),
                                     "Clear call", do_call_clear))
             # r64: the indicator, directly under the controls that set it.
             y6 += U(32)
@@ -9296,20 +9480,25 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
 
         table = []
         y2 = STATUS_STRIP_H + U(34)   # r11: below the persistent status strip
-        table.append(Slider((px, y2, pw, U(34)), 0.05, 1.0,
-                             lambda: CFG["CUSHION_ELASTICITY"],
-                             lambda v: sim.set_cushion_elasticity(v),
-                             "cushion e", "{:.2f}"))
-        y2 += U(42)
-        table.append(Slider((px, y2, pw, U(34)), 0.02, 0.5,
-                             lambda: CFG["ROLL_DECEL"], set_roll_decel,
-                             "roll decel", "{:.3f} m/s2"))
-        y2 += U(42)
-        table.append(Slider((px, y2, pw, U(34)), 0.015, 0.035,
-                             lambda: CFG["BALL_R_M"], set_ball_radius,
-                             "ball radius", "{:.4f} m",
-                                 enabled=table_is_editable))
-        y2 += U(42)
+        # r65: these three were U(34) tall on a U(42) pitch while the Shot
+        # tab's power slider is U(46) on U(50). Because slider_geometry anchors
+        # the TRACK to the bottom of the rect, a shorter rect is paid for out
+        # of the label's headroom: measured at UI_S 1.5, 10px of clearance
+        # between label and track here against 28px on Shot. Matching the
+        # numbers matches the density of the tab beside it, and the Table tab
+        # has the room -- it ended at y 594 of 1695 drawable.
+        for _lo, _hi, _get, _set, _lab, _fmt, _en in (
+                (0.05, 1.0, lambda: CFG["CUSHION_ELASTICITY"],
+                 lambda v: sim.set_cushion_elasticity(v),
+                 "cushion e", "{:.2f}", None),
+                (0.02, 0.5, lambda: CFG["ROLL_DECEL"], set_roll_decel,
+                 "roll decel", "{:.3f} m/s2", None),
+                (0.015, 0.035, lambda: CFG["BALL_R_M"], set_ball_radius,
+                 "ball radius", "{:.4f} m", table_is_editable)):
+            table.append(Slider((px, y2, pw, U(46)), _lo, _hi, _get, _set,
+                                 _lab, _fmt,
+                                 **({"enabled": _en} if _en else {})))
+            y2 += U(50)
         table.append(Button((px, y2, pw, U(28)),
                              lambda: ("Cue: 1-7/8\" 94g" if CFG["CUE_R_M"] < 0.025
                                       else "Cue: 2\" 116g"),
@@ -9374,10 +9563,13 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         custom.append(TabStrip((px, y4, pw, U(26)), ["1", "2", "3", "4"],
                                 lambda: layout_slot, set_layout_slot))
         y4 += U(34)
-        half = pw // 2 - 4
+        # r65: same scaled gutter as the Call tab's button pair, and the two
+        # halves are now derived from it rather than each carrying its own 4.
+        gut4 = U(4)
+        half = (pw - gut4) // 2
         custom.append(Button((px, y4, half, U(26)), "Save", do_save_layout,
                               enabled=table_is_editable))
-        custom.append(Button((px + pw // 2 + 4, y4, half, U(26)), "Load",
+        custom.append(Button((px + half + gut4, y4, half, U(26)), "Load",
                               do_load_layout, enabled=table_is_editable))
         panel_widgets["Cust"] = custom   # key MUST match TAB_LABELS (r12.1)
 
@@ -10320,35 +10512,40 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             # on -- which is what makes the result record with no second mode
             # to be in, and also what made it invisible. The band has the room
             # since r47, so the implicit thing becomes a stated one.
-            _lead = banner_line(MODES[mode], game.names, profile_name)
+            # r65: the fixture is the OVERRIDE and is passed as one, so
+            # `band_lines` still reaches `banner_line` for every ordinary
+            # frame. Pre-computing the answer here and handing it over would
+            # have made the call a pass-through and the assertion on it
+            # circular -- the r56 fault, one function further along.
+            _fix = None
             if menu_league is not None:
                 _lnx = league_next_fixture(menu_league, profile_name)
                 if _lnx and profile_name in _lnx \
                         and human_opponent in _lnx:
-                    _lead = f"LEAGUE — {_lnx[0]} v {_lnx[1]}"
-            # r64: the resting banner first, then the transients. The
-            # players-and-colours line is NOT a transient -- see the sub-line
-            # below; it is checked every shot and must not roll away.
-            status_lines2 = [_lead, game.last_event]
-            if game.ball_in_hand:
-                status_lines2.append("BALL IN HAND — drag cue in baulk")
-            if game.over:
-                status_lines2.append("T = new game")
+                    _fix = f"LEAGUE — {_lnx[0]} v {_lnx[1]}"
+            # r65: the split is made by `band_lines` in EVERY mode now, so the
+            # resting banner comes from the mode rather than from whatever
+            # happened to be first in this list. `status_lines2` survives as the
+            # narrow-strip fallback's material, in the order it always had.
+            band_rest, band_trans, band_subs = band_lines(
+                MODES[mode], game.names, profile_name, fixture=_fix,
+                last_event=game.last_event,
+                ball_in_hand=game.ball_in_hand, over=game.over,
+                fact=f"{ptxt(0)}  vs  {ptxt(1)}")
+            status_lines2 = [band_rest] + band_trans
         else:
             # r37.1: the ball/potted line is dropped during a solo run --
             # solo_status_lines() already reports what is left, and the strip
             # clips silently, so every line has to earn its place.
-            status_lines2 = ([] if solo_active() else [
-                f"Balls {len(sim.balls)}  potted {len(sim.potted_log)}"
-                f" [{','.join(sim.potted_colours()) or '-'}]"
-            ])
-            if human_shooting() and sandbox_bih:
-                status_lines2.append("BALL IN HAND — drag cue in baulk")
+            _fact = (None if solo_active() else
+                     f"Balls {len(sim.balls)}  potted {len(sim.potted_log)}"
+                     f" [{','.join(sim.potted_colours()) or '-'}]")
             # r37: the solo readout, in the strip so it reads from every tab.
             # Fork 4 as chosen: a finished run FREEZES and shows how it ended
             # rather than auto-racking, so the final time can actually be read.
             # r37.1: built by a pure helper that caps itself at two lines --
             # see solo_status_lines() for why the cap is load-bearing.
+            _solo_lines = []
             if solo_active():
                 _end = (solo_stop_t if solo_run["over"]
                         else pygame.time.get_ticks() / 1000.0)
@@ -10360,7 +10557,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 # and the strip fallback, so it is measured, not assumed.
                 _pbw = ((max(80, win_w - PANEL_W - 2 * int(round(12 * UI_S))))
                         if BAND_READOUT else PANEL_W - 20)
-                status_lines2.extend(solo_status_lines(
+                _solo_lines = solo_status_lines(
                     solo_run,
                     solo_elapsed(solo_start_t, _end, solo_run["penalty_s"]),
                     sum(1 for b in sim.balls
@@ -10369,7 +10566,19 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     best_s=(solo_pb[0] if solo_pb else None),
                     beat_best=solo_new_best,
                     max_width=_pbw,
-                    measure=lambda s: panel_font.size(s)[0]))
+                    measure=lambda s: panel_font.size(s)[0])
+            # r65 Fork 1A: SANDBOX and SOLO reach `banner_line` through the same
+            # split as a game frame. The ball count and the clock go to the
+            # sub-line -- which, being gated on `game is not None`, was empty in
+            # precisely these two modes, so nothing had to give up its place.
+            band_rest, band_trans, band_subs = band_lines(
+                MODES[mode],
+                ball_in_hand=bool(human_shooting() and sandbox_bih),
+                fact=_fact, solo_lines=_solo_lines)
+            # The fallback strip keeps every line it ever had, in order: it is
+            # narrow, it has no banner, and dropping the clock out of it to suit
+            # the band would lose the run's only readout on a short window.
+            status_lines2 = band_trans + band_subs
             # r64: `aim_txt` (pot % and cut angle) no longer rides the band --
             # see Fork 1B above. It is still computed for the aim overlay.
         # r12: the spin-position icon is GONE from the frame (Maker's call --
@@ -10471,19 +10680,21 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                 (frames - logged_frame)
                                 if logged_frame is not None else None,
                                 made=logged_made)
-            # r64: THE BANNER. `status_lines2[0]` is the resting line -- who is
-            # at this table -- and everything after it is a transient state
-            # that takes the banner for a moment and then gives it back.
-            _rest = status_lines2[0] if status_lines2 else MODES[mode]
+            # r64: THE BANNER -- a resting line saying who is at this table,
+            # and transient states that take it for a moment and give it back.
+            # r65: BOTH NOW COME FROM `band_lines`, not from position 0 of a
+            # list whose first element meant something different in each mode.
+            # That indexing is the whole of the r64 defect: see band_lines.
+            _rest, _trans = band_rest, band_trans
             _now = pygame.time.get_ticks() / 1000.0
-            for _m in status_lines2[1:]:
-                # A message is only pushed when it is NEW. Without this the
-                # band would re-add "BALL IN HAND" sixty times a second and the
-                # roll would never finish -- it would sit permanently at frac 0
-                # and read as a stutter rather than a roll.
-                if not any(x[0] == _m for x in banner_msgs
-                           if _now < x[1] + x[2]):
-                    banner_msgs.append((_m, _now, BANNER_DWELL))
+            # r64 pushed anything not currently unexpired, which stopped the
+            # band re-adding a message sixty times a second but still re-armed
+            # a PERSISTENT state every time its dwell ran out. r65: the rising
+            # edge, so ball-in-hand announces once and gives the mode its
+            # banner back -- see banner_new_msgs.
+            for _m in banner_new_msgs(_trans, banner_last_trans):
+                banner_msgs.append((_m, _now, BANNER_DWELL))
+            banner_last_trans = list(_trans)
             banner_msgs = [x for x in banner_msgs
                            if _now < x[1] + x[2] + 1.0][-6:]
             _want = banner_active(_rest, banner_msgs, _now)
@@ -10525,8 +10736,8 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 display.set_clip(pygame.Rect(0, 0, win_w - PANEL_W,
                                              TOP_BAND_H))
                 _cy = TOP_BAND_H // 2
-                for _txt, _off in ((banner_prev, -_f),
-                                   (banner_shown, 1.0 - _f)):
+                for _txt, _off, _incoming in ((banner_prev, -_f, False),
+                                              (banner_shown, 1.0 - _f, True)):
                     if not _txt:
                         continue
                     # r64: UPPER CASE in the banner. The Maker's rule is that
@@ -10540,8 +10751,13 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                     # banner that changes width every few seconds looks
                     # unanchored when its left edge is fixed; centred, the
                     # text grows and shrinks about a point that does not move.
-                    _img = _bfont.render(banner_case(_txt), True,
-                                         (236, 232, 214))
+                    # r65 Fork 2B: COLOUR BY MEANING, plus a pulse on arrival.
+                    # Only the INCOMING line pulses -- the outgoing one is
+                    # leaving and lifting it too would read as the whole band
+                    # flashing rather than as something new arriving.
+                    _bcol = (banner_rgb(_txt, banner_since, _now) if _incoming
+                             else banner_colour(_txt))
+                    _img = _bfont.render(banner_case(_txt), True, _bcol)
                     display.blit(_img, _img.get_rect(
                         center=((win_w - PANEL_W) // 2,
                                 int(_cy + _off * TOP_BAND_H))))
@@ -10551,9 +10767,17 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                 # rotation and the Maker left it alone: it is the one thing
                 # read on every single shot, and a fact you need constantly is
                 # the worst possible thing to put on a carousel.
-                if game is not None:
+                # r65 Fork 1A: no longer gated on `game is not None`. That gate
+                # left the slot EMPTY in Sandbox and Solo, which is what made
+                # the ball count and the clock squat in the banner instead.
+                # Measured at 2880x1800: budget 2454px against a worst-case
+                # ball line of 728px and a solo line of 585px -- the same solo
+                # line that overflows the 370px fallback strip (KNOWN_ISSUES
+                # #7). It is joined rather than stacked because the slot is one
+                # line tall and always was.
+                if band_subs:
                     _sub = panel_font.render(
-                        fit_label(f"{ptxt(0)}  vs  {ptxt(1)}", bw, bmeasure),
+                        fit_label("   ".join(band_subs), bw, bmeasure),
                         True, COL["hud"])
                     display.blit(_sub, (bx, max(0, TOP_BAND_H
                                                 - _sub.get_height()
@@ -15040,6 +15264,191 @@ def selftest():
           f"seat1 {banner_line('YOU vs AI', ('SPIDER', 'MAKER'), 'MAKER')!r}; "
           f"solo {banner_line('SOLO')!r}; newest wins "
           f"{banner_active('REST', [('A', 0.0, 2.0), ('B', 0.5, 2.0)], 1.0)!r}")
+
+    # 124. r65 Fork 1A: the banner names the mode in ALL FOUR modes.
+    #
+    # THIS IS THE ASSERTION 123 COULD NOT BE. 123 tests `banner_line()` in
+    # isolation and passed happily through the whole of r64.1 while the render
+    # never called it in two modes of four: the resting line was taken as
+    # `status_lines2[0]`, which holds the mode-or-names line only in a GAME
+    # frame. In SANDBOX that slot is the ball count, in SOLO the clock. The
+    # Maker's report: it rests on "Ball in Hand — Drag Cue in Baulk" and the
+    # word "Sandbox" never appears at all.
+    #
+    # So this asserts the SPLIT, which is the thing the render consumes. The
+    # load-bearing clause is that `fact` and `solo_lines` reach the sub-line
+    # and NOWHERE ELSE -- a clock string in the resting line or in the
+    # transients is the shipped bug, and it fails here.
+    #
+    # Measured, and the reason Fork 1B was withdrawn rather than offered: with
+    # the clock as the resting line it changed ten times a second, resetting
+    # the roll every time, and over 600 frames `roll_frac` never once reached
+    # 1.0 (max 0.313). The banner sat permanently a third of the way through.
+    _clk124 = "SOLO  0:12.0   7 colours + black  (PB 9:13.6)"
+    _sand124 = band_lines("SANDBOX", ball_in_hand=True,
+                          fact="Balls 15  potted 0 [-]")
+    _solo124 = band_lines("SOLO", solo_lines=[_clk124])
+    _game124 = band_lines("YOU vs AI", ("SPIDER", "MAKER"), "MAKER",
+                          last_event="foul — cue ball potted",
+                          fact="MAKER[REDS]  vs  SPIDER[YELLOWS]")
+    _lge124 = band_lines("YOU vs AI", ("MAKER", "CHALKY"), "MAKER",
+                         fixture="LEAGUE — MAKER v CHALKY")
+    check("r65 the banner names the mode in every mode, not just the two it "
+          "was built in — the resting line is derived from the MODE rather "
+          "than from position 0 of a list whose first entry means the ball "
+          "count in Sandbox and the clock in Solo; the ball count and the "
+          "clock can reach the sub-line and nothing else, so the ten-times-"
+          "a-second clock can never take the banner and restart the roll; and "
+          "a league fixture still overrides the names",
+          # SANDBOX: the mode rests, ball-in-hand is a transient, count subs
+          _sand124[0] == "SANDBOX"
+          and _sand124[1] == ["BALL IN HAND — drag cue in baulk"]
+          and _sand124[2] == ["Balls 15  potted 0 [-]",
+                              "Ball in hand — drag cue in baulk"]
+          # SOLO: the mode rests and the CLOCK IS NOWHERE NEAR THE BANNER
+          and _solo124[0] == "SOLO"
+          and _solo124[1] == []
+          and _solo124[2] == [_clk124]
+          # ... stated as the invariant rather than as this one arrangement
+          and all(_clk124 not in x
+                  for x in [_solo124[0]] + list(_solo124[1]))
+          # a game frame is unchanged: names, human first, event rolls
+          and _game124[0] == "MAKER vs SPIDER"
+          and _game124[1] == ["foul — cue ball potted"]
+          and _game124[2] == ["MAKER[REDS]  vs  SPIDER[YELLOWS]"]
+          # the frame-over prompt is a transient, not a resting line
+          and band_lines("YOU vs AI", ("MAKER", "SPIDER"), "MAKER",
+                         over=True)[1] == ["T = new game"]
+          # the league fixture overrides, and only when there is one
+          and _lge124[0] == "LEAGUE — MAKER v CHALKY"
+          # empty material must not invent a line for the sub-slot
+          and band_lines("SANDBOX")[2] == []
+          and band_lines("SANDBOX", fact=None, solo_lines=[])[1] == []
+          # THE RISING EDGE. Fixing the resting line was not enough on its own
+          # and this is the clause that says so: ball-in-hand is a state that
+          # lasts until the cue is placed, so an expiry-triggered push re-armed
+          # it forever and the banner never got back to "Sandbox" -- which is
+          # the Maker's report, word for word. Announced once...
+          and banner_new_msgs(["BALL IN HAND — drag cue in baulk"], []) \
+          == ["BALL IN HAND — drag cue in baulk"]
+          # ... and NOT again while the state persists
+          and banner_new_msgs(["BALL IN HAND — drag cue in baulk"],
+                              ["BALL IN HAND — drag cue in baulk"]) == []
+          # a genuinely new event still gets through beside a held state
+          and banner_new_msgs(["BALL IN HAND — drag cue in baulk", "foul — x"],
+                              ["BALL IN HAND — drag cue in baulk"]) \
+          == ["foul — x"]
+          # and it re-announces once the state has actually gone away
+          and banner_new_msgs(["BALL IN HAND — drag cue in baulk"],
+                              ["foul — x"]) \
+          == ["BALL IN HAND — drag cue in baulk"]
+          and banner_new_msgs([], ["foul — x"]) == []
+          # ... while the state stays READABLE in the sub-line, which is what
+          # makes letting the banner go a fix rather than a loss
+          and "Ball in hand — drag cue in baulk" in _sand124[2],
+          f"sandbox {_sand124[0]!r} subs {_sand124[2]!r}; "
+          f"solo {_solo124[0]!r} subs {_solo124[2]!r}; "
+          f"game {_game124[0]!r}; league {_lge124[0]!r}")
+
+    # 125. r65 Fork 2B: the banner says what KIND of thing it is showing.
+    #
+    # Colour by meaning, and a pulse on arrival. Both pure, and both asserted
+    # on what they RETURN rather than on the blit that consumes them -- the
+    # r58 lesson: a clause checking the call site is written passes while the
+    # effect inside it is gutted.
+    #
+    # THE ORDERING CLAUSE ONLY BECAME REAL WHEN I CHECKED THE VOCABULARY. My
+    # first cut claimed severity order mattered and the mutant that reversed it
+    # SURVIVED: `assess_foul` writes "scratch", "no contact", "wrong ball
+    # first", "no cushion, no pot" -- not one of them contains the word "foul",
+    # so the two branches could never collide and the clause was decoration.
+    # r56's fault exactly, lucky data hiding a mutant. The rule now matches the
+    # words the rules layer actually writes, which makes `MAKER wins: black
+    # potted illegally (scratch)` a genuine collision: it is a frame decided,
+    # not a foul, and reversing the order now fails here.
+    _won125 = banner_colour("MAKER wins: black potted cleanly")
+    _both125 = banner_colour("MAKER wins: black potted illegally (scratch)")
+    _foul125 = banner_colour("foul — cue ball potted")
+    _turn125 = banner_colour("your break — aim at the pack")
+    _rest125 = banner_colour("MAKER vs SPIDER")
+    check("r65 the banner colours itself by meaning and lifts as it arrives — "
+          "amber for a foul, green for the table being handed to you, bright "
+          "for a frame decided, and a win is read as a win even though the "
+          "same shot can also be a foul; the arrival pulse decays to nothing "
+          "and is clamped at both ends so it can never brighten past white",
+          # four meanings, four distinct colours
+          len({_won125, _foul125, _turn125, _rest125}) == 4
+          # severity, on a string that genuinely contains both: a frame ended
+          # by an illegal black carries a foul's own description and must
+          # still read as a frame decided
+          and _both125 == _won125
+          and banner_colour("foul — scratch") == BANNER_COL["foul"]
+          and banner_colour("no cushion, no pot") == BANNER_COL["foul"]
+          and _foul125 == BANNER_COL["foul"]
+          and _turn125 == BANNER_COL["turn"]
+          # ball in hand is the table being handed to you
+          and banner_colour("BALL IN HAND — drag cue in baulk") == _turn125
+          # case-blind, because the rules layer writes sentence case
+          and banner_colour("FOUL — CUE BALL POTTED") == _foul125
+          # the pulse: full on arrival, gone by the end, clamped both ways
+          and banner_pulse(0.0, 0.0, 1.0) == 1.0
+          and banner_pulse(0.0, 0.5, 1.0) == 0.5
+          and banner_pulse(0.0, 9.0, 1.0) == 0.0
+          and banner_pulse(0.0, -9.0, 1.0) == 1.0
+          and banner_pulse(0.0, 0.0, 0.0) == 0.0
+          # and the mix: brighter on arrival than at rest, never past white
+          and banner_rgb("foul — x", 0.0, 0.0, 1.0)
+          > banner_rgb("foul — x", 0.0, 1.0, 1.0)
+          and banner_rgb("foul — x", 0.0, 1.0, 1.0) == _foul125
+          and all(0 <= c <= 255
+                  for c in banner_rgb("MAKER wins: x", 0.0, 0.0, 1.0)),
+          f"won {_won125} foul {_foul125} turn {_turn125} rest {_rest125}; "
+          f"pulse at arrival {banner_pulse(0.0, 0.0, 1.0)}; "
+          f"lifted foul {banner_rgb('foul — x', 0.0, 0.0, 1.0)}")
+
+    # 126. r65 Fork 3A: a caption inside a widget stays inside it at any scale.
+    #
+    # The SEVENTH instance of a fixed pixel in a scaled layout, and the first
+    # one found on a tab nobody had re-laid-out. MiniTable's "calling off"
+    # caption was drawn at `rect.bottom - 16`: at UI_S 1.0 the 15px font
+    # cleared the bottom by 1px, so it looked correct for as long as anyone
+    # only looked at 1.0. At the Maker's 1.5 the font is 22px and the text ran
+    # six pixels out of the mini table, onto the row where the Call buttons
+    # begin. `- 16` was a font height measured once and frozen.
+    #
+    # Asserted against REAL FONT HEIGHTS at both scales rather than a general
+    # "inside the rect" rule, for r62.2's reason: a general rule passes the
+    # broken version at 1.0 perfectly happily, which is exactly how this
+    # survived three revisions of interface work.
+    _x126, _y126 = inset_label_pos(100, 229, 22, 1.5)
+    _x1126, _y1126 = inset_label_pos(100, 160, 15, 1.0)
+    check("r65 a caption inside a widget stays inside it at every HUD scale — "
+          "the mini table's off-state caption was dropped by a frozen 16px "
+          "that had once been a font height, so it cleared the bottom edge by "
+          "1px at 1.0 and spilled six pixels onto the Call buttons at the "
+          "Maker's 1.5; the drop is derived from the font it is actually "
+          "drawing with, and the inset scales with the HUD",
+          # PINNED AS LITERALS, not as "somewhere inside". An inequality was
+          # the first cut and TWO mutants walked through it: a drop frozen at
+          # 22 instead of the real font height, and a pad of zero, both keep
+          # the text inside the rect while putting it in the wrong place. The
+          # contract is an exact one -- the text bottom sits a scaled pad above
+          # the rect bottom, whatever the font is -- so it is asserted exactly.
+          (_x126, _y126) == (100 + 9, 229 - 22 - 6)
+          and (_x1126, _y1126) == (100 + 6, 160 - 15 - 4)
+          # which is to say: the text ends exactly one scaled pad short
+          and _y126 + 22 == 229 - 6
+          and _y1126 + 15 == 160 - 4
+          # the fault it replaces: the frozen drop overflows at 1.5
+          and (229 - 16) + 22 > 229
+          # the inset SCALES rather than sitting at a fixed 6
+          and _x126 > _x1126
+          # and it never inverts on a tiny widget or a huge font
+          and inset_label_pos(0, 20, 40, 1.0)[1] < 20,
+          f"1.5: y {_y126} + 22 = {_y126 + 22} vs bottom 229 "
+          f"(frozen drop gave {(229 - 16) + 22}); "
+          f"1.0: y {_y1126} + 15 = {_y1126 + 15} vs bottom 160; "
+          f"inset x {_x1126 - 100} at 1.0, {_x126 - 100} at 1.5")
 
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
