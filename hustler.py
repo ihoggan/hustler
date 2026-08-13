@@ -107,21 +107,31 @@ Command line:
 """
 
 import argparse
+import datetime
 import functools
 import inspect
 import json
 import math
 import multiprocessing
 import os
+import platform
 import random
 import sys
 import time
+import traceback
 import types
 import zlib
 
 # ----------------------------------------------------------------------------
 # Configuration — real units (decision 4B: dict + hotkeys)
 # ----------------------------------------------------------------------------
+# r68: THE VERSION LIVES HERE AND setup.py READS IT. It is quoted in a crash
+# report, so it had to be reachable from the game; adding a second copy beside
+# setup.py's would have been the same drift this project has already paid for
+# twice (two difficulty models, five copies of the base-directory rule).
+# Assertion 129 pins the two together.
+HUSTLER_VERSION = "0.68.0"
+
 CFG = {
     # Table (WEPF-legal 7 ft table: Blackball Elite playing surface)
     "PLAY_W_M": 1.82,
@@ -15581,6 +15591,82 @@ def selftest():
           f"distinct dirs across the five stores: "
           f"{sorted({os.path.dirname(p) for p in _stores127})}")
 
+    # 128. r68: a crash leaves a FILE behind, because a tester has no console.
+    #
+    # The Maker is handing this to friends. Frozen and windowed, an unhandled
+    # exception prints a traceback to a stderr that disappears with the window,
+    # so his entire bug report would be "it didn't work". A file survives.
+    #
+    # Asserted on the pure formatter rather than on the write, because the
+    # write is three lines of I/O around it and the report is the part that has
+    # to be right. Everything it needs is passed IN -- clock, version, platform
+    # and argv -- which is what makes it testable at all.
+    #
+    # The ordering clause is load-bearing here in a way r65's was not: a tester
+    # sending this back will screenshot the top of the file, so the build and
+    # the command must appear before the stack, not after it.
+    _rep128 = crash_report("Traceback (most recent call last):\n  ZeroDivision",
+                           "0.68.0", "2026-08-13T21:04:11",
+                           "Windows 11 / Python 3.12.3",
+                           ["HUSTLER.exe", "--smoke"])
+    _lines128 = _rep128.splitlines()
+    check("r68 a crash leaves a readable file behind — a tester has no console "
+          "to read, so the report carries the version, the time, the platform "
+          "and the command that produced it, and puts the traceback LAST so "
+          "the first screenful identifies the build rather than showing the "
+          "middle of a stack; it also survives an exception whose text is "
+          "empty rather than producing a file that says nothing",
+          # the identifying facts are all present
+          all(s in _rep128 for s in ("0.68.0", "2026-08-13T21:04:11",
+                                     "Windows 11", "HUSTLER.exe --smoke"))
+          # the traceback is present and LAST -- after every header line
+          and "ZeroDivision" in _rep128
+          and _lines128.index("version : 0.68.0")
+          < [i for i, ln in enumerate(_lines128)
+             if "ZeroDivision" in ln][0]
+          # the header identifies the build within the first few lines
+          and any("0.68.0" in ln for ln in _lines128[:4])
+          # an empty traceback still yields a report with the build in it
+          and "0.68.0" in crash_report("", "0.68.0", "t", "p", ["x"])
+          # and the log sits with the other stores, not somewhere of its own
+          and os.path.dirname(crash_log_path("/a/b/HUSTLER.exe")) \
+          == store_dir("/a/b/HUSTLER.exe")
+          and os.path.basename(crash_log_path("/a/b/x.py")) == CRASH_LOG_NAME
+          and crash_log_path("/a/b/x.py", "/tmp/c.log") == "/tmp/c.log",
+          f"{len(_lines128)} lines; header {_lines128[:5]!r}")
+
+    # 129. r68: the version is declared ONCE.
+    #
+    # `HUSTLER_VERSION` is quoted in the crash report, so the game needed it;
+    # setup.py already declared one. Two copies of a number that must agree is
+    # the drift this project has paid for twice already -- the two difficulty
+    # models, and the base-directory rule written out five times. setup.py now
+    # PARSES this constant instead of holding its own.
+    #
+    # Worth the assertion because I have personally missed a version or count
+    # in the doc sweep in three of the last four releases. This one cannot be
+    # missed silently: it fails the selftest.
+    _sv129 = None
+    try:
+        with open(os.path.join(store_dir(APP_PATH), "setup.py"),
+                  encoding="utf-8") as _f129:
+            _txt129 = _f129.read()
+        _sv129 = ("_version()" in _txt129
+                  and 'version="' not in _txt129.split("setup(")[-1])
+    except OSError:
+        _sv129 = None      # installed without setup.py beside it: not a fault
+    check("r68 the version is declared in exactly one place — setup.py reads "
+          "HUSTLER_VERSION out of hustler.py rather than keeping a second copy "
+          "that has to be remembered separately, and the constant is a plain "
+          "dotted string the parser in setup.py can actually read",
+          isinstance(HUSTLER_VERSION, str)
+          and HUSTLER_VERSION.count(".") == 2
+          and all(p.isdigit() for p in HUSTLER_VERSION.split("."))
+          # setup.py must not have quietly regrown a literal of its own
+          and _sv129 in (True, None),
+          f"HUSTLER_VERSION={HUSTLER_VERSION!r}; "
+          f"setup.py single-sourced: {_sv129}")
+
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
 
@@ -15615,6 +15701,54 @@ def batch(n):
     print(f"  max time to rest   : {max(rest_times):.1f}s (sim)")
     print(f"  containment escapes: {escapes}")
     return escapes == 0
+
+
+CRASH_LOG_NAME = "hustler_crash.log"
+
+
+def crash_log_path(script_path, env_override=None):
+    """r68: where an unhandled exception gets written. Pure.
+
+    A sixth store, and a peer of the other five for the reason r66 laboured:
+    one base-directory rule, one place. Beside the exe in a frozen build, which
+    is where a tester can find it and zip it back.
+    """
+    if env_override:
+        return env_override
+    return os.path.join(store_dir(script_path), CRASH_LOG_NAME)
+
+
+def crash_report(exc_text, version, when, platform_text, argv):
+    """r68: the text of a crash report. Pure -- no I/O, no clock, no sys.
+
+    THIS EXISTS BECAUSE A TESTER CANNOT READ A CONSOLE THAT CLOSES. Frozen and
+    windowed, an unhandled exception prints a traceback to a stderr nobody will
+    ever see: the window vanishes and the Maker gets "it didn't work" with
+    nothing attached. A file survives the window closing.
+
+    Everything the report needs is passed IN -- the time, the version, the
+    platform, the argv -- rather than read from the clock and the interpreter
+    inside. That is what makes it assertable at all, and it is the r45 rule
+    about wall-clock values in a shared record builder wearing a different hat.
+
+    The traceback goes LAST. A tester sending this back will screenshot the top
+    of the file, and the first screenful should be the part that identifies
+    which build and which mode, not the middle of a stack.
+    """
+    lines = [
+        "HUSTLER crash report",
+        "version : %s" % version,
+        "when    : %s" % when,
+        "platform: %s" % platform_text,
+        "command : %s" % " ".join(argv),
+        "",
+        "Please send this whole file back -- it is the only record of what",
+        "went wrong, and nothing in it identifies you.",
+        "",
+        str(exc_text).rstrip(),
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def main():
@@ -15810,4 +15944,36 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # r68: an unhandled exception is written to a FILE beside the executable
+    # before it is re-raised. Frozen and windowed there is no console to read,
+    # so without this a tester's only report is "it didn't work".
+    #
+    # RE-RAISED, deliberately. Swallowing it would change the exit code and
+    # hide the traceback from the terminal and from CI, where both are wanted.
+    # Nothing about running from source on nix5 behaves differently: the
+    # traceback still prints, the exit status is still non-zero, there is just
+    # a file as well.
+    #
+    # The write itself is wrapped, because a crash handler that crashes -- on a
+    # read-only folder, say -- would replace a useful traceback with a useless
+    # one about the log.
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException:
+        try:
+            with open(crash_log_path(APP_PATH,
+                                     os.environ.get("HUSTLER_CRASH_LOG")),
+                      "w", encoding="utf-8") as _cf:
+                _cf.write(crash_report(
+                    traceback.format_exc(),
+                    HUSTLER_VERSION,
+                    datetime.datetime.now().isoformat(timespec="seconds"),
+                    "%s %s / Python %s" % (platform.system(),
+                                           platform.release(),
+                                           platform.python_version()),
+                    sys.argv))
+        except Exception:
+            pass
+        raise

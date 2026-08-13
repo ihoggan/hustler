@@ -5,7 +5,56 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r67 — the r66 assertion was Linux-only (current)
+## r68 — the Windows build: spec, crash log, CI (current)
+
+The packaging, on `develop`. Three pieces, all forks signed off beforehand.
+
+**`hustler.spec` — one-dir and portable.** Fork B as agreed: saves sit beside
+HUSTLER.exe so a tester can zip the folder and send the shot log back. That
+depends on it staying one-dir; a one-file build unpacks into a temp directory
+Windows deletes on exit, which is the fault r66 exists to avoid. `datas` is
+empty and must stay empty — `hustler_league.json` and `hustler_profiles.json`
+are tracked, they are the Maker's own career, and bundling them would hand
+every tester his standings and his 9:13.6 solo best as a starting position.
+There are no assets to bundle regardless, which is why this project freezes as
+easily as it does.
+
+**The crash log.** A tester has no console: frozen and windowed, an unhandled
+exception prints a traceback to a stderr that vanishes with the window, and the
+bug report becomes "it didn't work". `crash_report()` is pure — clock, version,
+platform and argv all passed in — and the traceback goes LAST, because someone
+sending this back will screenshot the top of the file and the first screenful
+should say which build and which mode. The handler re-raises rather than
+swallowing, so the exit code and the terminal traceback are unchanged; running
+from source behaves exactly as before, with a file as well. The write is
+wrapped, because a crash handler that crashes replaces a useful traceback with
+a useless one.
+
+**`HUSTLER_VERSION` is now declared once.** The crash report quotes the
+version, so the game needed it, and setup.py already had one. Two copies of a
+number that must agree is the drift this project has paid for twice — the two
+difficulty models, and the base-directory rule written out five times — so
+setup.py PARSES the constant out of hustler.py instead. Parsed rather than
+imported: importing would pull in pygame and pymunk, which a fresh install does
+not have yet.
+
+**`windows-build.yml`.** Tag-triggered plus manual dispatch. PyInstaller cannot
+cross-compile, so this is what stops the Maker ever needing a Windows machine.
+It runs the selftest ON WINDOWS before packaging — the first time this project
+has executed on anything but POSIX, and that question alone had already found
+the r67 fault. It then smoke-tests the frozen exe and asserts that a store
+lands beside it, which is the promise made to testers.
+
+Assertions 128 and 129, six mutants. One of them applied as a syntax error the
+first time, which is not a caught mutant, and was redone properly.
+
+**Expect the first CI run to fail.** pymunk's bundled Chipmunk library and
+pygame's SDL DLLs are where freezes come apart, and none of it can be verified
+from a headless Linux container.
+
+---
+
+## r67 — the r66 assertion was Linux-only
 
 A correctness fix to r66, found before it could cost anything, by asking a
 question the project had never had to ask: what happens when the selftest runs

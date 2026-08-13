@@ -6,9 +6,21 @@ from setuptools import setup
 with open("README.md", "r", encoding="utf-8") as f:
     long_description = f.read()
 
+
+def _version():
+    """r68: read the version out of hustler.py rather than keeping a second
+    copy here. Parsed, not imported -- importing hustler.py would pull in
+    pygame and pymunk, which is exactly what a fresh install does not have
+    yet."""
+    with open("hustler.py", "r", encoding="utf-8") as fh:
+        for line in fh:
+            if line.startswith("HUSTLER_VERSION"):
+                return line.split("=", 1)[1].strip().strip('"\'')
+    raise RuntimeError("HUSTLER_VERSION not found in hustler.py")
+
 setup(
     name="hustler",
-    version="0.67.0",
+    version=_version(),
     author="Iain Hoggan",
     description="UK Pool Physics Sandbox — WEPF-compliant real-world pool physics with utility AI",
     long_description=long_description,

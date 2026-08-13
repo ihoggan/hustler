@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r67 — playable, validated, no known blocking bugs.
+**Status:** r68 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~15,680 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,18 +16,33 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r67
+## Validation snapshot at r68
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 127 assertions |
+| `--selftest` | ALL PASS — 129 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY (nix5), all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 | GitHub Actions `Validate` | passing (Python 3.12 and 3.13) |
+
+## What r68 changed (as built)
+
+The Windows packaging, built on `develop`. `hustler.spec` (one-dir, portable,
+`datas` empty and it must stay empty — the tracked career files are the
+Maker's), the crash log (`crash_report()` pure, traceback last, handler
+re-raises so nothing about a source run changes), `HUSTLER_VERSION` declared
+once with setup.py parsing it, and `.github/workflows/windows-build.yml`
+(tag plus manual dispatch, selftest on Windows BEFORE packaging, frozen smoke
+test, and a check that a store lands beside the exe).
+
+**The first CI run is expected to fail.** pymunk's Chipmunk library and
+pygame's SDL DLLs are the usual failure points and cannot be verified from a
+headless Linux container. Read the runner log and adjust the spec; that is what
+the branch is for.
 
 ## What r67 changed (as built)
 
@@ -904,7 +919,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 127 assertions, all
+  out) rather than the pygame wrapper around it. Currently 129 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.

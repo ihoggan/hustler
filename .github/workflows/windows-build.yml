@@ -1,0 +1,116 @@
+name: Windows build
+
+# Tag-triggered plus manual dispatch, as signed off. Building on every push
+# would burn runner minutes producing exes nobody asked for; a tag says "this
+# one is for people", and `workflow_dispatch` covers a test build without
+# tagging one.
+#
+# PyInstaller cannot cross-compile, which is the whole reason this file exists:
+# nix5 is Linux and the Maker should never need a Windows machine to produce a
+# Windows build.
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      debug_console:
+        description: 'Build with a console window (for debugging a bad build)'
+        type: boolean
+        default: false
+
+jobs:
+  windows-build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.11.1
+
+      # THE SELFTEST RUNS BEFORE THE BUILD, AND ON WINDOWS. This is the first
+      # time this project has ever executed on a non-POSIX machine, and it
+      # already caught one fault: assertion 127 compared store paths against
+      # hardcoded POSIX literals and would have failed here rather than at the
+      # build step (fixed at r67). Packaging a build whose own assertions do
+      # not pass on the target platform would be pointless.
+      - name: Validate on Windows before packaging
+        run: |
+          python -m py_compile hustler.py cushion_path.py
+          python hustler.py --selftest
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+
+      - name: Build with PyInstaller
+        run: pyinstaller --clean --noconfirm hustler.spec
+
+      # A build that cannot start is not a build. This only proves the frozen
+      # exe gets as far as rendering frames headlessly -- it says nothing about
+      # how it looks or sounds, which only the Maker and his testers can judge.
+      - name: Smoke-test the frozen executable
+        run: .\dist\HUSTLER\HUSTLER.exe --smoke
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+
+      # Confirms the promise made to testers: saves land BESIDE the exe. If
+      # this step ever fails, the portable arrangement has quietly broken and
+      # the careers are going somewhere a tester will never find.
+      - name: Check the stores resolve beside the executable
+        shell: pwsh
+        run: |
+          .\dist\HUSTLER\HUSTLER.exe --league new
+          if (Test-Path .\dist\HUSTLER\hustler_league.json) {
+            Write-Host "OK: league store written beside the exe"
+            Remove-Item .\dist\HUSTLER\hustler_league.json
+          } else {
+            Write-Error "league store did NOT land beside the exe"
+            exit 1
+          }
+
+      - name: Read the version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path hustler.py -Pattern '^HUSTLER_VERSION' |
+                Select-Object -First 1).Line.Split('=')[1].Trim().Trim('"')
+          Write-Host "version $v"
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path .\dist\HUSTLER\* `
+            -DestinationPath "HUSTLER-${{ steps.ver.outputs.version }}-win64.zip"
+
+      # Uploaded on EVERY run, tag or not, so a manual dispatch still produces
+      # something downloadable without cutting a release.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HUSTLER-${{ steps.ver.outputs.version }}-win64
+          path: HUSTLER-${{ steps.ver.outputs.version }}-win64.zip
+          retention-days: 30
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: HUSTLER-${{ steps.ver.outputs.version }}-win64.zip
+          body: |
+            Windows build, portable. Extract the zip anywhere you can write —
+            Desktop or Downloads, **not** Program Files — and run HUSTLER.exe.
+
+            Windows will warn you it is from an unknown publisher, because the
+            build is not code-signed. Click **More info**, then **Run anyway**.
+
+            Your career, league table and shot log are saved in the same folder
+            as HUSTLER.exe. If the game falls over it writes `hustler_crash.log`
+            there — please send that file back.
