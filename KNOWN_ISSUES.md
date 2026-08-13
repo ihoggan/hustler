@@ -1,6 +1,6 @@
 # Known Issues
 
-The honest state of the open threads as of r65. None of these stop the game
+The honest state of the open threads as of r66. None of these stop the game
 being playable. Each is written up with its diagnosis so the next person to
 touch it (quite possibly future me) starts from the answer, not the symptom.
 

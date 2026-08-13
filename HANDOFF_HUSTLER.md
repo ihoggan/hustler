@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r65 — playable, validated, no known blocking bugs.
+**Status:** r66 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~15,680 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,18 +16,44 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r65
+## Validation snapshot at r66
 
 | Check | Result |
 |---|---|
 | `py_compile` (both files) | OK |
-| `--selftest` | ALL PASS — 126 assertions |
+| `--selftest` | ALL PASS — 127 assertions |
 | `--batch 30` | 0 containment escapes |
 | `--smoke` | 90 frames OK |
 | `--snap` | md5 `62c87ddb6d1f0ee36f36a71a5000cd5f`, byte-identical to the R6.1 baseline |
 | `--aigame 12 --seed 4200` | SHARK 9–3 STEADY (nix5), all games completed cleanly |
 | `cushion_path.py` standalone | SELFTEST OK — 36 primitives |
 | GitHub Actions `Validate` | passing (Python 3.12 and 3.13) |
+
+## What r66 changed (as built)
+
+**Groundwork for the Windows build.** `frozen_app_path(frozen, script_path,
+executable_path)` decides what the stores resolve from — the script normally,
+the executable when frozen — and `store_dir()` turns that into a directory.
+`APP_PATH` is computed once at import from `sys.frozen` / `sys.executable`, so
+that decision lives in one place and both functions stay pure. Seventeen call
+sites swapped from `__file__` to `APP_PATH`. **A source run is unchanged.**
+
+Frozen under PyInstaller, `__file__` points inside the application bundle; in
+a one-file build that is a temp directory Windows deletes on exit, so every
+store would vanish when a tester closed the game. Fork B as signed off: saves
+sit beside the exe, portable.
+
+`layout_store_path()` is new — the fifth store, previously computed inline as
+a closure inside `run_gui`. It was not beside the other four and not reachable
+from the selftest, which is exactly why the first version of assertion 127
+could not catch a mutant that broke it. The closure was deleted rather than
+reduced to a wrapper: a wrapper inside `run_gui` is still unreachable.
+
+**When the packaging lands, remember the spec must bundle CODE ONLY.**
+`hustler_league.json` and `hustler_profiles.json` are tracked — they are the
+Maker's career — and bundling them would hand every tester his standings. A
+virgin store is safe: smoke renders 90 frames and the readers say
+`no league at … — run --league new to start one`.
 
 ## What r65 changed (as built)
 
@@ -860,7 +886,7 @@ work?* The long-term destination is AI-vs-AI spectating with emergent behaviour.
 - Validation chain, every release, even graphics-only changes:
   `py_compile` → `--selftest` → `--batch N` → `--smoke` (+ `--snap` for screenshots).
 - One selftest assertion per feature, testing the PURE CORE (values in, values
-  out) rather than the pygame wrapper around it. Currently 126 assertions, all
+  out) rather than the pygame wrapper around it. Currently 127 assertions, all
   physics/logic/UI and entirely dependency-free.
 - Report the ACTUAL NUMBERS from the chain, not "passed" — the numbers are what
   let the next person spot a drift nobody noticed.

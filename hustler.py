@@ -2177,7 +2177,81 @@ def solo_status_lines(run, elapsed_s, colours_left, clock_on,
     return [fit(line, pb)]
 
 
+def frozen_app_path(frozen, script_path, executable_path=None):
+    """r66: which path the stores are resolved FROM. Pure.
+
+    Running from a clone this is `hustler.py` itself, which is what every store
+    has resolved from since r38 and why a second clone logs to itself instead
+    of quietly appending to the first one's history. Nothing about a source run
+    changes here.
+
+    FROZEN IS DIFFERENT AND SILENTLY SO, which is the whole reason this exists.
+    Under PyInstaller `__file__` points inside the application bundle, and in a
+    one-file build that bundle is a temp directory WINDOWS DELETES ON EXIT --
+    so the career, the league table, the shot log and the resume save would all
+    be written somewhere that ceases to exist the moment the game is closed. A
+    tester would start from nothing every session and never work out why. The
+    executable's own directory is the one place that is both writable and still
+    there next time.
+
+    The Maker signed off the portable arrangement (Fork B): saves sit beside
+    HUSTLER.exe, so a tester can zip the folder and send the shot log back.
+    That relies on the build being one-dir and extracted somewhere writable --
+    Desktop or Downloads, not Program Files.
+
+    Falls back to `script_path` when frozen without an executable path rather
+    than returning None, because every caller joins a filename onto this and a
+    None would surface as a confusing crash far from the cause.
+    """
+    if frozen and executable_path:
+        return executable_path
+    return script_path
+
+
+def store_dir(script_path):
+    """r66: the one directory HUSTLER keeps everything it writes in. Pure.
+
+    This calculation used to be written out five times -- in each of the four
+    store helpers and once more inline in `layout_path`, a closure inside
+    run_gui. Five copies of one rule is the shape that has already cost this
+    project twice: the two difficulty models that drifted apart, and r49's
+    seat/name mixup where the HUD said SHARK while STEADY was playing. Adding
+    frozen handling to four of five would have been the same fault again, and
+    the fifth would have kept writing into the vanishing temp directory.
+    """
+    return os.path.dirname(os.path.abspath(script_path))
+
+
+LAYOUT_STORE_FMT = "hustler_layout_%s.json"
+
+
+def layout_store_path(script_path, slot, env_override=None):
+    """r66: where a saved custom table layout lives. Pure.
+
+    THE FIFTH STORE, AND THE ONE THAT HID. Until r66 this was computed inline
+    inside `run_gui` as a closure, which meant it was not beside the other four
+    helpers, not pure, and not reachable from the selftest. That is exactly how
+    it survived: the r66 assertion could only reconstruct its path by hand, so
+    a mutant that pointed the real layout store somewhere else PASSED. An
+    assertion that recomputes what the code should do, rather than calling it,
+    is asserting my own arithmetic -- the r56 fault.
+
+    Made a peer of the other four so the drift guard actually covers all five.
+    """
+    if env_override:
+        return env_override
+    return os.path.join(store_dir(script_path), LAYOUT_STORE_FMT % slot)
+
+
 SHOT_LOG_NAME = "hustler_shots.jsonl"
+
+# r66: resolved ONCE, here, and passed to every store helper in place of the
+# bare `__file__` those call sites used to hand over. Computed at import so
+# there is a single answer for the whole run -- `sys.frozen` and
+# `sys.executable` are read here and nowhere else, which keeps the decision in
+# one place and the functions above pure and testable.
+APP_PATH = frozen_app_path(getattr(sys, "frozen", False), __file__,
+                           getattr(sys, "executable", None))
 
 
 def shot_log_path(script_path, env_override=None):
@@ -2202,8 +2276,7 @@ def shot_log_path(script_path, env_override=None):
     does not touch it, but a scripted play-through would."""
     if env_override:
         return env_override
-    return os.path.join(os.path.dirname(os.path.abspath(script_path)),
-                        SHOT_LOG_NAME)
+    return os.path.join(store_dir(script_path), SHOT_LOG_NAME)
 
 
 def break_shot(row):
@@ -2852,8 +2925,7 @@ def league_store_path(script_path, env_override=None):
     """
     if env_override:
         return env_override
-    return os.path.join(os.path.dirname(os.path.abspath(script_path)),
-                        LEAGUE_STORE_NAME)
+    return os.path.join(store_dir(script_path), LEAGUE_STORE_NAME)
 
 
 def league_from_json(blob):
@@ -3195,8 +3267,7 @@ def resume_store_path(script_path, env_override=None):
     """
     if env_override:
         return env_override
-    return os.path.join(os.path.dirname(os.path.abspath(script_path)),
-                        RESUME_STORE_NAME)
+    return os.path.join(store_dir(script_path), RESUME_STORE_NAME)
 
 
 def serialise_frame(layout, game, mode, opponent, fixture=None):
@@ -3439,8 +3510,7 @@ def profile_store_path(script_path, env_override=None):
     """
     if env_override:
         return env_override
-    return os.path.join(os.path.dirname(os.path.abspath(script_path)),
-                        PROFILE_STORE_NAME)
+    return os.path.join(store_dir(script_path), PROFILE_STORE_NAME)
 
 
 def record_frame(profiles, winner, loser, grannie=False, mode="tournament",
@@ -7742,7 +7812,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     profile_name = os.environ.get("HUSTLER_PLAYER") or "PLAYER"
     if not os.environ.get("HUSTLER_PLAYER") and not smoke:
         try:
-            _ppth = profile_store_path(__file__,
+            _ppth = profile_store_path(APP_PATH,
                                        os.environ.get("HUSTLER_PROFILES"))
             if os.path.exists(_ppth):
                 with open(_ppth, "r", encoding="utf-8") as _pf:
@@ -7760,7 +7830,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         rec["foul"] = bool(fouled)
         rec["event"] = event
         try:
-            with open(shot_log_path(__file__,
+            with open(shot_log_path(APP_PATH,
                                     os.environ.get("HUSTLER_SHOT_LOG")),
                       "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(rec) + "\n")
@@ -7806,7 +7876,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             pending_row = rec
             return
         try:
-            with open(shot_log_path(__file__,
+            with open(shot_log_path(APP_PATH,
                                     os.environ.get("HUSTLER_SHOT_LOG")), "a",
                       encoding="utf-8") as fh:
                 fh.write(json.dumps(rec) + "\n")
@@ -7856,7 +7926,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     # play advances the season instead of playing a fixture that will not
     # count.
     try:
-        _lp0 = league_store_path(__file__, os.environ.get("HUSTLER_LEAGUE"))
+        _lp0 = league_store_path(APP_PATH, os.environ.get("HUSTLER_LEAGUE"))
         if os.path.exists(_lp0):
             with open(_lp0, encoding="utf-8") as _f0:
                 _lg0 = league_from_json(json.load(_f0))
@@ -8194,7 +8264,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
     def menu_load_league():
         """r53: read the season, or None. Never raises into the frame loop."""
         try:
-            lp = league_store_path(__file__, os.environ.get("HUSTLER_LEAGUE"))
+            lp = league_store_path(APP_PATH, os.environ.get("HUSTLER_LEAGUE"))
             if not os.path.exists(lp):
                 return None
             with open(lp, encoding="utf-8") as fh:
@@ -8204,7 +8274,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
 
     def menu_save_league(lg):
         try:
-            lp = league_store_path(__file__, os.environ.get("HUSTLER_LEAGUE"))
+            lp = league_store_path(APP_PATH, os.environ.get("HUSTLER_LEAGUE"))
             with open(lp, "w", encoding="utf-8") as fh:
                 json.dump(lg, fh, indent=1)
                 fh.write("\n")
@@ -8656,7 +8726,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         since r48 with no caller; `playoff_trophies` is idempotent, so this is
         safe to run every time a bracket is read."""
         try:
-            pp = profile_store_path(__file__,
+            pp = profile_store_path(APP_PATH,
                                     os.environ.get("HUSTLER_PROFILES"))
             cur = {}
             if os.path.exists(pp):
@@ -8677,7 +8747,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             pass
 
     def resume_path():
-        return resume_store_path(__file__, os.environ.get("HUSTLER_RESUME"))
+        return resume_store_path(APP_PATH, os.environ.get("HUSTLER_RESUME"))
 
     def resume_save():
         """r54: write the frame in progress. Called AT REST only.
@@ -8863,7 +8933,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
             menu_msg = "enter a nickname"
             return
         try:
-            pp = profile_store_path(__file__, os.environ.get("HUSTLER_PROFILES"))
+            pp = profile_store_path(APP_PATH, os.environ.get("HUSTLER_PROFILES"))
             cur = {}
             if os.path.exists(pp):
                 with open(pp, "r", encoding="utf-8") as fh:
@@ -9020,7 +9090,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         nonlocal solo_pb
         solo_pb = None
         try:
-            p = profile_store_path(__file__,
+            p = profile_store_path(APP_PATH,
                                    os.environ.get("HUSTLER_PROFILES"))
             if not os.path.exists(p):
                 return
@@ -9130,14 +9200,11 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
         trail_history.pop(bid, None)
         layout_msg = "ball removed"
 
-    def layout_path(slot):
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            f"hustler_layout_{slot}.json")
-
     def do_save_layout():
         nonlocal layout_msg
         try:
-            with open(layout_path(layout_slot), "w", encoding="utf-8") as f:
+            with open(layout_store_path(APP_PATH, layout_slot), "w",
+                      encoding="utf-8") as f:
                 json.dump(serialise_layout(custom_balls()), f, indent=2)
             layout_msg = f"saved slot {layout_slot + 1}"
         except OSError as e:
@@ -9145,7 +9212,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
 
     def do_load_layout():
         nonlocal layout_msg
-        path = layout_path(layout_slot)
+        path = layout_store_path(APP_PATH, layout_slot)
         try:
             with open(path, "r", encoding="utf-8") as f:
                 balls = deserialise_layout(json.load(f))
@@ -9951,7 +10018,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                              solo_run["penalty_s"])
                         try:
                             _sp = profile_store_path(
-                                __file__, os.environ.get("HUSTLER_PROFILES"))
+                                APP_PATH, os.environ.get("HUSTLER_PROFILES"))
                             _sc = {}
                             if os.path.exists(_sp):
                                 with open(_sp, "r", encoding="utf-8") as _f:
@@ -10037,7 +10104,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                                                  == "human") else n
                     try:
                         _pp = profile_store_path(
-                            __file__, os.environ.get("HUSTLER_PROFILES"))
+                            APP_PATH, os.environ.get("HUSTLER_PROFILES"))
                         _cur = {}
                         if os.path.exists(_pp):
                             with open(_pp, "r", encoding="utf-8") as _f:
@@ -10069,7 +10136,7 @@ def run_gui(smoke=False, smoke_frames=90, snap_path=None):
                         # frame too early. The order is: record the result,
                         # then award, then write once.
                         _lp = league_store_path(
-                            __file__, os.environ.get("HUSTLER_LEAGUE"))
+                            APP_PATH, os.environ.get("HUSTLER_LEAGUE"))
                         if os.path.exists(_lp):
                             with open(_lp, "r", encoding="utf-8") as _f:
                                 _lg = league_from_json(json.load(_f))
@@ -15450,6 +15517,61 @@ def selftest():
           f"1.0: y {_y1126} + 15 = {_y1126 + 15} vs bottom 160; "
           f"inset x {_x1126 - 100} at 1.0, {_x126 - 100} at 1.5")
 
+    # 127. r66: a frozen build writes beside the EXE, not into a temp folder.
+    #
+    # The Maker wants a Windows exe to hand to friends for testing. Frozen
+    # under PyInstaller, `__file__` points inside the application bundle, and
+    # in a one-file build that bundle is a temp directory Windows DELETES ON
+    # EXIT -- career, league table, shot log and resume save all written
+    # somewhere that stops existing when the game is closed. It would have
+    # looked perfect on nix5, where nothing is frozen, and failed for every
+    # tester in a way none of them could describe.
+    #
+    # The clause that earns its place is the LAST one: all five stores landing
+    # in the SAME directory. This calculation was written out five times --
+    # four store helpers and an inline copy in `layout_path`, a closure inside
+    # run_gui that is easy to miss precisely because it is not beside the
+    # others. Fixing four of five would have left one store still writing into
+    # the vanishing directory, which is the r49 seat/name fault exactly: one
+    # rule, several copies, and the odd one out is the bug.
+    _src127 = "/home/iain/hustler/hustler.py"
+    _exe127 = "/home/tester/Desktop/HUSTLER/HUSTLER.exe"
+    _fp127 = frozen_app_path(True, _src127, _exe127)
+    _sp127 = frozen_app_path(False, _src127, _exe127)
+    _stores127 = [shot_log_path(_fp127), league_store_path(_fp127),
+                  resume_store_path(_fp127), profile_store_path(_fp127),
+                  layout_store_path(_fp127, 1)]
+    check("r66 a frozen build keeps its saves beside the executable, not in "
+          "the temp folder PyInstaller unpacks into and Windows deletes on "
+          "exit — a source run is unchanged and still resolves from the "
+          "script, the environment overrides still win outright, and ALL FIVE "
+          "stores resolve to one directory rather than four of them agreeing "
+          "while the fifth writes somewhere that stops existing",
+          # frozen resolves from the executable, source from the script
+          _fp127 == _exe127
+          and _sp127 == _src127
+          # a source run is byte-for-byte what it was before r66
+          and shot_log_path(_sp127) \
+          == "/home/iain/hustler/" + SHOT_LOG_NAME
+          # frozen, the stores sit beside the exe
+          and store_dir(_fp127) == "/home/tester/Desktop/HUSTLER"
+          and profile_store_path(_fp127) \
+          == "/home/tester/Desktop/HUSTLER/" + PROFILE_STORE_NAME
+          # THE DRIFT GUARD: one directory, not four-plus-one
+          and len({os.path.dirname(p) for p in _stores127}) == 1
+          and os.path.dirname(_stores127[0]) == store_dir(_exe127)
+          # frozen with no executable path must not return None -- every
+          # caller joins a filename onto this
+          and frozen_app_path(True, _src127, None) == _src127
+          and frozen_app_path(True, _src127, "") == _src127
+          # the env overrides still beat everything, frozen or not
+          and shot_log_path(_fp127, "/tmp/x.jsonl") == "/tmp/x.jsonl"
+          and profile_store_path(_fp127, "/tmp/p.json") == "/tmp/p.json",
+          f"frozen -> {_fp127!r}; source -> {_sp127!r}; "
+          f"store dir {store_dir(_fp127)!r}; "
+          f"distinct dirs across the five stores: "
+          f"{sorted({os.path.dirname(p) for p in _stores127})}")
+
     print(f"selftest: {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures == 0
 
@@ -15515,14 +15637,14 @@ def main():
     args = ap.parse_args()
 
     if args.league is not None:
-        lpath = league_store_path(__file__, os.environ.get("HUSTLER_LEAGUE"))
+        lpath = league_store_path(APP_PATH, os.environ.get("HUSTLER_LEAGUE"))
         me = os.environ.get("HUSTLER_PLAYER") or ""
         if not me:
             # r60: ask the profile store rather than assuming "PLAYER". This
             # is the line that made --league resolve try to play the Maker's
             # own fixtures as AI fixtures and crash.
             try:
-                _pp = profile_store_path(__file__,
+                _pp = profile_store_path(APP_PATH,
                                          os.environ.get("HUSTLER_PROFILES"))
                 _ps = {}
                 if os.path.exists(_pp):
@@ -15590,7 +15712,7 @@ def main():
         # r48: same resolver as the writer, so the two cannot drift apart and
         # leave --profiles reading a file nothing writes to (the r38 lesson).
         ppath = args.profiles or profile_store_path(
-            __file__, os.environ.get("HUSTLER_PROFILES"))
+            APP_PATH, os.environ.get("HUSTLER_PROFILES"))
         try:
             with open(ppath, encoding="utf-8") as fh:
                 profs = profiles_from_json(json.load(fh))
@@ -15641,7 +15763,7 @@ def main():
     if args.stats is not None:
         # r38: same resolver as the writer, so the two cannot drift apart and
         # leave --stats reading a file nothing writes to.
-        path = args.stats or shot_log_path(__file__,
+        path = args.stats or shot_log_path(APP_PATH,
                                            os.environ.get("HUSTLER_SHOT_LOG"))
         try:
             with open(path, encoding="utf-8") as fh:

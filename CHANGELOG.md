@@ -5,7 +5,53 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r65 — the banner names the mode, the other four tabs, colour by meaning (current)
+## r66 — the stores resolve from one place, and survive being frozen (current)
+
+Groundwork for a Windows build. The Maker wants an exe to hand to friends for
+testing, and the honest answer to "how do I get non-technical friends to
+install Python and clone the repo" is that you don't — which makes this the
+first change in the project aimed at someone other than him.
+
+**The fault it fixes would have been invisible on nix5.** Every store resolved
+its directory from `os.path.dirname(os.path.abspath(__file__))`. That is right
+for a clone, and it is why a second clone logs to itself instead of appending
+to the first one's history. Frozen under PyInstaller it is wrong: `__file__`
+points inside the application bundle, and in a one-file build that bundle is a
+temp directory Windows deletes on exit. Career, league table, shot log and
+resume save would all be written somewhere that stops existing the moment the
+game is closed. Nothing about running from source would ever have shown it.
+
+`frozen_app_path()` decides what to resolve from — the script normally, the
+executable when frozen — and `store_dir()` turns that into a directory.
+`APP_PATH` is computed once at import, so `sys.frozen` and `sys.executable`
+are read in exactly one place and the functions stay pure. Seventeen call
+sites that passed `__file__` now pass `APP_PATH`. **A source run is unchanged**:
+same files, same directory, the Maker's career untouched.
+
+Fork B as signed off: a frozen build keeps its saves beside the exe, portable,
+so a tester can zip the folder and send the shot log back.
+
+**The rule was written out five times, and the fifth was the interesting one.**
+Four store helpers had it, and `layout_path` had a copy inline — a closure
+inside `run_gui`, not beside the others and not reachable from the selftest.
+Fixing four of five would have left one store still writing into the vanishing
+directory, which is the r49 seat/name fault exactly: one rule, several copies,
+and the odd one out is the bug.
+
+It also defeated the first version of the assertion. Unable to call the
+closure, the check reconstructed the layout path by hand, so a mutant that
+pointed the real store at `/tmp/stale` **passed** — an assertion of my own
+arithmetic rather than of the code, the r56 fault. `layout_store_path()` is
+now a module-level peer of the other four, and the closure was deleted rather
+than made a one-line wrapper, because a wrapper inside `run_gui` is still
+something the selftest cannot reach.
+
+Assertion 127, six mutants. The clause that earns its place is the last one:
+all five stores landing in one directory.
+
+---
+
+## r65 — the banner names the mode, the other four tabs, colour by meaning
 
 Three jobs, in the order the Maker set them.
 
