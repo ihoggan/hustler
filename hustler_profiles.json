@@ -1,5 +1,22 @@
 {
  "players": {
+  "CHALKY": {
+   "games": [
+    {
+     "mode": "tournament",
+     "opponent": "MAKER",
+     "shots": 26,
+     "won": false
+    }
+   ],
+   "kind": "ai",
+   "name": "Danny White",
+   "nickname": "CHALKY",
+   "params": null,
+   "schema": 3,
+   "solo": [],
+   "trophies": []
+  },
   "MAKER": {
    "games": [
     {
@@ -18,6 +35,12 @@
      "mode": "tournament",
      "opponent": "SPIDER",
      "shots": 31,
+     "won": true
+    },
+    {
+     "mode": "tournament",
+     "opponent": "CHALKY",
+     "shots": 26,
      "won": true
     }
    ],
@@ -87,6 +110,12 @@
      "opponent": "STEADY",
      "shots": 45,
      "won": true
+    },
+    {
+     "mode": "tournament",
+     "opponent": "STEADY",
+     "shots": 46,
+     "won": true
     }
    ],
    "kind": "ai",
@@ -150,6 +179,12 @@
      "mode": "tournament",
      "opponent": "SHARK",
      "shots": 45,
+     "won": false
+    },
+    {
+     "mode": "tournament",
+     "opponent": "SHARK",
+     "shots": 46,
      "won": false
     }
    ],
