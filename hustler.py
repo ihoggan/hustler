@@ -130,7 +130,7 @@ import zlib
 # setup.py's would have been the same drift this project has already paid for
 # twice (two difficulty models, five copies of the base-directory rule).
 # Assertion 129 pins the two together.
-HUSTLER_VERSION = "0.68.0"
+HUSTLER_VERSION = "0.69.0"
 
 CFG = {
     # Table (WEPF-legal 7 ft table: Blackball Elite playing surface)
@@ -13449,7 +13449,27 @@ def selftest():
           "first one's history; the env override wins outright; and the writer "
           "and --stats share one resolver, because a log written to one path "
           "and read from another fails silently in the worst direction",
-          p86 == os.path.join("/somewhere/clone-a", SHOT_LOG_NAME)
+          # r69: WAS `p86 == os.path.join("/somewhere/clone-a", NAME)`, which
+          # was Linux-only and failed the first time this ran on Windows. The
+          # r67 fix treated the same fault as if it lived in one assertion; it
+          # lived in the file. `store_dir` calls `abspath`, which on Windows
+          # rewrites separators and prepends a drive, so a literal written here
+          # cannot match on both platforms however it is joined.
+          #
+          # Same cure, and the intent is unchanged: the log is named correctly
+          # and sits in the SCRIPT'S OWN directory, which is what makes a
+          # second clone log to itself.
+          os.path.basename(p86) == SHOT_LOG_NAME
+          # PINNED AS A LITERAL as well, because comparing the basename to the
+          # constant compares it to itself: a mutant renaming SHOT_LOG_NAME
+          # survived both this clause and the one it replaced. The name is
+          # load-bearing — `hustler_shots.jsonl` is TRACKED, so renaming it
+          # orphans the committed history while writer and reader carry on
+          # agreeing with each other. A filename carries no separator, so
+          # unlike a path it is safe to pin on either platform.
+          and SHOT_LOG_NAME == "hustler_shots.jsonl"
+          and "clone-a" in p86 and "clone-b" not in p86
+          and "clone-b" in shot_log_path(other86)
           and shot_log_path(other86) != p86
           and os.path.dirname(p86) != os.path.expanduser("~")
           and shot_log_path(here86, "/tmp/elsewhere.jsonl") == "/tmp/elsewhere.jsonl"

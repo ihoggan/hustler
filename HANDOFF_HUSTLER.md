@@ -1,6 +1,6 @@
 # HANDOFF — HUSTLER (UK Pool Physics Sandbox)
 
-**Status:** r68 — playable, validated, no known blocking bugs.
+**Status:** r69 — playable, validated, no known blocking bugs.
 
 **Files:** `hustler.py` (~15,680 lines) **+ `cushion_path.py`** (~515 lines,
 tangent-true cushion-nose geometry, imported as `cushion_geo`) — one project,
@@ -16,7 +16,7 @@ stays green independently. **Table geometry is FINAL** as of R6.1 — no
 construction drawing is forthcoming; the tangent-true loop is the authoritative
 source of truth.
 
-## Validation snapshot at r68
+## Validation snapshot at r69
 
 | Check | Result |
 |---|---|

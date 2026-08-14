@@ -5,7 +5,47 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r68 — the Windows build: spec, crash log, CI (current)
+## r69 — the same Linux-only fault, in an assertion r67 did not look at (current)
+
+Found by the Maker running `--selftest` on his own Windows 10 machine before
+building. One failure: assertion 86, the r38 shot-log path.
+
+It compared `shot_log_path("/somewhere/clone-a/hustler.py")` against
+`os.path.join("/somewhere/clone-a", SHOT_LOG_NAME)`. `store_dir` calls
+`abspath`, which on Windows rewrites separators and prepends a drive, so the
+two can never match there — the identical fault r67 fixed one revision earlier,
+in an assertion r67 never examined.
+
+**The r67 fix was aimed at one assertion when the fault lived in the file.**
+Having found that a path literal cannot be right on both platforms, the next
+move should have been to sweep every assertion for path literals, not to repair
+the one that prompted the question. That sweep has now been done: fourteen
+path-touching clauses across assertions 86, 127 and 128 were evaluated under
+both `posixpath` and `ntpath`, and all fourteen hold under both. The remaining
+literals are environment-override clauses, which return their argument verbatim
+and never touch a separator.
+
+Same cure as r67 — relationships, not spellings. The log is named correctly and
+sits in the SCRIPT'S OWN directory, which is what makes a second clone log to
+itself rather than append to the first one's history.
+
+**A second, older weakness surfaced while mutation-testing the repair.** The
+clause `basename(p86) == SHOT_LOG_NAME` compares the constant to itself, so a
+mutant renaming it survived — and the clause it replaced had exactly the same
+circularity, meaning this was never caught by the original either. The name is
+load-bearing: `hustler_shots.jsonl` is TRACKED, so renaming it orphans the
+committed history while the writer and the reader carry on agreeing with each
+other. It is now pinned as a literal as well. A filename carries no separator,
+so unlike a path it is safe to pin on either platform.
+
+Seven mutants. Two of them were clause removals rather than code changes, which
+test redundancy rather than detection; replaced with the real code faults the
+clause exists to catch — a filename never joined, and the wrong store name
+joined. Both caught.
+
+---
+
+## r68 — the Windows build: spec, crash log, CI
 
 The packaging, on `develop`. Three pieces, all forks signed off beforehand.
 

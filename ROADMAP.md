@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current status: r68 — playable, validated
+## Current status: r69 — playable, validated
 
-**Validation snapshot (r68, measured on nix5 and reproduced in a Linux
+**Validation snapshot (r69, measured on nix5 and reproduced in a Linux
 container):**
 
 | Check | Result |
