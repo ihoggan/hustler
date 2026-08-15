@@ -130,7 +130,7 @@ import zlib
 # setup.py's would have been the same drift this project has already paid for
 # twice (two difficulty models, five copies of the base-directory rule).
 # Assertion 129 pins the two together.
-HUSTLER_VERSION = "0.69.0"
+HUSTLER_VERSION = "0.70.0"
 
 CFG = {
     # Table (WEPF-legal 7 ft table: Blackball Elite playing surface)

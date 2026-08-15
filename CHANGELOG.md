@@ -5,7 +5,43 @@ etc.) are the internal build markers used during development.
 
 ---
 
-## r69 — the same Linux-only fault, in an assertion r67 did not look at (current)
+## r70 — the Windows exe runs (current)
+
+`hustler.spec` only. No code change.
+
+The first Windows build SUCCEEDED at the step I had braced for — PyInstaller
+found pymunk's Chipmunk library and pygame's SDL DLLs unaided. It then died on
+launch: `Failed to execute script 'pyi_rth_pkgres' … No module named 'jaraco'`.
+
+**pygame imports `pkg_resources`** (pymunk does not — checked), so PyInstaller
+installs its `pyi_rth_pkgres` runtime hook, and that hook imports `jaraco`, a
+setuptools-vendored package present only in setuptools 71-80.
+
+**My first fix was wrong, not merely incomplete.** The spec had excluded
+`setuptools`, so the obvious move was to stop excluding it. That does not work:
+the hook is installed because `pkg_resources` was COLLECTED, so it still runs
+and still fails. It was tried on Windows, failed, and then failed again in a
+local reproduction. The fix is to exclude **`pkg_resources` itself** — no hook,
+nothing asking for `jaraco`. Only pygame pulls it in, and only for a legacy
+asset-loading path HUSTLER never takes, because HUSTLER has no assets. The
+no-asset-files rule paying off a second time.
+
+**The lesson is about the loop, not the bug.** The same hook logic runs on
+Linux. `pip install pyinstaller==6.11.1` plus a setuptools in the 71-80 band
+reproduces the identical traceback in about ten minutes — 68 is too old to
+trigger it and 84 removed `pkg_resources` altogether. That reproduction should
+have been built three rounds earlier instead of asking the Maker to test
+guesses across two machines.
+
+Verified in a FROZEN build on both platforms: 90 frames, `--selftest` running
+inside the exe, no career bundled, `--league new` writing beside the exe, and
+`--snap` returning `62c87ddb6d1f0ee36f36a71a5000cd5f` — byte-identical to a
+source run, which is the strongest evidence available that pygame's font and
+render path survive without `pkg_resources`.
+
+---
+
+## r69 — the same Linux-only fault, in an assertion r67 did not look at
 
 Found by the Maker running `--selftest` on his own Windows 10 machine before
 building. One failure: assertion 86, the r38 shot-log path.

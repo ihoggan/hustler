@@ -40,10 +40,30 @@ a = Analysis(
     # Trimmed because they are large, unused, and drag in their own binaries.
     # If any of these turns out to be needed, the symptom is an ImportError on
     # launch naming the module — take it out of this list rather than guessing.
+    # r70: `pkg_resources` IS EXCLUDED ON PURPOSE AND MUST STAY EXCLUDED.
+    # PyInstaller installs its `pyi_rth_pkgres` runtime hook whenever
+    # `pkg_resources` is collected, and that hook imports `jaraco` -- a
+    # setuptools-vendored package present only in setuptools 71-80. The first
+    # Windows build died on launch with `No module named 'jaraco'`.
+    #
+    # THE OBVIOUS FIX IS THE WRONG ONE. `setuptools` was originally in this
+    # list, and taking it out does NOT help: the hook is installed because
+    # `pkg_resources` was COLLECTED, so it still runs and still fails. It was
+    # tried, on Windows and again in a local reproduction, and failed both
+    # times. Excluding `pkg_resources` itself means the hook is never installed
+    # and nothing asks for `jaraco`.
+    #
+    # Only pygame pulls `pkg_resources` in (pymunk does not -- checked), and
+    # only for a legacy asset-loading path HUSTLER never takes, because HUSTLER
+    # has no assets. Verified in a FROZEN build on both platforms: 90 frames,
+    # `--league new` writing beside the exe, and `--snap` still returning
+    # 62c87ddb6d1f0ee36f36a71a5000cd5f -- byte-identical to a source run, which
+    # is the strongest evidence available that pygame's font and render path
+    # survive without it.
     excludes=[
         'numpy', 'matplotlib', 'scipy', 'pandas',
         'tkinter', 'PIL', 'PyQt5', 'PySide2',
-        'pytest', 'setuptools', 'pip',
+        'pytest', 'pkg_resources',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
