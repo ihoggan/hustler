@@ -14,6 +14,8 @@ balls, the shading, the knock of a contact are all synthesised.
 ![python](https://img.shields.io/badge/python-3.12-blue)
 ![deps](https://img.shields.io/badge/dependencies-pygame%20%2B%20pymunk-lightgrey)
 
+**The story behind it:** [building a pool physics engine, and being wrong in public](https://ihoggan.github.io/Hustler.html), the write-up on my site: the calibration bug that made the AI think it never missed, and the five confident wrong answers before the real one.
+
 ---
 
 ## What it is
